@@ -3,11 +3,10 @@
 //   auth:   https://auth.tidal.com/v1/oauth2
 //   api:    https://api.tidal.com/v1
 //   stream: GET /tracks/{id}/playbackinfopostpaywall
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
+use keyring::{Entry, Error as KeyringError};
 use moka::future::Cache;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,7 +18,8 @@ use super::embedded;
 
 const AUTH_URL: &str = "https://auth.tidal.com/v1/oauth2";
 const API_URL: &str = "https://api.tidal.com/v1";
-const TOKEN_FILE: &str = "tidal_tokens.json";
+const KEYRING_SERVICE: &str = "HighTide";
+const KEYRING_USER: &str = "tidal";
 const SCOPE: &str = "r_usr w_usr w_sub";
 
 #[derive(Debug)]
@@ -56,12 +56,6 @@ impl From<reqwest::Error> for Error {
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Error::Json(e)
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::Auth(e.to_string())
     }
 }
 
@@ -104,26 +98,6 @@ impl Tokens {
     fn expired(&self, now: u64) -> bool {
         self.expires_at.saturating_sub(60) <= now
     }
-
-    fn save(&self, path: &Path) -> Result<(), Error> {
-        let json = serde_json::to_string_pretty(self)?;
-        fs::write(path, json)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        }
-        Ok(())
-    }
-
-    fn load(path: &Path) -> Result<Option<Tokens>, Error> {
-        let raw = match fs::read(path) {
-            Ok(r) => r,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(e.into()),
-        };
-        Ok(Some(serde_json::from_slice(&raw)?))
-    }
 }
 
 pub struct StreamInfo {
@@ -136,7 +110,6 @@ pub struct TidalClient {
     http: reqwest::Client,
     client_id: String,
     client_secret: Option<String>,
-    token_file: PathBuf,
     tokens: Mutex<Option<Tokens>>,
     meta_cache: Cache<String, Value>,
     search_cache: Cache<String, Value>,
@@ -156,7 +129,6 @@ impl TidalClient {
             http,
             client_id,
             client_secret,
-            token_file: PathBuf::from(TOKEN_FILE),
             tokens: Mutex::new(None),
             meta_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(6 * 3600))
@@ -183,8 +155,29 @@ impl TidalClient {
         out
     }
 
+    // Tokens live in the OS keyring (macOS Keychain). They never touch disk.
+    fn keyring_entry(&self) -> Result<Entry, Error> {
+        Entry::new(KEYRING_SERVICE, KEYRING_USER)
+            .map_err(|e| Error::Auth(format!("keyring init failed: {e}")))
+    }
+
+    fn store_tokens(&self, tokens: &Tokens) -> Result<(), Error> {
+        let json = serde_json::to_string(tokens)?;
+        self.keyring_entry()?
+            .set_password(&json)
+            .map_err(|e| Error::Auth(format!("keyring set failed: {e}")))
+    }
+
+    fn load_tokens(&self) -> Result<Option<Tokens>, Error> {
+        match self.keyring_entry()?.get_password() {
+            Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+            Err(KeyringError::NoEntry) => Ok(None),
+            Err(e) => Err(Error::Auth(format!("keyring get failed: {e}"))),
+        }
+    }
+
     // Device-code login. Prints the code for the CLI, polls until the user
-    // authorizes, then persists the tokens to disk.
+    // authorizes, then persists the tokens to the OS keyring.
     pub async fn login(&self) -> Result<(), Error> {
         if self.client_id.starts_with("REPLACE_") {
             return Err(Error::Auth(
@@ -272,7 +265,7 @@ impl TidalClient {
                 user_id: Some(session.user_id),
                 country_code: session.country_code,
             };
-            tokens.save(&self.token_file)?;
+            self.store_tokens(&tokens)?;
             println!(
                 "Logged in. user_id={} country={:?}",
                 tokens.user_id.unwrap_or(0),
@@ -315,10 +308,10 @@ impl TidalClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    // True when no valid token file exists or the stored token is expired.
-    // The server calls login() at startup in that case.
+    // True when no valid token exists in the keyring or the stored token is
+    // expired. The server calls login() at startup in that case.
     pub fn needs_login(&self) -> bool {
-        match Tokens::load(&self.token_file) {
+        match self.load_tokens() {
             Ok(Some(t)) => t.expired(unix_now()),
             _ => true,
         }
@@ -332,7 +325,7 @@ impl TidalClient {
                 return Ok(t.access_token.clone());
             }
         }
-        let Some(tokens) = Tokens::load(&self.token_file)? else {
+        let Some(tokens) = self.load_tokens()? else {
             return Err(Error::NotLoggedIn);
         };
         let auth = self.refresh(&tokens.refresh_token).await?;
@@ -343,7 +336,7 @@ impl TidalClient {
             user_id: tokens.user_id,
             country_code: tokens.country_code,
         };
-        updated.save(&self.token_file)?;
+        self.store_tokens(&updated)?;
         *guard = Some(updated);
         Ok(guard.as_ref().unwrap().access_token.clone())
     }
@@ -421,7 +414,7 @@ impl TidalClient {
         if let Some(t) = guard.as_mut() {
             t.country_code = session.country_code.clone();
             t.user_id = Some(session.user_id);
-            let _ = t.save(&self.token_file);
+            let _ = self.store_tokens(t);
         }
         Ok(session.country_code)
     }
