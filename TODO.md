@@ -1,15 +1,24 @@
 # TODO
 
+## Design decisions
+
+- **ID scheme** — prefixed, reversible IDs encoding the Tidal ID: `t<track>`, `al<album>`, `ar<artist>`, `pl<playlist>`. Deterministic across sessions, no database (src/navidrome/ids.rs). Lenient parse: bare number = raw Tidal track ID.
+- **Entity mapping** — Tidal v1 camelCase JSON → Subsonic models in src/tidal/mapping.rs. Song: title, artist (multi-artist joins "A feat. B"), album, albumId, artistId, duration, year from releaseDate, genre, trackNumber, discNumber, coverArt = al<albumId>. Omit bitRate/size (quality-dependent).
+- **Cover art** — Tidal images on resources.tidal.com are long-lived. getCoverArt will 302-redirect to the resolved URL; cache id → URL in moka. Not yet built.
+- **Favorites/playlists** — map star/unstar/getStarred to Tidal favorites CRUD; playlists to Tidal user playlists. Tidal has no public play counts; optional local JSON store for Navidrome-parity playCount.
+- **Scrobble middleware** — `PlayReporter` trait, fan-out from the `scrobble` handler, best-effort (errors log, never fail the client request). Last.fm reporter: api_key + session key (sk), one-time auth.getToken → authorize → getSession, sk stored in Keychain. ListenBrainz: plain token, POST /1/submit-listen. Config = optional blocks in settings.toml.
+
 ## Next: catalog endpoints
 
 ### Search & browse
 
-- [ ] Add search3 — map Tidal /v1/search results to Subsonic searchResult3 (artists, albums, songs)
+- [x] Add search3 — maps Tidal /v1/search to searchResult3 (artist/album/song), honors count/offset params (handlers.rs:72)
+- [x] Add ID parser — src/navidrome/ids.rs, prefixed encode/decode + tests
+- [x] Map getUser — returns the Tidal account profile (GET /v1/users/{id}, cached), ignoring the passed username; auth reads settings.toml; roles reflect the bridge; scrobblingEnabled false until middleware lands
 - [ ] Add getMusicFolders — return a single "Tidal" folder
 - [ ] Add getIndexes + getArtists — expose favorited artists as the library index
 - [ ] Add getArtist — Tidal artist detail with top tracks and albums
 - [ ] Add getAlbum — Tidal album detail, map tracks to Subsonic children
-- [ ] Add getSong — Tidal track to Subsonic child
 
 ### Lists & playlists
 
@@ -22,7 +31,7 @@
 
 - [ ] Add getStarred / getStarred2 — favorited artists, albums, songs
 - [ ] Add star / unstar — mutate Tidal favorites
-- [ ] Add getCoverArt — proxy Tidal image URLs to a local endpoint; CDN URLs are short-lived
+- [x] Add getCoverArt — 302 redirect to resolved Tidal image URL; accepts al<id>/ar<id>/bare album id; size snaps to valid Tidal dimensions (album 160/320/640/1280, artist 160/320/480/750)
 
 ## Next: playback
 
@@ -31,6 +40,13 @@
 - [ ] Add byte-proxy fallback — fetch init + segments server-side and return concatenated audio for raw-audio clients (DSub, Substreamer)
 - [ ] Map Subsonic maxBitRate to Tidal quality — 0/unspecified → LOSSLESS, <320 → HIGH, etc. (LOW/HIGH/LOSSLESS/HI_RES)
 - [ ] Parse MPD fully — segment templates and multiple representations; current extract_dash_url only grabs the first BaseURL (src/tidal/client.rs:482)
+
+## Next: scrobble middleware
+
+- [ ] Define PlayReporter trait — report(song, timestamp); fan out from scrobble handler; errors log only
+- [ ] Add Last.fm reporter — api_key + sk; one-time auth.getToken → browser authorize → getSession; store sk in Keychain; track.scrobble + updateNowPlaying
+- [ ] Add ListenBrainz reporter — plain token, POST /1/submit-listens
+- [ ] Flip scrobblingEnabled to true — getUser reflects configured reporters
 
 ## Decided, not started
 
