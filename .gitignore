@@ -1,3 +1,4 @@
 /target
 .direnv
 .nix-cache
+tidal_tokens.json

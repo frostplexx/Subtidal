@@ -1,0 +1,8 @@
+# HighTide server settings
+username = "admin"
+password = "admin"
+port = 8000
+
+# Optional: override the embedded Tidal app credentials.
+# tidal_client_id = ""
+# tidal_client_secret = ""
