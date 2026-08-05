@@ -155,7 +155,13 @@ impl TidalClient {
         out
     }
 
-    // Tokens live in the OS keyring (macOS Keychain). They never touch disk.
+    // Tokens live in the OS keyring (macOS Keychain). Set HIGHTIDE_TOKEN_FILE
+    // during development to store them in a file instead, skipping the
+    // Keychain prompt that repeats on every rebuild.
+    fn token_file_override() -> Option<std::path::PathBuf> {
+        std::env::var_os("HIGHTIDE_TOKEN_FILE").map(std::path::PathBuf::from)
+    }
+
     fn keyring_entry(&self) -> Result<Entry, Error> {
         Entry::new(KEYRING_SERVICE, KEYRING_USER)
             .map_err(|e| Error::Auth(format!("keyring init failed: {e}")))
@@ -163,12 +169,29 @@ impl TidalClient {
 
     fn store_tokens(&self, tokens: &Tokens) -> Result<(), Error> {
         let json = serde_json::to_string(tokens)?;
+        if let Some(path) = Self::token_file_override() {
+            std::fs::write(&path, &json)
+                .and_then(|_| {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                })
+                .map_err(|e| Error::Auth(format!("token file write failed: {e}")))?;
+            return Ok(());
+        }
         self.keyring_entry()?
             .set_password(&json)
             .map_err(|e| Error::Auth(format!("keyring set failed: {e}")))
     }
 
     fn load_tokens(&self) -> Result<Option<Tokens>, Error> {
+        if let Some(path) = Self::token_file_override() {
+            let json = match std::fs::read_to_string(&path) {
+                Ok(j) => j,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(Error::Auth(format!("token file read failed: {e}"))),
+            };
+            return Ok(Some(serde_json::from_str(&json)?));
+        }
         match self.keyring_entry()?.get_password() {
             Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
             Err(KeyringError::NoEntry) => Ok(None),
