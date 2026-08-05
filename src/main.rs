@@ -1,8 +1,6 @@
-mod models;
-mod handlers;
-mod routes;
+mod navidrome;
 
-use crate::routes::routes;      // optional convenience import
+use navidrome::routes::routes;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -13,7 +11,7 @@ async fn main() {
                 .unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    let routes = routes();       // or crate::routes::routes()
+    let routes = routes();
     println!("Server started at http://localhost:8000");
     warp::serve(routes).run(([127, 0, 0, 1], 8000)).await;
 }
