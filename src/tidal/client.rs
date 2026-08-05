@@ -366,9 +366,30 @@ impl TidalClient {
         self.get_json(&format!("/albums/{id}"), &self.meta_cache).await
     }
 
+    pub async fn artist(&self, id: u64) -> Result<Value, Error> {
+        self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
+    }
+
     pub async fn search(&self, query: &str) -> Result<Value, Error> {
-        self.get_json(&format!("/search?query={query}"), &self.search_cache)
+        let encoded = percent_encode(query);
+        // limit caps each section's page.
+        let path = format!("/search?query={encoded}&limit=50");
+        self.get_json(&path, &self.search_cache).await
+    }
+
+    // Tidal user profile: { username, profileName, firstName, ... }
+    pub async fn user_profile(&self) -> Result<Value, Error> {
+        let token = self.access_token().await?;
+        let user_id = match self.user_id_from_tokens() {
+            Some(id) => id,
+            None => self.session_with(&token).await?.user_id,
+        };
+        self.get_json(&format!("/users/{user_id}"), &self.meta_cache)
             .await
+    }
+
+    fn user_id_from_tokens(&self) -> Option<u64> {
+        self.load_tokens().ok().flatten().and_then(|t| t.user_id)
     }
 
     pub async fn stream_url(&self, track_id: u64, quality: &str) -> Result<StreamInfo, Error> {
@@ -465,4 +486,18 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+// Minimal percent-encoding for query strings. No new dependency needed.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

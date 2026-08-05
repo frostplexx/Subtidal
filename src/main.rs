@@ -22,6 +22,7 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    tidal::init(client);
     SETTINGS.set(settings).expect("SETTINGS already set");
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -31,5 +32,5 @@ async fn main() {
         .init();
     let routes = routes();
     println!("Server started at http://localhost:{}", SETTINGS.get().unwrap().port);
-    warp::serve(routes).run(([127, 0, 0, 1], SETTINGS.get().unwrap().port)).await;
+    warp::serve(routes).run(([0, 0, 0, 0], SETTINGS.get().unwrap().port)).await;
 }
