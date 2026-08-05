@@ -342,14 +342,21 @@ impl TidalClient {
     }
 
     // Cached authenticated GET. Errors and non-2xx are never cached.
+    // countryCode is required by most Tidal v1 endpoints, so it goes on every
+    // request. The cache key includes it, keeping the lookup consistent.
     async fn get_json(&self, path: &str, cache: &Cache<String, Value>) -> Result<Value, Error> {
-        if let Some(v) = cache.get(path).await {
+        let token = self.access_token().await?;
+        let mut full = path.to_string();
+        if let Some(cc) = self.country_code().await? {
+            full.push_str(if full.contains('?') { "&" } else { "?" });
+            full.push_str(&format!("countryCode={cc}"));
+        }
+        if let Some(v) = cache.get(&full).await {
             return Ok(v);
         }
-        let token = self.access_token().await?;
         let resp = self
             .http
-            .get(format!("{API_URL}{path}"))
+            .get(format!("{API_URL}{full}"))
             .bearer_auth(token)
             .send()
             .await?;
@@ -358,7 +365,7 @@ impl TidalClient {
         if !status.is_success() {
             return Err(Error::Tidal(status.as_u16(), body.to_string()));
         }
-        cache.insert(path.to_string(), body.clone());
+        cache.insert(full, body.clone());
         Ok(body)
     }
 
