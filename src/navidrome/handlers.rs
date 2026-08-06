@@ -4,10 +4,10 @@ use super::auth::Unauthorized;
 use super::ids::{self, IdKind};
 use super::models::{
     AlbumId3, AlbumList2, AlbumList2Response, AlbumWithSongs, Genres, GenresResponse,
-    GetAlbumResponse, GetOpenSubsonicExtensionsResponse, GetUserResponse, JukeboxControlResponse,
-    JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension, PingResponse, Playlists,
-    PlaylistsResponse, SearchResult3, SearchResult3Response, SubsonicBody, SubsonicError,
-    SubsonicErrorBody, SubsonicResponse, User, Child,
+    GetAlbumResponse, GetArtistResponse, GetOpenSubsonicExtensionsResponse, GetUserResponse,
+    JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension, PingResponse,
+    Playlists, PlaylistsResponse, SearchResult3, SearchResult3Response, SubsonicBody, SubsonicError,
+    SubsonicErrorBody, SubsonicResponse, User, Child, ArtistWithAlbums,
 };
 use super::params::QueryParams;
 use crate::SETTINGS;
@@ -278,6 +278,45 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
     }
     Ok(ok(GetAlbumResponse {
         album: AlbumWithSongs { album, song },
+    }))
+}
+
+// getArtist: one artist plus their albums. Tidal reports no albumCount on
+// the detail, so the count is the number of albums returned.
+pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let Some(id) = q.id.0.first() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    // ar<id>, or a bare number as a raw Tidal artist id.
+    let Some(artist_id) = ids::decode(IdKind::Artist, id).or_else(|| id.parse().ok()) else {
+        return Ok(fail(70, "Artist not found"));
+    };
+    let client = crate::tidal::client();
+    let detail = match client.artist(artist_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal artist fetch failed: {e}");
+            return Ok(fail(0, "Artist unavailable"));
+        }
+    };
+    let albums = match client.artist_albums(artist_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal artist albums fetch failed: {e}");
+            return Ok(fail(0, "Artist unavailable"));
+        }
+    };
+    let mut artist = match artist_from_tidal(&detail) {
+        Some(a) => a,
+        None => return Ok(fail(70, "Artist not found")),
+    };
+    let album: Vec<AlbumId3> = albums["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(album_from_tidal).collect())
+        .unwrap_or_default();
+    artist.album_count = Some(album.len() as u32);
+    Ok(ok(GetArtistResponse {
+        artist: ArtistWithAlbums { artist, album },
     }))
 }
 

@@ -287,6 +287,21 @@ pub struct AlbumId3 {
     pub genre: Option<String>,
 }
 
+// getArtist data: { artist: ArtistWithAlbumsID3 }
+#[derive(Serialize)]
+pub struct GetArtistResponse {
+    pub artist: ArtistWithAlbums,
+}
+
+// ArtistID3 plus its albums. The artist fields flatten from ArtistId3;
+// albumCount is the number of albums actually returned.
+#[derive(Serialize)]
+pub struct ArtistWithAlbums {
+    #[serde(flatten)]
+    pub artist: ArtistId3,
+    pub album: Vec<AlbumId3>,
+}
+
 #[derive(Serialize)]
 pub struct ArtistId3 {
     pub id: String,
@@ -300,6 +315,39 @@ pub struct ArtistId3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artist_with_albums_flattens_artist_fields() {
+        let resp = GetArtistResponse {
+            artist: ArtistWithAlbums {
+                artist: ArtistId3 {
+                    id: "ar1".into(),
+                    name: "X".into(),
+                    cover_art: Some("https://example.com/a.jpg".into()),
+                    album_count: Some(2),
+                },
+                album: vec![AlbumId3 {
+                    id: "al1".into(),
+                    album: "A".into(),
+                    title: "A".into(),
+                    name: "A".into(),
+                    artist: "X".into(),
+                    artist_id: "ar1".into(),
+                    cover_art: None,
+                    song_count: None,
+                    duration: None,
+                    play_count: 0,
+                    created: None,
+                    year: None,
+                    genre: None,
+                }],
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["artist"]["id"], "ar1");
+        assert_eq!(json["artist"]["albumCount"], 2);
+        assert_eq!(json["artist"]["album"][0]["id"], "al1");
+    }
 
     #[test]
     fn album_with_songs_flattens_album_fields() {

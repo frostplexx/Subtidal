@@ -481,6 +481,17 @@ impl TidalClient {
         self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
     }
 
+    // One artist's albums. Backs getArtist. The page cap is far above any
+    // artist's catalog, so one call returns everything.
+    pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, Error> {
+        self.get_json_q(
+            &format!("/artists/{artist_id}/albums"),
+            &[("limit", "1000"), ("offset", "0")],
+            &self.meta_cache,
+        )
+        .await
+    }
+
     pub async fn search(&self, query: &str) -> Result<Value, Error> {
         // limit caps each section's page.
         self.get_json_q(
