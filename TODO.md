@@ -60,6 +60,7 @@
 ## Done
 
 - [x] Fix album/artist covers — `coverArt` serialized as `cover_art` (missing serde rename); Feishin reads `coverArt`. Playlist covers: getCoverArt accepted only album ids; root cause was the `id` param parse (serde_urlencoded rejects Vec) breaking the whole query
+- [x] Add getTopSongs — artist's top tracks via /artists/{id}/toptracks; id param wins (topSongsByArtistId extension v1, advertised), artist name resolves via search, count defaults 50; commit 3996b56
 - [x] Add getAlbum — album detail + tracks in track order via /albums/{id} + /albums/{id}/tracks; album year fills in for tracks (no releaseDate on track JSON); commit ab43bf4
 - [x] Add getArtist — artist detail + albums via /artists/{id} + /artists/{id}/albums; albumCount = albums returned (Tidal detail reports none); commit 2e47ce0
 - [x] Fix newest tab — V2_URL has no trailing slash so the `/v2/` contains() guard never sent x-tidal-client-version; home feed 400'd. Fixed by matching `/v2`
