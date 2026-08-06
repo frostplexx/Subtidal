@@ -204,6 +204,9 @@ pub struct JukeboxPlaylist {
 }
 
 // Subsonic child (song entry). Optional fields omitted when unknown.
+// The OpenSubsonic schema marks contentType, suffix, size, path, created
+// and isVideo as required; Feishin's song normalizer dereferences
+// contentType directly, so omitting it crashes the album view.
 #[derive(Serialize)]
 pub struct Child {
     pub id: String,
@@ -211,6 +214,8 @@ pub struct Child {
     pub parent: String,
     #[serde(rename = "isDir")]
     pub is_dir: bool,
+    #[serde(rename = "isVideo")]
+    pub is_video: bool,
     pub title: String,
     pub album: String,
     pub artist: String,
@@ -231,6 +236,28 @@ pub struct Child {
     pub artist_id: String,
     #[serde(rename = "type")]
     pub kind: &'static str,
+    // Placeholder media metadata: no transcode or file probe yet.
+    #[serde(rename = "contentType")]
+    pub content_type: &'static str,
+    pub suffix: &'static str,
+    pub size: u64,
+    pub path: String,
+    pub created: String,
+}
+
+// getAlbum data: { album: AlbumID3WithSongs }
+#[derive(Serialize)]
+pub struct GetAlbumResponse {
+    pub album: AlbumWithSongs,
+}
+
+// AlbumID3 plus its tracks. The album fields flatten from AlbumId3, so the
+// two share one field set; `song` carries the tracks in track order.
+#[derive(Serialize)]
+pub struct AlbumWithSongs {
+    #[serde(flatten)]
+    pub album: AlbumId3,
+    pub song: Vec<Child>,
 }
 
 #[derive(Serialize)]
@@ -273,6 +300,57 @@ pub struct ArtistId3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn album_with_songs_flattens_album_fields() {
+        let resp = GetAlbumResponse {
+            album: AlbumWithSongs {
+                album: AlbumId3 {
+                    id: "al1".into(),
+                    album: "A".into(),
+                    title: "A".into(),
+                    name: "A".into(),
+                    artist: "X".into(),
+                    artist_id: "ar1".into(),
+                    cover_art: Some("https://example.com/c.jpg".into()),
+                    song_count: Some(1),
+                    duration: Some(200),
+                    play_count: 0,
+                    created: None,
+                    year: Some(2020),
+                    genre: None,
+                },
+                song: vec![Child {
+                    id: "t9".into(),
+                    parent: "al1".into(),
+                    is_dir: false,
+                    is_video: false,
+                    title: "S".into(),
+                    album: "A".into(),
+                    artist: "X".into(),
+                    track: 1,
+                    year: Some(2020),
+                    genre: None,
+                    cover_art: None,
+                    duration: 200,
+                    disc_number: None,
+                    album_id: "al1".into(),
+                    artist_id: "ar1".into(),
+                    kind: "song",
+                    content_type: "audio/flac",
+                    suffix: "flac",
+                    size: 0,
+                    path: String::new(),
+                    created: String::new(),
+                }],
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["album"]["id"], "al1");
+        assert_eq!(json["album"]["coverArt"], "https://example.com/c.jpg");
+        assert_eq!(json["album"]["song"][0]["contentType"], "audio/flac");
+        assert_eq!(json["album"]["song"][0]["type"], "song");
+    }
 
     #[test]
     fn album_id3_serializes_coverart_camelcase() {

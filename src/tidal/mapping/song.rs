@@ -19,6 +19,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         id: ids::encode_track(id),
         parent: ids::encode_album(album_id),
         is_dir: false,
+        is_video: false,
         title,
         album: album_name,
         artist: artist_name,
@@ -37,6 +38,13 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
         kind: "song",
+        // Tidal streams lossless FLAC by default; the real container is
+        // only known once streaming lands, so this stays a placeholder.
+        content_type: "audio/flac",
+        suffix: "flac",
+        size: 0,
+        path: String::new(),
+        created: String::new(),
     })
 }
 

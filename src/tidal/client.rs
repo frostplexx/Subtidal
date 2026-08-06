@@ -462,6 +462,17 @@ impl TidalClient {
         self.get_json(&format!("/albums/{id}"), &self.meta_cache).await
     }
 
+    // One album's tracks in track order. Backs getAlbum. The page cap is
+    // far above any album's track count, so one call returns everything.
+    pub async fn album_tracks(&self, album_id: u64) -> Result<Value, Error> {
+        self.get_json_q(
+            &format!("/albums/{album_id}/tracks"),
+            &[("limit", "1000"), ("offset", "0")],
+            &self.meta_cache,
+        )
+        .await
+    }
+
     pub async fn track(&self, id: u64) -> Result<Value, Error> {
         self.get_json(&format!("/tracks/{id}"), &self.meta_cache).await
     }
