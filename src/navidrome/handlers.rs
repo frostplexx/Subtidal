@@ -445,17 +445,44 @@ pub async fn get_artist_info2(q: QueryParams) -> Result<warp::reply::Json, warp:
 }
 
 // Strip [wimpLink artistId=...]...[/wimpLink] wiki markup from bio text.
+// Opening tags carry attributes, so each is skipped to its closing bracket;
+// closing tags are removed wherever they appear.
 fn strip_wimplinks(text: &str) -> String {
+    const CLOSE: &str = "[/wimpLink]";
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(start) = rest.find("[wimpLink") {
-        out.push_str(&rest[..start]);
-        rest = &rest[start..];
-        if let Some(end) = rest.find(']') {
-            rest = &rest[end + 1..];
+    loop {
+        let open = rest.find("[wimpLink");
+        let close = rest.find(CLOSE);
+        match (open, close) {
+            (Some(o), Some(c)) if o < c => {
+                out.push_str(&rest[..o]);
+                rest = &rest[o + 1..];
+                if let Some(end) = rest.find(']') {
+                    rest = &rest[end + 1..];
+                }
+            }
+            (Some(_), Some(c)) => {
+                out.push_str(&rest[..c]);
+                rest = &rest[c + CLOSE.len()..];
+            }
+            (Some(o), None) => {
+                out.push_str(&rest[..o]);
+                rest = &rest[o + 1..];
+                if let Some(end) = rest.find(']') {
+                    rest = &rest[end + 1..];
+                }
+            }
+            (None, Some(c)) => {
+                out.push_str(&rest[..c]);
+                rest = &rest[c + CLOSE.len()..];
+            }
+            (None, None) => {
+                out.push_str(rest);
+                break;
+            }
         }
     }
-    out.push_str(&rest.replace("[/wimpLink]", ""));
     out
 }
 
@@ -802,4 +829,19 @@ pub async fn jukebox_control(q: QueryParams) -> Result<warp::reply::Json, warp::
         status,
         playlist: with_playlist.then(|| JukeboxPlaylist { entry: entries }),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_wimplinks;
+
+    #[test]
+    fn strip_wimplinks_removes_all_markup() {
+        let bio = "[wimpLink artistId=\"1\"]A[/wimpLink] and "
+            .to_string()
+            + "[wimpLink artistId=\"2\"]B[/wimpLink] here, [wimpLink]C[/wimpLink] done.";
+        assert_eq!(strip_wimplinks(&bio), "A and B here, C done.");
+        assert_eq!(strip_wimplinks("no markup"), "no markup");
+        assert_eq!(strip_wimplinks(""), "");
+    }
 }
