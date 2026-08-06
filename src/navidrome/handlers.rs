@@ -6,14 +6,16 @@ use super::models::{
     AlbumId3, AlbumList2, AlbumList2Response, AlbumWithSongs, Genres, GenresResponse,
     GetAlbumResponse, GetArtistResponse, GetOpenSubsonicExtensionsResponse, GetUserResponse,
     JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension, PingResponse,
-    Playlists, PlaylistsResponse, SearchResult3, SearchResult3Response, SubsonicBody, SubsonicError,
-    SubsonicErrorBody, SubsonicResponse, TopSongs, TopSongsResponse, User, Child, ArtistWithAlbums,
+    Playlists, PlaylistsResponse, SearchResult3, SearchResult3Response, Starred, Starred2,
+    Starred2Album, Starred2Artist, Starred2Response, StarredAlbum, StarredResponse, SubsonicBody,
+    SubsonicError, SubsonicErrorBody, SubsonicResponse, TopSongs, TopSongsResponse, User, Child,
+    ArtistWithAlbums,
 };
 use super::params::QueryParams;
 use crate::SETTINGS;
 use crate::tidal::mapping::{
     album_from_tidal, artist_from_tidal, artist_pic_url, cover_url, favorite_album_from_tidal,
-    playlist_from_tidal, search_items, song_from_track,
+    favorite_artist_from_tidal, playlist_from_tidal, search_items, song_from_track,
 };
 use warp::reject::Rejection;
 use warp::Reply;
@@ -263,7 +265,7 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
             return Ok(fail(0, "Album unavailable"));
         }
     };
-    let mut album = match album_from_tidal(&detail) {
+    let album = match album_from_tidal(&detail) {
         Some(a) => a,
         None => return Ok(fail(70, "Album not found")),
     };
@@ -365,6 +367,105 @@ pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Re
         .unwrap_or_default();
     Ok(ok(TopSongsResponse {
         top_songs: TopSongs { song },
+    }))
+}
+
+// getStarred / getStarred2: the user's favorites in all three entity kinds.
+// getStarred uses legacy shapes (isDir albums, minimal artists); getStarred2
+// the ID3 shapes. Both endpoints read the same three Tidal favorites lists;
+// the difference is only the wrapping.
+fn favorites_songs(result: &serde_json::Value) -> Vec<Child> {
+    result["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| {
+                    let mut song = song_from_track(&entry["item"])?;
+                    song.starred = entry["created"].as_str().map(String::from);
+                    Some(song)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn fetch_favorites() -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), ()> {
+    let client = crate::tidal::client();
+    let albums = client.favorite_albums(0, 2000);
+    let artists = client.favorite_artists(0, 2000);
+    let tracks = client.favorite_tracks(0, 2000);
+    let (albums, artists, tracks) = match tokio::try_join!(albums, artists, tracks) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal favorites fetch failed: {e}");
+            return Err(());
+        }
+    };
+    Ok((albums, artists, tracks))
+}
+
+pub async fn get_starred() -> Result<warp::reply::Json, warp::Rejection> {
+    let (albums, artists, tracks) = match fetch_favorites().await {
+        Ok(v) => v,
+        Err(()) => return Ok(fail(0, "Favorites unavailable")),
+    };
+    let album = favorites_albums(&albums)
+        .into_iter()
+        .map(|a| StarredAlbum {
+            parent: a.artist_id.clone(),
+            is_dir: true,
+            starred: a.created.clone(),
+            album: a,
+        })
+        .collect();
+    let artist = artists["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(favorite_artist_from_tidal).collect())
+        .unwrap_or_default();
+    Ok(ok(StarredResponse {
+        starred: Starred {
+            artist,
+            album,
+            song: favorites_songs(&tracks),
+        },
+    }))
+}
+
+pub async fn get_starred2() -> Result<warp::reply::Json, warp::Rejection> {
+    let (albums, artists, tracks) = match fetch_favorites().await {
+        Ok(v) => v,
+        Err(()) => return Ok(fail(0, "Favorites unavailable")),
+    };
+    let album = favorites_albums(&albums)
+        .into_iter()
+        .map(|a| Starred2Album {
+            starred: a.created.clone(),
+            album: a,
+        })
+        .collect();
+    let artist = artists["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| {
+                    let artist = artist_from_tidal(&entry["item"])?;
+                    Some(Starred2Artist {
+                        artist_image_url: artist.cover_art.clone(),
+                        starred: entry["created"].as_str().map(String::from),
+                        artist,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(ok(Starred2Response {
+        starred2: Starred2 {
+            artist,
+            album,
+            song: favorites_songs(&tracks),
+        },
     }))
 }
 

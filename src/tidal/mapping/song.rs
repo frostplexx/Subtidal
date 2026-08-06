@@ -45,6 +45,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         size: 0,
         path: String::new(),
         created: String::new(),
+        starred: None,
     })
 }
 

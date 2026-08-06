@@ -2,7 +2,7 @@
 use serde_json::Value;
 
 use crate::navidrome::ids;
-use crate::navidrome::models::ArtistId3;
+use crate::navidrome::models::{ArtistId3, StarredArtist};
 
 use super::artist_pic_url;
 
@@ -14,6 +14,20 @@ pub fn artist_from_tidal(v: &Value) -> Option<ArtistId3> {
         name,
         cover_art: v["picture"].as_str().map(|p| artist_pic_url(p, 480)),
         album_count: v["albumCount"].as_u64().map(|n| n as u32),
+    })
+}
+
+// getStarred's legacy artist: name and picture only, plus the favorite time.
+// Favorites wrap each artist in { item, created }.
+pub fn favorite_artist_from_tidal(entry: &Value) -> Option<StarredArtist> {
+    let item = &entry["item"];
+    let id = item["id"].as_u64()?;
+    let name = item["name"].as_str()?.to_string();
+    Some(StarredArtist {
+        id: ids::encode_artist(id),
+        name,
+        cover_art: item["picture"].as_str().map(|p| artist_pic_url(p, 480)),
+        starred: entry["created"].as_str().map(String::from),
     })
 }
 

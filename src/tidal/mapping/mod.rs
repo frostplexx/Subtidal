@@ -14,7 +14,7 @@ pub mod playlist;
 pub mod song;
 
 pub use album::{album_from_tidal, favorite_album_from_tidal};
-pub use artist::artist_from_tidal;
+pub use artist::{artist_from_tidal, favorite_artist_from_tidal};
 pub use playlist::playlist_from_tidal;
 pub use song::song_from_track;
 
