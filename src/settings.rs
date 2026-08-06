@@ -17,7 +17,7 @@ pub struct Settings {
 }
 
 // Builds the settings from ./settings.toml and APP_* env vars.
-// Eg.. `APP_PASSWORD=x ./target/debug/HighTide` would override the password.
+// Eg.. `APP_PASSWORD=x ./target/debug/subtidal` would override the password.
 pub fn load_settings() -> Settings {
     Config::builder()
         // Add in `./settings.toml`

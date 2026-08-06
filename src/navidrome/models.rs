@@ -175,7 +175,7 @@ mod tests {
             inner: SubsonicBody {
                 status: "ok",
                 version: "1.16.1",
-                server_type: "HighTide",
+                server_type: "Subtidal",
                 server_version: "0.1.0",
                 open_subsonic: true,
                 data: PingResponse {},

@@ -1,4 +1,4 @@
-# HighTide server settings
+# subtidal server settings
 username = "admin"
 password = "admin"
 port = 8000

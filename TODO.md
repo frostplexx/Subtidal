@@ -60,7 +60,7 @@
 
 - [x] Fix device-auth parsing — Tidal returns camelCase JSON (deviceCode, userId); added serde(rename_all = "camelCase") to DeviceAuth and Session
 - [x] Detect web-player client_ids — sub_status 1002 / "not a Limited Input Device client" → clear auth error instead of panic
-- [x] Store tokens in macOS Keychain — keyring crate v4.1.6, service HighTide/account tidal; removed plaintext tidal_tokens.json
+- [x] Store tokens in macOS Keychain — keyring crate v4.1.6, service Subtidal/account tidal; removed plaintext tidal_tokens.json
 - [x] Auto-present login at startup — no login CLI arg; needs_login() checks keyring, runs device-code flow when missing/expired
 - [x] Add Tidal client — device-code login, token refresh, cached authenticated GETs, stream URL fetch
 - [x] Embed Tidal credentials XOR-obfuscated — scripts/gen_embedded.py generates src/tidal/embedded.rs; real values embedded

@@ -14,7 +14,7 @@ fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {
         inner: SubsonicBody {
             status: "ok",
             version: "1.16.1",
-            server_type: "HighTide",
+            server_type: "Subtidal",
             server_version: "0.1.0",
             open_subsonic: true,
             data,
@@ -27,7 +27,7 @@ fn fail(code: u32, message: &'static str) -> warp::reply::Json {
         inner: SubsonicErrorBody {
             status: "failed",
             version: "1.16.1",
-            server_type: "HighTide",
+            server_type: "Subtidal",
             server_version: "0.1.0",
             open_subsonic: true,
             error: SubsonicError { code, message },

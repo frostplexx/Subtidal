@@ -18,7 +18,7 @@ use super::embedded;
 
 const AUTH_URL: &str = "https://auth.tidal.com/v1/oauth2";
 const API_URL: &str = "https://api.tidal.com/v1";
-const KEYRING_SERVICE: &str = "HighTide";
+const KEYRING_SERVICE: &str = "Subtidal";
 const KEYRING_USER: &str = "tidal";
 const SCOPE: &str = "r_usr w_usr w_sub";
 
@@ -39,7 +39,7 @@ impl std::fmt::Display for Error {
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Auth(msg) => write!(f, "auth error: {msg}"),
             Error::NotLoggedIn => {
-                write!(f, "not logged in. run `HighTide login` first")
+                write!(f, "not logged in. run `subtidal login` first")
             }
         }
     }
@@ -118,7 +118,7 @@ pub struct TidalClient {
 impl TidalClient {
     pub fn new(settings: &Settings) -> Self {
         let http = reqwest::Client::builder()
-            .user_agent("HighTide/0.1")
+            .user_agent("Subtidal/0.1")
             .build()
             .expect("failed to build reqwest client");
         let (client_id, client_secret) = match &settings.tidal_client_id {
@@ -155,11 +155,11 @@ impl TidalClient {
         out
     }
 
-    // Tokens live in the OS keyring (macOS Keychain). Set HIGHTIDE_TOKEN_FILE
+    // Tokens live in the OS keyring (macOS Keychain). Set SUBTIDAL_TOKEN_FILE
     // during development to store them in a file instead, skipping the
     // Keychain prompt that repeats on every rebuild.
     fn token_file_override() -> Option<std::path::PathBuf> {
-        std::env::var_os("HIGHTIDE_TOKEN_FILE").map(std::path::PathBuf::from)
+        std::env::var_os("SUBTIDAL_TOKEN_FILE").map(std::path::PathBuf::from)
     }
 
     fn keyring_entry(&self) -> Result<Entry, Error> {

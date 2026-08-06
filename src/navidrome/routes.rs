@@ -1,15 +1,17 @@
 use super::handlers;
+use super::log::{logged, named};
 use super::params::QueryParams;
 use warp::Filter;
 
 // A function to build our routes
 pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    ping()
-        .or(get_user())
-        .or(search3())
-        .or(get_cover_art())
-        .or(fallback())
-        .with(warp::log("hightide"))
+    logged(
+        ping()
+            .or(get_user())
+            .or(search3())
+            .or(get_cover_art())
+            .or(fallback()),
+    )
 }
 
 // A route to handle the OpenSubsonic ping endpoint
@@ -19,6 +21,7 @@ fn ping() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + 
         .unify()
         .and(warp::get())
         .and_then(handlers::ping)
+        .map(named("ping"))
 }
 
 fn get_user() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
@@ -28,6 +31,7 @@ fn get_user() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection
         .and(warp::get())
         .and(warp::query::<QueryParams>())
         .and_then(handlers::get_user)
+        .map(named("getUser"))
 }
 
 fn search3() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
@@ -37,6 +41,7 @@ fn search3() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection>
         .and(warp::get())
         .and(warp::query::<QueryParams>())
         .and_then(handlers::search3)
+        .map(named("search3"))
 }
 
 fn get_cover_art() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
@@ -46,19 +51,16 @@ fn get_cover_art() -> impl Filter<Extract = impl warp::Reply, Error = warp::Reje
         .and(warp::get())
         .and(warp::query::<QueryParams>())
         .and_then(handlers::get_cover_art)
+        .map(named("getCoverArt"))
 }
 
-// Last resort: log any /rest/ endpoint the server does not map yet.
-// Keeps 404 as the status; the warning shows what clients are asking for.
+// Last resort: any endpoint the server does not map yet.
+// Keeps 404 as the status; the log wrapper shows what clients ask for.
 fn fallback() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
-    warp::any().and(warp::path::tail()).and_then(|tail: warp::path::Tail| async move {
-        let path = format!("/{}", tail.as_str());
-        if path.starts_with("/rest/") {
-            tracing::warn!("unmapped endpoint: {path}");
-        } else {
-            tracing::debug!("unmapped path: {path}");
-        }
-        let reply = warp::reply::with_status(warp::reply(), warp::http::StatusCode::NOT_FOUND);
-        Ok::<_, warp::Rejection>(reply)
-    })
+    warp::any()
+        .and_then(|| async move {
+            let reply = warp::reply::with_status(warp::reply(), warp::http::StatusCode::NOT_FOUND);
+            Ok::<_, warp::Rejection>(reply)
+        })
+        .map(named("fallback"))
 }
