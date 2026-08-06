@@ -203,6 +203,18 @@ pub struct JukeboxPlaylist {
     pub entry: Vec<Child>,
 }
 
+// getTopSongs data: { topSongs: { song: [ Child ] } }
+#[derive(Serialize)]
+pub struct TopSongsResponse {
+    #[serde(rename = "topSongs")]
+    pub top_songs: TopSongs,
+}
+
+#[derive(Serialize)]
+pub struct TopSongs {
+    pub song: Vec<Child>,
+}
+
 // Subsonic child (song entry). Optional fields omitted when unknown.
 // The OpenSubsonic schema marks contentType, suffix, size, path, created
 // and isVideo as required; Feishin's song normalizer dereferences
@@ -315,6 +327,15 @@ pub struct ArtistId3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn top_songs_wraps_song_array() {
+        let resp = TopSongsResponse {
+            top_songs: TopSongs { song: vec![] },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, r##"{"topSongs":{"song":[]}}"##);
+    }
 
     #[test]
     fn artist_with_albums_flattens_artist_fields() {

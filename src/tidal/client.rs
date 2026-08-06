@@ -492,6 +492,17 @@ impl TidalClient {
         .await
     }
 
+    // An artist's most popular tracks. Backs getTopSongs.
+    pub async fn artist_top_tracks(&self, artist_id: u64, limit: u32) -> Result<Value, Error> {
+        let limit = limit.to_string();
+        self.get_json_q(
+            &format!("/artists/{artist_id}/toptracks"),
+            &[("limit", limit.as_str()), ("offset", "0")],
+            &self.meta_cache,
+        )
+        .await
+    }
+
     pub async fn search(&self, query: &str) -> Result<Value, Error> {
         // limit caps each section's page.
         self.get_json_q(

@@ -50,6 +50,10 @@ pub struct QueryParams {
     // getCoverArt (single id) / jukeboxControl add+set (many ids)
     #[serde(default)]
     pub id: IdList,
+    // getTopSongs: artist name, or the artist id via the topSongsByArtistId
+    // extension; count defaults to 50
+    pub artist: Option<String>,
+    pub count: Option<u32>,
     // jukeboxControl
     pub action: Option<String>,
     pub index: Option<u32>,

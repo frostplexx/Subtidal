@@ -1,0 +1,1006 @@
+import { z } from 'zod';
+
+const baseResponse = z.object({
+    'subsonic-response': z.object({
+        status: z.string(),
+        version: z.string(),
+    }),
+});
+
+const userParameters = z.object({
+    username: z.string(),
+});
+
+const transcodeDecisionParameters = z.object({
+    mediaId: z.string(),
+    mediaType: z.enum(['song', 'podcast']),
+});
+
+const getTranscodeStreamParameters = z.object({
+    mediaId: z.string(),
+    mediaType: z.enum(['song', 'podcast']),
+    offset: z.number().optional(),
+    transcodeParams: z.string(),
+});
+
+const codecProfileLimitation = z.object({
+    comparison: z.string(),
+    name: z.string(),
+    required: z.boolean().optional(),
+    values: z.array(z.string()),
+});
+
+const directPlayProfile = z.object({
+    audioCodecs: z.array(z.string()),
+    containers: z.array(z.string()),
+    maxAudioChannels: z.number().optional(),
+    protocols: z.array(z.string()),
+});
+
+const transcodingProfile = z.object({
+    audioCodec: z.string(),
+    container: z.string(),
+    maxAudioChannels: z.number().optional(),
+    protocol: z.string(),
+});
+
+const codecProfile = z.object({
+    limitations: z.array(codecProfileLimitation).optional(),
+    name: z.string(),
+    type: z.string(),
+});
+
+const transcodeDecisionRequestBody = z.object({
+    codecProfiles: z.array(codecProfile).optional(),
+    directPlayProfiles: z.array(directPlayProfile).optional(),
+    maxAudioBitrate: z.number().optional(),
+    maxTranscodingAudioBitrate: z.number().optional(),
+    name: z.string(),
+    platform: z.string(),
+    transcodingProfiles: z.array(transcodingProfile).optional(),
+});
+
+const streamDetails = z.object({
+    audioBitdepth: z.number().optional(),
+    audioBitrate: z.number().optional(),
+    audioChannels: z.number().optional(),
+    audioProfile: z.string().optional(),
+    audioSamplerate: z.number().optional(),
+    codec: z.string().optional(),
+    container: z.string().optional(),
+    protocol: z.string().optional(),
+});
+
+const transcodeDecision = z.object({
+    canDirectPlay: z.boolean(),
+    canTranscode: z.boolean(),
+    errorReason: z.string().optional(),
+    sourceStream: streamDetails.optional(),
+    transcodeParams: z.string().optional(),
+    transcodeReason: z.array(z.string()).optional(),
+    transcodeStream: streamDetails.optional(),
+});
+
+const getTranscodeDecision = z.object({
+    transcodeDecision,
+});
+
+const user = z.object({
+    user: z.object({
+        adminRole: z.boolean(),
+        commentRole: z.boolean(),
+        coverArtRole: z.boolean(),
+        downloadRole: z.boolean(),
+        folder: z.string().array(),
+        jukeboxRole: z.boolean(),
+        playlistRole: z.boolean(),
+        podcastRole: z.boolean(),
+        scrobblingEnabled: z.boolean(),
+        settingsRole: z.boolean(),
+        shareRole: z.boolean(),
+        streamRole: z.boolean(),
+        uploadRole: z.boolean(),
+        username: z.string(),
+    }),
+});
+
+const authenticate = user;
+
+const authenticateParameters = z.object({
+    c: z.string(),
+    f: z.string(),
+    p: z.string().optional(),
+    s: z.string().optional(),
+    t: z.string().optional(),
+    u: z.string(),
+    username: z.string(),
+    v: z.string(),
+});
+
+const id = z.number().or(z.string());
+
+const createFavoriteParameters = z.object({
+    albumId: z.array(z.string()).optional(),
+    artistId: z.array(z.string()).optional(),
+    id: z.array(z.string()).optional(),
+});
+
+const createFavorite = z.null();
+
+const removeFavoriteParameters = z.object({
+    albumId: z.array(z.string()).optional(),
+    artistId: z.array(z.string()).optional(),
+    id: z.array(z.string()).optional(),
+});
+
+const removeFavorite = z.null();
+
+const setRatingParameters = z.object({
+    id: z.string(),
+    rating: z.number(),
+});
+
+const setRating = z.null();
+
+const musicFolder = z.object({
+    id,
+    name: z.string(),
+});
+
+const musicFolderList = z.object({
+    musicFolders: z.object({
+        musicFolder: z.array(musicFolder),
+    }),
+});
+
+const songGain = z.object({
+    albumGain: z.number().optional(),
+    albumPeak: z.number().optional(),
+    trackGain: z.number().optional(),
+    trackPeak: z.number().optional(),
+});
+
+const genreItem = z.object({
+    name: z.string(),
+});
+
+const simpleArtist = z.object({
+    id: z.string(),
+    name: z.string(),
+});
+
+const contributor = z.object({
+    artist: simpleArtist,
+    role: z.string(),
+    subRole: z.string().optional(),
+});
+
+const song = z.object({
+    album: z.string().optional(),
+    albumArtists: z.array(simpleArtist),
+    albumId: id.optional(),
+    artist: z.string().optional(),
+    artistId: id.optional(),
+    artists: z.array(simpleArtist),
+    averageRating: z.number().optional(),
+    bitDepth: z.number().optional(),
+    bitRate: z.number().optional(),
+    bpm: z.number().optional(),
+    channelCount: z.number().optional(),
+    contentType: z.string(),
+    contributors: z.array(contributor).optional(),
+    coverArt: z.string().optional(),
+    created: z.string(),
+    discNumber: z.number(),
+    duration: z.number().optional(),
+    explicitStatus: z.string().optional(),
+    genre: z.string().optional(),
+    genres: z.array(genreItem).optional(),
+    id,
+    isDir: z.boolean(),
+    isVideo: z.boolean(),
+    musicBrainzId: z.string().optional(),
+    parent: z.string(),
+    path: z.string(),
+    playCount: z.number().optional(),
+    replayGain: songGain.optional(),
+    samplingRate: z.number().optional(),
+    size: z.number(),
+    starred: z.boolean().optional(),
+    suffix: z.string(),
+    title: z.string(),
+    track: z.number().optional(),
+    type: z.string(),
+    userRating: z.number().optional(),
+    year: z.number().optional(),
+});
+
+const recordLabel = z.object({
+    name: z.string(),
+});
+
+const album = z.object({
+    album: z.string(),
+    artist: z.string(),
+    artistId: id,
+    artists: z.array(simpleArtist),
+    contributors: z.array(contributor).optional(),
+    coverArt: z.string(),
+    created: z.string(),
+    discTitles: z
+        .array(
+            z.object({
+                disc: z.number(),
+                title: z.string(),
+            }),
+        )
+        .optional(),
+    duration: z.number(),
+    explicitStatus: z.string().optional(),
+    genre: z.string().optional(),
+    genres: z.array(genreItem).optional(),
+    id,
+    isCompilation: z.boolean().optional(),
+    isDir: z.boolean(),
+    isVideo: z.boolean(),
+    name: z.string(),
+    parent: z.string(),
+    recordLabels: z.array(recordLabel).optional(),
+    releaseDate: z.object({ day: z.number(), month: z.number(), year: z.number() }).optional(),
+    releaseTypes: z.array(z.string()).optional(),
+    song: z.array(song),
+    songCount: z.number(),
+    starred: z.boolean().optional(),
+    title: z.string(),
+    userRating: z.number().optional(),
+    version: z.string().optional(),
+    year: z.number().optional(),
+});
+
+const albumListEntry = album.omit({
+    song: true,
+});
+
+const albumListParameters = z.object({
+    fromYear: z.number().optional(),
+    genre: z.string().optional(),
+    musicFolderId: z.string().optional(),
+    offset: z.number().optional(),
+    size: z.number().optional(),
+    toYear: z.number().optional(),
+    type: z.string().optional(),
+});
+
+const albumList = z.array(album.omit({ song: true }));
+
+const albumArtist = z.object({
+    album: z.array(album).optional(),
+    albumCount: z.string(),
+    artistImageUrl: z.string().optional(),
+    coverArt: z.string().optional(),
+    id,
+    name: z.string(),
+    roles: z.array(z.string()).optional(),
+    starred: z.string().optional(),
+});
+
+const albumArtistList = z.object({
+    artist: z.array(albumArtist),
+    name: z.string(),
+});
+
+const artistListEntry = albumArtist.pick({
+    albumCount: true,
+    coverArt: true,
+    id: true,
+    name: true,
+    roles: true,
+    starred: true,
+});
+
+const artistInfoParameters = z.object({
+    count: z.number().optional(),
+    id: z.string(),
+    includeNotPresent: z.boolean().optional(),
+});
+
+const artistInfo = z.object({
+    artistInfo: z.object({
+        biography: z.string().optional(),
+        largeImageUrl: z.string().optional(),
+        lastFmUrl: z.string().optional(),
+        mediumImageUrl: z.string().optional(),
+        musicBrainzId: z.string().optional(),
+        similarArtist: z.array(
+            z.object({
+                albumCount: z.string(),
+                artistImageUrl: z.string().optional(),
+                coverArt: z.string().optional(),
+                id: z.string(),
+                name: z.string(),
+                starred: z.string().optional(),
+                userRating: z.number().optional(),
+            }),
+        ),
+        smallImageUrl: z.string().optional(),
+    }),
+});
+
+const topSongsListParameters = z.object({
+    artist: z.string(), // The name of the artist, not the artist ID
+    count: z.number().optional(),
+});
+
+const topSongsList = z.object({
+    topSongs: z
+        .object({
+            song: z.array(song),
+        })
+        .optional(),
+});
+
+const scrobbleParameters = z.object({
+    id: z.string(),
+    submission: z.boolean().optional(),
+    time: z.number().optional(), // The time (in milliseconds since 1 Jan 1970) at which the song was listened to.
+});
+
+const scrobble = z.null();
+
+const scanStatusBody = z.object({
+    count: z.number(),
+    folderCount: z.number(),
+    lastScan: z.string().optional(),
+    scanning: z.boolean(),
+});
+
+const startScanParameters = z.object({});
+const startScan = z.object({ scanStatus: scanStatusBody });
+
+const getScanStatusParameters = z.object({});
+const getScanStatus = z.object({ scanStatus: scanStatusBody });
+
+const search3 = z.object({
+    searchResult3: z
+        .object({
+            album: z.array(album).optional(),
+            artist: z.array(albumArtist).optional(),
+            song: z.array(song).optional(),
+        })
+        .optional(),
+});
+
+const search3Parameters = z.object({
+    albumCount: z.number().optional(),
+    albumOffset: z.number().optional(),
+    artistCount: z.number().optional(),
+    artistOffset: z.number().optional(),
+    musicFolderId: z.string().optional(),
+    query: z.string().optional(),
+    songCount: z.number().optional(),
+    songOffset: z.number().optional(),
+});
+
+const randomSongListParameters = z.object({
+    fromYear: z.number().optional(),
+    genre: z.string().optional(),
+    musicFolderId: z.string().optional(),
+    size: z.number().optional(),
+    toYear: z.number().optional(),
+});
+
+const randomSongList = z.object({
+    randomSongs: z
+        .object({
+            song: z.array(song),
+        })
+        .optional(),
+});
+
+const ping = z.object({
+    openSubsonic: z.boolean().optional(),
+    serverVersion: z.string().optional(),
+    version: z.string(),
+});
+
+const extension = z.object({
+    name: z.string(),
+    versions: z.number().array(),
+});
+
+const serverInfo = z.object({
+    openSubsonicExtensions: z.array(extension).optional(),
+});
+
+const structuredLyricsParameters = z.object({
+    enhanced: z.boolean().optional(),
+    id: z.string(),
+});
+
+const lyricLine = z.object({
+    start: z.number().optional(),
+    value: z.string(),
+});
+
+const lyricAgentRole = z.enum(['main', 'voice', 'bg', 'group']);
+
+const lyricAgent = z.object({
+    id: z.string(),
+    name: z.string().optional(),
+    role: lyricAgentRole,
+});
+
+const lyricCue = z.object({
+    byteEnd: z.number(),
+    byteStart: z.number(),
+    end: z.number(),
+    start: z.number(),
+    value: z.string(),
+});
+
+const lyricCueLine = z.object({
+    agentId: z.string().optional(),
+    cue: z.array(lyricCue).optional(),
+    end: z.number(),
+    index: z.number(),
+    start: z.number(),
+    value: z.string(),
+});
+
+const structuredLyricKind = z.enum(['main', 'translation', 'pronunciation']);
+
+const structuredLyric = z.object({
+    agents: z.array(lyricAgent).optional(),
+    cueLine: z.array(lyricCueLine).optional(),
+    displayArtist: z.string().optional(),
+    displayTitle: z.string().optional(),
+    kind: structuredLyricKind.optional(),
+    lang: z.string(),
+    line: z.array(lyricLine),
+    offset: z.number().optional(),
+    synced: z.boolean(),
+});
+
+const structuredLyrics = z.object({
+    lyricsList: z
+        .object({
+            structuredLyrics: z.array(structuredLyric).optional(),
+        })
+        .optional(),
+});
+
+const similarSongsParameters = z.object({
+    count: z.number().optional(),
+    id: z.string(),
+});
+
+const similarSongs = z.object({
+    similarSongs: z
+        .object({
+            song: z.array(song),
+        })
+        .optional(),
+});
+
+const similarSongs2Parameters = z.object({
+    count: z.number().optional(),
+    id: z.string(),
+});
+
+const similarSongs2 = z.object({
+    similarSongs2: z
+        .object({
+            song: z.array(song),
+        })
+        .optional(),
+});
+
+export enum SubsonicExtensions {
+    FORM_POST = 'formPost',
+    INDEX_BASED_QUEUE = 'indexBasedQueue',
+    PLAYBACK_REPORT = 'playbackReport',
+    SONG_LYRICS = 'songLyrics',
+    TRANSCODE_OFFSET = 'transcodeOffset',
+    TRANSCODING = 'transcoding',
+}
+
+const updatePlaylistParameters = z.object({
+    comment: z.string().optional(),
+    name: z.string().optional(),
+    playlistId: z.string(),
+    public: z.boolean().optional(),
+    songIdToAdd: z.array(z.string()).optional(),
+    songIndexToRemove: z.array(z.string()).optional(),
+});
+
+const getStarredParameters = z.object({
+    musicFolderId: z.string().optional(),
+});
+
+const getStarred = z.object({
+    starred: z
+        .object({
+            album: z.array(albumListEntry),
+            artist: z.array(artistListEntry),
+            song: z.array(song),
+        })
+        .optional(),
+});
+
+const getSongsByGenreParameters = z.object({
+    count: z.number().optional(),
+    genre: z.string(),
+    musicFolderId: z.string().optional(),
+    offset: z.number().optional(),
+});
+
+const getSongsByGenre = z.object({
+    songsByGenre: z
+        .object({
+            song: z.array(song),
+        })
+        .optional(),
+});
+
+const getAlbumParameters = z.object({
+    id: z.string(),
+});
+
+const getAlbum = z.object({
+    album,
+});
+
+const getArtistParameters = z.object({
+    id: z.string(),
+});
+
+const getArtist = z.object({
+    artist: albumArtist,
+});
+
+const getSongParameters = z.object({
+    id: z.string(),
+});
+
+const getSong = z.object({
+    song,
+});
+
+const getArtistsParameters = z.object({
+    musicFolderId: z.string().optional(),
+});
+
+const getArtists = z.object({
+    artists: z.object({
+        ignoredArticles: z.string(),
+        index: z.array(
+            z.object({
+                artist: z.array(artistListEntry),
+                name: z.string(),
+            }),
+        ),
+    }),
+});
+
+const deletePlaylistParameters = z.object({
+    id: z.string(),
+});
+
+const createPlaylistParameters = z.object({
+    name: z.string().optional(),
+    playlistId: z.string().optional(),
+    songId: z.array(z.string()).optional(),
+});
+
+const playlist = z.object({
+    changed: z.string().optional(),
+    comment: z.string().optional(),
+    coverArt: z.string().optional(),
+    created: z.string(),
+    duration: z.number(),
+    entry: z.array(song).optional(),
+    id,
+    name: z.string(),
+    owner: z.string(),
+    public: z.boolean(),
+    songCount: z.number(),
+});
+
+const createPlaylist = z.object({
+    playlist,
+});
+
+const getPlaylistsParameters = z.object({
+    username: z.string().optional(),
+});
+
+const playlistListEntry = playlist.omit({
+    entry: true,
+});
+
+const getPlaylists = z.object({
+    playlists: z
+        .object({
+            playlist: z.array(playlistListEntry),
+        })
+        .optional(),
+});
+
+const getPlaylistParameters = z.object({
+    id: z.string(),
+});
+
+const getPlaylist = z.object({
+    playlist,
+});
+
+const genre = z.object({
+    albumCount: z.number(),
+    songCount: z.number(),
+    value: z.string(),
+});
+
+const getGenresParameters = z.object({});
+
+const getGenres = z.object({
+    genres: z
+        .object({
+            genre: z.array(genre),
+        })
+        .optional(),
+});
+
+export enum AlbumListSortType {
+    ALPHABETICAL_BY_ARTIST = 'alphabeticalByArtist',
+    ALPHABETICAL_BY_NAME = 'alphabeticalByName',
+    BY_GENRE = 'byGenre',
+    BY_YEAR = 'byYear',
+    FREQUENT = 'frequent',
+    NEWEST = 'newest',
+    RANDOM = 'random',
+    RECENT = 'recent',
+    STARRED = 'starred',
+}
+
+const getAlbumList2Parameters = z
+    .object({
+        fromYear: z.number().optional(),
+        genre: z.string().optional(),
+        musicFolderId: z.string().optional(),
+        offset: z.number().optional(),
+        size: z.number().optional(),
+        toYear: z.number().optional(),
+        type: z.nativeEnum(AlbumListSortType),
+    })
+    .refine(
+        (val) => {
+            if (val.type === AlbumListSortType.BY_YEAR) {
+                return val.fromYear !== undefined && val.toYear !== undefined;
+            }
+
+            return true;
+        },
+        {
+            message: 'Parameters "fromYear" and "toYear" are required when using sort "byYear"',
+        },
+    )
+    .refine(
+        (val) => {
+            if (val.type === AlbumListSortType.BY_GENRE) {
+                return val.genre !== undefined;
+            }
+
+            return true;
+        },
+        { message: 'Parameter "genre" is required when using sort "byGenre"' },
+    );
+
+const getAlbumList2 = z.object({
+    albumList2: z.object({
+        album: z.array(albumListEntry),
+    }),
+});
+
+const albumInfoParameters = z.object({
+    id: z.string(),
+});
+
+const albumInfo = z.object({
+    albumInfo: z.object({
+        largeImageUrl: z.string().optional(),
+        lastFmUrl: z.string().optional(),
+        mediumImageUrl: z.string().optional(),
+        musicBrainzId: z.string().optional(),
+        notes: z.string().optional(),
+        smallImageUrl: z.string().optional(),
+    }),
+});
+
+const getMusicDirectoryParameters = z.object({
+    id: z.string(),
+});
+
+const directory = z.object({
+    artist: z.string().optional(),
+    child: z.array(song).optional(),
+    coverArt: z.string().optional(),
+    id,
+    isDir: z.boolean(),
+    parent: z.string().optional(),
+    title: z.string(),
+});
+
+const getMusicDirectory = z.object({
+    directory,
+});
+
+const getIndexes = z.object({
+    indexes: z.object({
+        child: z.array(song),
+        index: z
+            .object({
+                artist: z
+                    .object({
+                        coverArt: z.string().optional(),
+                        id: z.string(),
+                        name: z.string(),
+                    })
+                    .array(),
+            })
+            .array(),
+        shortcut: z
+            .object({
+                id: z.string(),
+                name: z.string(),
+            })
+            .array(),
+    }),
+});
+
+const getIndexesParameters = z.object({
+    musicFolderId: z.string().optional(),
+});
+
+const saveQueueParameters = z.object({
+    current: z.string().optional(),
+    id: z.string().array(),
+    position: z.number().optional(),
+});
+
+const savePlayQueueByIndexParameters = z.object({
+    currentIndex: z.number().optional(),
+    id: z.string().array().optional(),
+    position: z.number().optional(),
+});
+
+const saveQueue = z.null();
+
+const playQueue = z.object({
+    playQueue: z.object({
+        changed: z.string(),
+        changedBy: z.string(),
+        current: z.string().optional(),
+        entry: song.array(),
+        position: z.number().optional(),
+        username: z.string(),
+    }),
+});
+
+const playQueueByIndex = z.object({
+    playQueueByIndex: z
+        .object({
+            changed: z.string(),
+            changedBy: z.string(),
+            currentIndex: z.number().optional(),
+            entry: song.array().optional(),
+            position: z.number().optional(),
+            username: z.string(),
+        })
+        .optional(),
+});
+
+const internetRadioStation = z.object({
+    coverArt: z.string().optional(),
+    homepageUrl: z.string().optional(),
+    id: z.string(),
+    name: z.string(),
+    streamUrl: z.string(),
+});
+
+const deleteInternetRadioStationParameters = z.object({
+    id: z.string(),
+});
+
+const deleteInternetRadioStation = z.null();
+
+const createInternetRadioStationParameters = z.object({
+    homepageUrl: z.string().optional(),
+    name: z.string(),
+    streamUrl: z.string(),
+});
+
+const createInternetRadioStation = z.null();
+
+const updateInternetRadioStationParameters = z.object({
+    homepageUrl: z.string().optional(),
+    id: z.string(),
+    name: z.string(),
+    streamUrl: z.string(),
+});
+
+const updateInternetRadioStation = z.null();
+
+const getInternetRadioStations = z.object({
+    internetRadioStations: z
+        .object({
+            internetRadioStation: z.array(internetRadioStation),
+        })
+        .optional(),
+});
+
+const reportPlaybackParameters = z.object({
+    ignoreScrobble: z.boolean().optional(),
+    mediaId: z.string(),
+    mediaType: z.enum(['song', 'podcast']),
+    playbackRate: z.number().optional(),
+    positionMs: z.number(),
+    state: z.enum(['starting', 'playing', 'paused', 'stopped']),
+});
+
+const reportPlayback = z.null();
+
+const jukeboxControlParameters = z.object({
+    action: z.enum([
+        'start',
+        'stop',
+        'skip',
+        'set',
+        'get',
+        'setGain',
+        'add',
+        'clear',
+        'remove',
+        'shuffle',
+        'status',
+    ]),
+    gain: z.number().optional(),
+    id: z.union([z.string(), z.array(z.string())]).optional(),
+    index: z.number().optional(),
+    offset: z.number().optional(),
+});
+
+const jukeboxPlaylistEntry = z.object({
+    album: z.string().optional(),
+    artist: z.string().optional(),
+    coverArt: z.string().optional(),
+    duration: z.number().optional(),
+    id: z.string(),
+    isDir: z.boolean(),
+    parent: z.string().optional(),
+    title: z.string(),
+});
+
+const jukeboxStatus = z.object({
+    currentIndex: z.number().optional(),
+    gain: z.number(),
+    playing: z.boolean(),
+    position: z.number().optional(),
+});
+
+const jukeboxPlaylist = jukeboxStatus.extend({
+    entry: z.array(jukeboxPlaylistEntry).optional(),
+});
+
+const jukeboxControl = z.object({
+    jukeboxPlaylist: jukeboxPlaylist.optional(),
+    jukeboxStatus: jukeboxStatus.optional(),
+});
+
+export const ssType = {
+    _body: {
+        getTranscodeDecision: transcodeDecisionRequestBody,
+    },
+    _parameters: {
+        albumInfo: albumInfoParameters,
+        albumList: albumListParameters,
+        artistInfo: artistInfoParameters,
+        authenticate: authenticateParameters,
+        createFavorite: createFavoriteParameters,
+        createInternetRadioStation: createInternetRadioStationParameters,
+        createPlaylist: createPlaylistParameters,
+        deleteInternetRadioStation: deleteInternetRadioStationParameters,
+        deletePlaylist: deletePlaylistParameters,
+        getAlbum: getAlbumParameters,
+        getAlbumList2: getAlbumList2Parameters,
+        getArtist: getArtistParameters,
+        getArtists: getArtistsParameters,
+        getGenre: getGenresParameters,
+        getGenres: getGenresParameters,
+        getIndexes: getIndexesParameters,
+        getMusicDirectory: getMusicDirectoryParameters,
+        getPlaylist: getPlaylistParameters,
+        getPlaylists: getPlaylistsParameters,
+        getScanStatus: getScanStatusParameters,
+        getSong: getSongParameters,
+        getSongsByGenre: getSongsByGenreParameters,
+        getStarred: getStarredParameters,
+        getTranscodeDecision: transcodeDecisionParameters,
+        getTranscodeStream: getTranscodeStreamParameters,
+        jukeboxControl: jukeboxControlParameters,
+        randomSongList: randomSongListParameters,
+        removeFavorite: removeFavoriteParameters,
+        reportPlayback: reportPlaybackParameters,
+        savePlayQueueByIndex: savePlayQueueByIndexParameters,
+        saveQueue: saveQueueParameters,
+        scrobble: scrobbleParameters,
+        search3: search3Parameters,
+        setRating: setRatingParameters,
+        similarSongs: similarSongsParameters,
+        similarSongs2: similarSongs2Parameters,
+        startScan: startScanParameters,
+        structuredLyrics: structuredLyricsParameters,
+        topSongsList: topSongsListParameters,
+        updateInternetRadioStation: updateInternetRadioStationParameters,
+        updatePlaylist: updatePlaylistParameters,
+        user: userParameters,
+    },
+    _response: {
+        album,
+        albumArtist,
+        albumArtistList,
+        albumInfo,
+        albumList,
+        albumListEntry,
+        artistInfo,
+        artistListEntry,
+        authenticate,
+        baseResponse,
+        createFavorite,
+        createInternetRadioStation,
+        createPlaylist,
+        deleteInternetRadioStation,
+        directory,
+        genre,
+        getAlbum,
+        getAlbumList2,
+        getArtist,
+        getArtists,
+        getGenres,
+        getIndexes,
+        getInternetRadioStations,
+        getMusicDirectory,
+        getPlaylist,
+        getPlaylists,
+        getScanStatus,
+        getSong,
+        getSongsByGenre,
+        getStarred,
+        getTranscodeDecision,
+        internetRadioStation,
+        jukeboxControl,
+        jukeboxPlaylist,
+        jukeboxStatus,
+        musicFolderList,
+        ping,
+        playlist,
+        playlistListEntry,
+        playQueue,
+        playQueueByIndex,
+        randomSongList,
+        removeFavorite,
+        reportPlayback,
+        saveQueue,
+        scrobble,
+        search3,
+        serverInfo,
+        setRating,
+        similarSongs,
+        similarSongs2,
+        song,
+        startScan,
+        structuredLyrics,
+        topSongsList,
+        updateInternetRadioStation,
+        user,
+    },
+};

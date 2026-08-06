@@ -7,7 +7,7 @@ use super::models::{
     GetAlbumResponse, GetArtistResponse, GetOpenSubsonicExtensionsResponse, GetUserResponse,
     JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension, PingResponse,
     Playlists, PlaylistsResponse, SearchResult3, SearchResult3Response, SubsonicBody, SubsonicError,
-    SubsonicErrorBody, SubsonicResponse, User, Child, ArtistWithAlbums,
+    SubsonicErrorBody, SubsonicResponse, TopSongs, TopSongsResponse, User, Child, ArtistWithAlbums,
 };
 use super::params::QueryParams;
 use crate::SETTINGS;
@@ -61,6 +61,7 @@ pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::R
             OpenSubsonicExtension { name: "indexBasedQueue", versions: vec![1] },
             OpenSubsonicExtension { name: "transcoding", versions: vec![1] },
             OpenSubsonicExtension { name: "playbackReport", versions: vec![1] },
+            OpenSubsonicExtension { name: "topSongsByArtistId", versions: vec![1] },
         ],
     }))
 }
@@ -317,6 +318,53 @@ pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
     artist.album_count = Some(album.len() as u32);
     Ok(ok(GetArtistResponse {
         artist: ArtistWithAlbums { artist, album },
+    }))
+}
+
+// getTopSongs: an artist's most popular tracks. The id param wins when
+// present (the topSongsByArtistId extension); a bare artist name resolves
+// through search. count defaults to 50 per the spec.
+pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let client = crate::tidal::client();
+    let artist_id = match q.id.0.first() {
+        Some(id) => match ids::decode(IdKind::Artist, id).or_else(|| id.parse().ok()) {
+            Some(n) => n,
+            None => return Ok(fail(70, "Artist not found")),
+        },
+        None => match q.artist.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => {
+                let result = match client.search(name).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!("tidal artist search failed: {e}");
+                        return Ok(fail(0, "Top songs unavailable"));
+                    }
+                };
+                match search_items(&result, "artists")
+                    .first()
+                    .and_then(|a| a["id"].as_u64())
+                {
+                    Some(n) => n,
+                    None => return Ok(fail(70, "Artist not found")),
+                }
+            }
+            _ => return Ok(fail(10, "Required parameter missing")),
+        },
+    };
+    let count = q.count.unwrap_or(50).min(500);
+    let result = match client.artist_top_tracks(artist_id, count).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal top tracks fetch failed: {e}");
+            return Ok(fail(0, "Top songs unavailable"));
+        }
+    };
+    let song: Vec<Child> = result["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(song_from_track).collect())
+        .unwrap_or_default();
+    Ok(ok(TopSongsResponse {
+        top_songs: TopSongs { song },
     }))
 }
 
