@@ -41,10 +41,6 @@ pub fn encode_artist(id: u64) -> String {
     encode(IdKind::Artist, id)
 }
 
-pub fn encode_playlist(id: u64) -> String {
-    encode(IdKind::Playlist, id)
-}
-
 // Decode an ID of the expected kind. Returns None for wrong prefixes.
 pub fn decode(kind: IdKind, s: &str) -> Option<u64> {
     let rest = s.strip_prefix(kind.prefix())?;

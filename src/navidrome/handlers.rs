@@ -1,13 +1,19 @@
+use std::sync::Mutex;
+
 use super::auth::Unauthorized;
 use super::ids::{self, IdKind};
 use super::models::{
-    GetOpenSubsonicExtensionsResponse, GetUserResponse, OpenSubsonicExtension, PingResponse,
-    SearchResult3, SearchResult3Response, SubsonicBody, SubsonicError, SubsonicErrorBody,
-    SubsonicResponse, User,
+    AlbumId3, AlbumList2, AlbumList2Response, Genres, GenresResponse, GetOpenSubsonicExtensionsResponse,
+    GetUserResponse, JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus,
+    OpenSubsonicExtension, PingResponse, Playlists, PlaylistsResponse, SearchResult3,
+    SearchResult3Response, SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse, User,
 };
 use super::params::QueryParams;
 use crate::SETTINGS;
-use crate::tidal::mapping::{album_from_tidal, artist_from_tidal, artist_pic_url, cover_url, search_items, song_from_track};
+use crate::tidal::mapping::{
+    album_from_tidal, artist_from_tidal, artist_pic_url, cover_url, favorite_album_from_tidal,
+    playlist_from_tidal, search_items, song_from_track,
+};
 use warp::reject::Rejection;
 use warp::Reply;
 
@@ -116,46 +122,66 @@ pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
     }))
 }
 
-// getCoverArt: resolve al<id>/ar<id>/bare album id to a Tidal image URL and
-// 302-redirect there. The server never proxies image bytes.
+// getCoverArt: resolve a cover id to a Tidal image URL and 302-redirect
+// there. The server never proxies image bytes. Accepted ids:
+//   - a full image URL (redirect straight through)
+//   - a bare UUID (playlist cover; playlists use UUID ids)
+//   - al<id> / ar<id> / bare album number
 pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
-    let Some(id) = q.id else {
+    let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing").into_response());
     };
     let size = q.size.unwrap_or(640);
-    let (kind, raw_id) = match ids::parse(&id) {
-        Some(kv) => kv,
-        // Bare number = raw Tidal album ID (Subsonic convention).
-        None => match id.parse::<u64>() {
-            Ok(n) => (IdKind::Album, n),
-            Err(_) => return Ok(fail(70, "Cover art not found").into_response()),
-        },
-    };
-    let uuid = match kind {
-        IdKind::Album => match crate::tidal::client().album(raw_id).await {
-            Ok(v) => v["cover"].as_str().map(String::from),
+    let (uuid, artist_pic) = if id.starts_with("http") {
+        (Some(id.clone()), false)
+    } else if id.contains('-') {
+        // Bare UUID: a playlist id. Playlist covers come from squareImage.
+        let result = match crate::tidal::client().playlist(id).await {
+            Ok(v) => v,
             Err(e) => {
-                tracing::warn!("album fetch failed: {e}");
+                tracing::warn!("playlist fetch failed: {e}");
                 return Ok(fail(0, "Cover art unavailable").into_response());
             }
-        },
-        IdKind::Artist => match crate::tidal::client().artist(raw_id).await {
-            Ok(v) => v["picture"].as_str().map(String::from),
-            Err(e) => {
-                tracing::warn!("artist fetch failed: {e}");
-                return Ok(fail(0, "Cover art unavailable").into_response());
-            }
-        },
-        // Tracks carry no own cover; playlists come with the playlists work.
-        _ => None,
+        };
+        (
+            result["squareImage"]
+                .as_str()
+                .or_else(|| result["image"].as_str())
+                .map(String::from),
+            false,
+        )
+    } else {
+        let (kind, raw_id) = match ids::parse(id) {
+            Some(kv) => kv,
+            // Bare number = raw Tidal album ID (Subsonic convention).
+            None => match id.parse::<u64>() {
+                Ok(n) => (IdKind::Album, n),
+                Err(_) => return Ok(fail(70, "Cover art not found").into_response()),
+            },
+        };
+        match kind {
+            IdKind::Album => match crate::tidal::client().album(raw_id).await {
+                Ok(v) => (v["cover"].as_str().map(String::from), false),
+                Err(e) => {
+                    tracing::warn!("album fetch failed: {e}");
+                    return Ok(fail(0, "Cover art unavailable").into_response());
+                }
+            },
+            IdKind::Artist => match crate::tidal::client().artist(raw_id).await {
+                Ok(v) => (v["picture"].as_str().map(String::from), true),
+                Err(e) => {
+                    tracing::warn!("artist fetch failed: {e}");
+                    return Ok(fail(0, "Cover art unavailable").into_response());
+                }
+            },
+            // Tracks carry no own cover.
+            _ => (None, false),
+        }
     };
     let Some(uuid) = uuid else {
         return Ok(fail(70, "Cover art not found").into_response());
     };
-    let url = match kind {
-        IdKind::Artist => artist_pic_url(&uuid, size),
-        _ => cover_url(&uuid, size),
-    };
+    let url = if artist_pic { artist_pic_url(&uuid, size) } else { cover_url(&uuid, size) };
     Ok(warp::reply::with_status(
         warp::reply::with_header(warp::reply(), "Location", url),
         warp::http::StatusCode::FOUND,
@@ -210,14 +236,248 @@ pub async fn search3(q: QueryParams) -> Result<warp::reply::Json, warp::Rejectio
     }))
 }
 
-pub async fn get_album_list2() ->  Result<warp::reply::Json, warp::Rejection> {
-    Ok(ok(serde_json::json!({
-        "albumList": [
-            {
-                "id": 1,
-                "name": "All",
-                "child": [],
+// getAlbumList2: Subsonic's album listing. The mapping mirrors the
+// working TidalDrome reference: starred/frequent/recent/byGenre map to
+// favorites, newest maps to the personalized home feed (which includes the
+// "Suggested new albums for you" section), random shuffles favorites, and
+// alphabeticalByName/alphabeticalByArtist sort favorites. byYear filters
+// favorites by fromYear. All favorites are fetched for the sorted and
+// filtered types, then paginated locally.
+pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let offset = q.offset.unwrap_or(0);
+    let size = q.size.unwrap_or(10).min(500);
+    let album: Vec<AlbumId3> = match q.r#type.as_deref() {
+        Some("starred" | "frequent" | "recent" | "byGenre") => {
+            let result = match crate::tidal::client().favorite_albums(offset, size).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("tidal favorites fetch failed: {e}");
+                    return Ok(fail(0, "Album list unavailable"));
+                }
+            };
+            favorites_albums(&result)
+        }
+        Some("random") => {
+            let result = match crate::tidal::client().favorite_albums(offset, size).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("tidal favorites fetch failed: {e}");
+                    return Ok(fail(0, "Album list unavailable"));
+                }
+            };
+            let mut album = favorites_albums(&result);
+            shuffle(&mut album);
+            album
+        }
+        Some("newest") => {
+            let result = match crate::tidal::client().home_feed("static").await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("tidal home feed fetch failed: {e}");
+                    return Ok(fail(0, "Album list unavailable"));
+                }
+            };
+            let raw = crate::tidal::client::albums_from_page(&result);
+            raw.iter()
+                .skip(offset as usize)
+                .take(size as usize)
+                .filter_map(album_from_tidal)
+                .collect()
+        }
+        Some("alphabeticalByName" | "alphabeticalByArtist" | "byYear") => {
+            let result = match crate::tidal::client().favorite_albums(0, 2000).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!("tidal favorites fetch failed: {e}");
+                    return Ok(fail(0, "Album list unavailable"));
+                }
+            };
+            let mut album = favorites_albums(&result);
+            match q.r#type.as_deref() {
+                Some("alphabeticalByName") => album.sort_by(|a, b| {
+                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                }),
+                Some("alphabeticalByArtist") => album.sort_by(|a, b| {
+                    a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
+                }),
+                _ => {
+                    let year = q.from_year.unwrap_or(0);
+                    album.retain(|a| a.year == Some(year));
+                }
             }
-        ]
-    })))
+            album.into_iter().skip(offset as usize).take(size as usize).collect()
+        }
+        _ => Vec::new(),
+    };
+    Ok(ok(AlbumList2Response {
+        album_list: AlbumList2 { album },
+    }))
+}
+
+// Map a Tidal favorites response to AlbumID3 items.
+fn favorites_albums(result: &serde_json::Value) -> Vec<AlbumId3> {
+    result["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(favorite_album_from_tidal).collect())
+        .unwrap_or_default()
+}
+
+// getPlaylists: the user's playlists, newest first. The Subsonic API takes
+// no params here; Tidal's page cap is high, so one request suffices.
+pub async fn get_playlists() -> Result<warp::reply::Json, warp::Rejection> {
+    let result = match crate::tidal::client().user_playlists(0, 500).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal playlists fetch failed: {e}");
+            return Ok(fail(0, "Playlists unavailable"));
+        }
+    };
+    let playlist = result["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(playlist_from_tidal).collect())
+        .unwrap_or_default();
+    Ok(ok(PlaylistsResponse {
+        playlists: Playlists { playlist },
+    }))
+}
+
+// getGenres: Tidal exposes no genre list, so the list is empty. Clients get
+// a valid response; counts are unavailable until a genre source exists.
+pub async fn get_genres() -> Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(GenresResponse {
+        genres: Genres { genre: vec![] },
+    }))
+}
+
+// jukeboxControl: server-side playback state machine. There is no audio
+// output, so `playing` and `position` only mirror commands; the playlist
+// holds raw Tidal track ids (t<id> or bare numbers, same as stream) and
+// resolves to real tracks on get. Entries that no longer exist are skipped.
+static JUKEBOX: Mutex<Jukebox> = Mutex::new(Jukebox {
+    playlist: Vec::new(),
+    current_index: 0,
+    playing: false,
+    gain: 0.0,
+    position: 0,
+});
+
+struct Jukebox {
+    playlist: Vec<u64>,
+    current_index: u32,
+    playing: bool,
+    gain: f32,
+    position: u32,
+}
+
+// Fisher-Yates with xorshift32; the jukebox avoids extra dependencies.
+fn shuffle<T>(playlist: &mut Vec<T>) {
+    fn next(seed: &mut u32) -> u32 {
+        let mut x = *seed;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *seed = x;
+        x
+    }
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0x9E37_79B9);
+    let len = playlist.len();
+    for i in (1..len).rev() {
+        let j = (next(&mut seed) % (i as u32 + 1)) as usize;
+        playlist.swap(i, j);
+    }
+}
+
+// jukeboxControl: state changes happen under the lock; the track lookups
+// run after it drops, so the mutex never spans an await.
+pub async fn jukebox_control(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let action = q.action.as_deref().unwrap_or("");
+    let (status, ids, with_playlist) = {
+        let mut jukebox = JUKEBOX.lock().unwrap();
+        match action {
+            "set" => {
+                jukebox.playlist = q
+                    .id
+                    .0
+                    .iter()
+                    .filter_map(|s| ids::parse_track_id(s))
+                    .collect();
+                if !jukebox.playlist.is_empty() {
+                    jukebox.current_index =
+                        jukebox.current_index.min((jukebox.playlist.len() - 1) as u32);
+                }
+            }
+            "start" => jukebox.playing = true,
+            "stop" => jukebox.playing = false,
+            "skip" => {
+                if let Some(i) = q.index {
+                    if !jukebox.playlist.is_empty() {
+                        jukebox.current_index = i.min((jukebox.playlist.len() - 1) as u32);
+                    }
+                }
+                if let Some(pos) = q.offset {
+                    jukebox.position = pos;
+                }
+            }
+            "add" => {
+                jukebox
+                    .playlist
+                    .extend(q.id.0.iter().filter_map(|s| ids::parse_track_id(s)));
+            }
+            "clear" => {
+                jukebox.playlist.clear();
+                jukebox.current_index = 0;
+                jukebox.playing = false;
+                jukebox.position = 0;
+            }
+            "remove" => {
+                if let Some(i) = q.index {
+                    let i = i as usize;
+                    if i < jukebox.playlist.len() {
+                        jukebox.playlist.remove(i);
+                    }
+                }
+            }
+            "shuffle" => shuffle(&mut jukebox.playlist),
+            "setGain" => {
+                if let Some(g) = q.gain {
+                    jukebox.gain = g.clamp(0.0, 1.0);
+                }
+            }
+            "get" | "status" => {}
+            _ => return Ok(fail(0, "Unknown jukebox action")),
+        }
+        (
+            JukeboxStatus {
+                current_index: jukebox.current_index,
+                playing: jukebox.playing,
+                gain: jukebox.gain,
+                position: jukebox.position,
+            },
+            jukebox.playlist.clone(),
+            matches!(action, "get" | "status"),
+        )
+    };
+
+    let mut entries = Vec::new();
+    if with_playlist {
+        let client = crate::tidal::client();
+        for id in &ids {
+            match client.track(*id).await {
+                Ok(v) => {
+                    if let Some(child) = song_from_track(&v) {
+                        entries.push(child);
+                    }
+                }
+                Err(e) => tracing::warn!("jukebox track fetch failed: {e}"),
+            }
+        }
+    }
+
+    Ok(ok(JukeboxControlResponse {
+        status,
+        playlist: with_playlist.then(|| JukeboxPlaylist { entry: entries }),
+    }))
 }

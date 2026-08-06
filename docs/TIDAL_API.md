@@ -438,8 +438,13 @@ Known page slugs:
 - `pages/album?albumId={id}` — album page (`ALBUM_HEADER` → album + credits + review,
   `ALBUM_ITEMS` → paged track list with `totalNumberOfItems`)
 - `pages/artist?artistId={id}` — artist page
-- `pages/my_collection_recently_played`, `pages/suggested_new_tracks_for_you`,
-  `pages/suggested_new_albums_for_you`, `pages/show/essential_album`
+- `pages/my_collection_recently_played` — recently played (verified live)
+- `pages/show/essential_album`
+
+`pages/suggested_new_tracks_for_you` and `pages/suggested_new_albums_for_you` 404 with
+`subStatus 2001` as of 2026-08-06; sone lists them in a debug dump but they no longer
+resolve. The same content is still served inside the home feed: the v2 feed includes
+"Suggested new albums for you" and "Recommended new tracks" sections.
 
 The `viewAll` and `showMore.apiPath` values embedded in any page response are themselves
 fetchable endpoints.

@@ -1,12 +1,21 @@
 // Map Tidal v1 JSON responses to Subsonic models.
 // Tidal returns camelCase fields (confirmed against sone and live testing).
 // One module per entity; shared helpers stay here, visible to submodules.
+//
+// Where an endpoint's pieces live:
+//   tidal/client.rs      the HTTP call, returns raw serde_json::Value
+//   tidal/mapping/       Value -> Subsonic struct (this directory)
+//   navidrome/models.rs  the Subsonic response structs
+//   navidrome/handlers.rs composes the three, wraps in the envelope
+//   navidrome/routes.rs  one dispatch arm per endpoint name
 pub mod album;
 pub mod artist;
+pub mod playlist;
 pub mod song;
 
-pub use album::album_from_tidal;
+pub use album::{album_from_tidal, favorite_album_from_tidal};
 pub use artist::artist_from_tidal;
+pub use playlist::playlist_from_tidal;
 pub use song::song_from_track;
 
 use serde_json::Value;

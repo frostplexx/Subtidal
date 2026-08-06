@@ -3,6 +3,7 @@
 //   auth:   https://auth.tidal.com/v1/oauth2
 //   api:    https://api.tidal.com/v1
 //   stream: GET /tracks/{id}/playbackinfopostpaywall
+use std::collections::HashSet;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -18,6 +19,8 @@ use super::embedded;
 
 const AUTH_URL: &str = "https://auth.tidal.com/v1/oauth2";
 const API_URL: &str = "https://api.tidal.com/v1";
+const V2_URL: &str = "https://api.tidal.com/v2";
+const CLIENT_VERSION: &str = "2025.11.3";
 const KEYRING_SERVICE: &str = "Subtidal";
 const KEYRING_USER: &str = "tidal";
 const SCOPE: &str = "r_usr w_usr w_sub";
@@ -100,6 +103,9 @@ impl Tokens {
     }
 }
 
+// Stream metadata for one track. Backs the stream/download endpoint,
+// which is not wired yet.
+#[allow(dead_code)]
 pub struct StreamInfo {
     pub mime_type: String,
     pub manifest: String,
@@ -351,6 +357,13 @@ impl TidalClient {
         let Some(tokens) = self.load_tokens()? else {
             return Err(Error::NotLoggedIn);
         };
+        // A stored token that is still valid needs no refresh. This avoids a
+        // refresh round trip on every fresh process start.
+        if !tokens.expired(unix_now()) {
+            let access_token = tokens.access_token.clone();
+            *guard = Some(tokens);
+            return Ok(access_token);
+        }
         let auth = self.refresh(&tokens.refresh_token).await?;
         let updated = Tokens {
             access_token: auth.access_token,
@@ -368,6 +381,18 @@ impl TidalClient {
     // countryCode is required by most Tidal v1 endpoints, so it goes on every
     // request. The cache key includes it, keeping the lookup consistent.
     async fn get_json(&self, path: &str, cache: &Cache<String, Value>) -> Result<Value, Error> {
+        self.get_json_base(API_URL, path, cache).await
+    }
+
+    // v2 endpoints require the client-version header; get_json_base adds it
+    // whenever the base URL contains "/v2/". get_json_q_v2 passes params
+    // and is the only v2 entry point in use.
+    async fn get_json_base(
+        &self,
+        base: &str,
+        path: &str,
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
         let token = self.access_token().await?;
         let mut full = path.to_string();
         if let Some(cc) = self.country_code().await? {
@@ -377,23 +402,68 @@ impl TidalClient {
         if let Some(v) = cache.get(&full).await {
             return Ok(v);
         }
-        let resp = self
-            .http
-            .get(format!("{API_URL}{full}"))
-            .bearer_auth(token)
-            .send()
-            .await?;
+        let mut req = self.http.get(format!("{base}{full}")).bearer_auth(token);
+        if base.contains("/v2") {
+            // The v2 API rejects requests without x-tidal-client-version
+            // (400 subStatus 1002). V2_URL has no trailing slash, so check
+            // for the "/v2" marker, not "/v2/".
+            req = req.header("x-tidal-client-version", CLIENT_VERSION);
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         let body: Value = resp.json().await?;
         if !status.is_success() {
             return Err(Error::Tidal(status.as_u16(), body.to_string()));
         }
-        cache.insert(full, body.clone());
+        cache.insert(full, body.clone()).await;
         Ok(body)
+    }
+
+    // Authenticated GET with url-encoded query params. get_json appends
+    // countryCode and handles caching; the cache key covers the full query,
+    // so distinct params never collide.
+    async fn get_json_q(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        self.get_json_q_base(API_URL, path, params, cache).await
+    }
+
+    async fn get_json_q_v2(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        self.get_json_q_base(V2_URL, path, params, cache).await
+    }
+
+    async fn get_json_q_base(
+        &self,
+        base: &str,
+        path: &str,
+        params: &[(&str, &str)],
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        if params.is_empty() {
+            return self.get_json_base(base, path, cache).await;
+        }
+        let query = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, percent_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        self.get_json_base(base, &format!("{path}?{query}"), cache).await
     }
 
     pub async fn album(&self, id: u64) -> Result<Value, Error> {
         self.get_json(&format!("/albums/{id}"), &self.meta_cache).await
+    }
+
+    pub async fn track(&self, id: u64) -> Result<Value, Error> {
+        self.get_json(&format!("/tracks/{id}"), &self.meta_cache).await
     }
 
     pub async fn artist(&self, id: u64) -> Result<Value, Error> {
@@ -401,27 +471,100 @@ impl TidalClient {
     }
 
     pub async fn search(&self, query: &str) -> Result<Value, Error> {
-        let encoded = percent_encode(query);
         // limit caps each section's page.
-        let path = format!("/search?query={encoded}&limit=50");
-        self.get_json(&path, &self.search_cache).await
+        self.get_json_q(
+            "/search",
+            &[("query", query), ("limit", "50")],
+            &self.search_cache,
+        )
+        .await
+    }
+
+    // Favorited albums, newest first. Backs getAlbumList2 (type=starred).
+    // Response: { items: [{ item: {album}, created }], totalNumberOfItems, ... }
+    pub async fn favorite_albums(&self, offset: u32, limit: u32) -> Result<Value, Error> {
+        let user_id = self.user_id().await?;
+        let offset = offset.to_string();
+        let limit = limit.to_string();
+        let path = format!("/users/{user_id}/favorites/albums");
+        self.get_json_q(
+            &path,
+            &[
+                ("limit", limit.as_str()),
+                ("offset", offset.as_str()),
+                ("order", "DATE"),
+                ("orderDirection", "DESC"),
+            ],
+            &self.meta_cache,
+        )
+        .await
+    }
+
+    // The user's playlists. Backs getPlaylists. The response items are the
+    // playlist objects themselves (unlike favorites, no `item` wrapper).
+    pub async fn user_playlists(&self, offset: u32, limit: u32) -> Result<Value, Error> {
+        let user_id = self.user_id().await?;
+        let offset = offset.to_string();
+        let limit = limit.to_string();
+        let path = format!("/users/{user_id}/playlists");
+        self.get_json_q(
+            &path,
+            &[
+                ("limit", limit.as_str()),
+                ("offset", offset.as_str()),
+                ("order", "DATE"),
+                ("orderDirection", "DESC"),
+            ],
+            &self.meta_cache,
+        )
+        .await
+    }
+
+    // One playlist by UUID. Backs getCoverArt for playlist covers.
+    pub async fn playlist(&self, uuid: &str) -> Result<Value, Error> {
+        self.get_json(&format!("/playlists/{uuid}"), &self.meta_cache)
+            .await
+    }
+
+    // Personalized home feed. Backs getAlbumList2 (type=newest). The feed
+    // includes the "Suggested new albums for you" section, so the whole
+    // feed is walked and deduplicated.
+    pub async fn home_feed(&self, slug: &str) -> Result<Value, Error> {
+        self.get_json_q_v2(
+            &format!("/home/feed/{slug}"),
+            &[
+                ("deviceType", "BROWSER"),
+                ("locale", "en_US"),
+                ("platform", "WEB"),
+            ],
+            &self.meta_cache,
+        )
+        .await
     }
 
     // Tidal user profile: { username, profileName, firstName, ... }
     pub async fn user_profile(&self) -> Result<Value, Error> {
-        let token = self.access_token().await?;
-        let user_id = match self.user_id_from_tokens() {
-            Some(id) => id,
-            None => self.session_with(&token).await?.user_id,
-        };
+        let user_id = self.user_id().await?;
         self.get_json(&format!("/users/{user_id}"), &self.meta_cache)
             .await
+    }
+
+    // Resolve the logged-in user id: stored tokens, else the session.
+    async fn user_id(&self) -> Result<u64, Error> {
+        let token = self.access_token().await?;
+        match self.user_id_from_tokens() {
+            Some(id) => Ok(id),
+            None => Ok(self.session_with(&token).await?.user_id),
+        }
     }
 
     fn user_id_from_tokens(&self) -> Option<u64> {
         self.load_tokens().ok().flatten().and_then(|t| t.user_id)
     }
 
+    // Stream metadata for one track. Backs the stream/download endpoint,
+    // which is not wired yet.
+    #[allow(dead_code)]
     pub async fn stream_url(&self, track_id: u64, quality: &str) -> Result<StreamInfo, Error> {
         let token = self.access_token().await?;
         let cc = self.country_code().await?;
@@ -471,6 +614,74 @@ impl TidalClient {
     }
 }
 
+// Extract album objects from a Pages API or home-feed response. Handles
+// every documented layout: V1 rows[].modules[].pagedList.items[], V2
+// items[].items[] with { type: "ALBUM", data }, and tabs wrapping either.
+// Items wrapped as { item, type } unwrap; duplicates by numeric id drop.
+pub(crate) fn albums_from_page(page: &Value) -> Vec<Value> {
+    let mut candidates: Vec<Value> = Vec::new();
+    collect_v1_rows(page.get("rows"), &mut candidates);
+    collect_v2_sections(page.get("items"), &mut candidates);
+    if let Some(tabs) = page.get("tabs").and_then(|t| t.as_array()) {
+        for tab in tabs {
+            collect_v1_rows(tab.get("rows"), &mut candidates);
+            collect_v2_sections(tab.get("items"), &mut candidates);
+        }
+    }
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter_map(|v| {
+            let album = v.get("item").cloned().unwrap_or(v);
+            let id = album.get("id").and_then(|i| i.as_u64())?;
+            if seen.insert(id) {
+                Some(album)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+// V1 rows: rows[].modules[].pagedList.items[].
+fn collect_v1_rows(rows: Option<&Value>, out: &mut Vec<Value>) {
+    if let Some(rows) = rows.and_then(|r| r.as_array()) {
+        for row in rows {
+            if let Some(modules) = row.get("modules").and_then(|m| m.as_array()) {
+                for module in modules {
+                    if let Some(items) = module
+                        .get("pagedList")
+                        .and_then(|p| p.get("items"))
+                        .and_then(|i| i.as_array())
+                    {
+                        out.extend(items.iter().cloned());
+                    }
+                }
+            }
+        }
+    }
+}
+
+// V2 sections: items[].items[] where the item type is ALBUM.
+fn collect_v2_sections(sections: Option<&Value>, out: &mut Vec<Value>) {
+    if let Some(sections) = sections.and_then(|s| s.as_array()) {
+        for section in sections {
+            if let Some(items) = section.get("items").and_then(|i| i.as_array()) {
+                for item in items {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("ALBUM") {
+                        if let Some(data) = item.get("data") {
+                            out.push(data.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Decode a playbackinfo manifest into StreamInfo. Backs the stream
+// endpoint, which is not wired yet.
+#[allow(dead_code)]
 fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
     let mime = body["manifestMimeType"].as_str().unwrap_or("").to_string();
     let manifest_b64 = body["manifest"]
@@ -497,7 +708,9 @@ fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
     })
 }
 
-// First <BaseURL> element. TODO: full MPD parsing for segment templates.
+// First <BaseURL> element. Backs the stream endpoint, which is not wired
+// yet. TODO: full MPD parsing for segment templates.
+#[allow(dead_code)]
 fn extract_dash_url(manifest: &str) -> Option<String> {
     const OPEN: &str = "<BaseURL>";
     const CLOSE: &str = "</BaseURL>";
@@ -530,4 +743,34 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::albums_from_page;
+    use serde_json::json;
+
+    #[test]
+    fn albums_from_page_handles_v1_v2_tabs_and_dedup() {
+        let page = json!({
+            "rows": [{"modules": [{"type": "ALBUM_LIST", "pagedList": {"items": [
+                {"id": 1, "title": "One", "artist": {"id": 9, "name": "X"}},
+                {"item": {"id": 2, "title": "Two", "artist": {"id": 9, "name": "X"}}, "type": "ALBUM"}
+            ]}}]}],
+            "items": [{"type": "HORIZONTAL_LIST", "items": [
+                {"type": "ALBUM", "data": {"id": 3, "title": "Three", "artist": {"id": 9, "name": "X"}}},
+                {"type": "TRACK", "data": {"id": 4}},
+                {"type": "ALBUM", "data": {"id": 1, "title": "One duplicate", "artist": {"id": 9, "name": "X"}}}
+            ]}],
+            "tabs": [{"rows": [{"modules": [{"type": "ALBUM_LIST", "pagedList": {"items": [
+                {"id": 5, "title": "Five", "artist": {"id": 9, "name": "X"}}
+            ]}}]}], "items": [{"type": "HORIZONTAL_LIST", "items": [
+                {"type": "ALBUM", "data": {"id": 6, "title": "Six", "artist": {"id": 9, "name": "X"}}}
+            ]}]}]
+        });
+        let albums = albums_from_page(&page);
+        let ids: Vec<u64> = albums.iter().map(|a| a["id"].as_u64().unwrap()).collect();
+        // 1 appears twice (V1 and V2); tracks are skipped; tabs are walked.
+        assert_eq!(ids, vec![1, 2, 3, 5, 6]);
+    }
 }

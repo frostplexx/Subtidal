@@ -12,10 +12,11 @@ const ROUTE_HEADER: &str = "x-subtidal-route";
 const PARAMS_HEADER: &str = "x-subtidal-params";
 
 // Returns a closure that tags a reply with the route's endpoint name.
-// Apply it with `.map(named("search3"))` inside each route function.
-// The wrapper in `logged` reads and strips this header, so clients never see it.
-pub fn named<R: Reply>(name: &'static str) -> impl Fn(R) -> WithHeader<R> + Clone {
-    move |reply| warp::reply::with_header(reply, ROUTE_HEADER, name)
+// Apply it with `.map(named("search3"))` inside each route function, or with
+// a runtime name from dispatch. The wrapper in `logged` reads and strips this
+// header, so clients never see it.
+pub fn named<R: Reply>(name: &str) -> impl Fn(R) -> WithHeader<R> + Clone {
+    move |reply| warp::reply::with_header(reply, ROUTE_HEADER, name.to_string())
 }
 
 // Tag a reply with the request params (query + form body, redacted) so the

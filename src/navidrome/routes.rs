@@ -5,30 +5,12 @@ use super::params::QueryParams;
 use warp::Filter;
 use warp::Reply;
 
-// Identifies which private handler a request matched. The private() chain
-// maps every matched path to one of these; dispatch() calls the handler.
-#[derive(Clone, Copy)]
-enum Which {
-    GetUser,
-    Search3,
-    GetCoverArt,
-}
-
-impl Which {
-    fn name(self) -> &'static str {
-        match self {
-            Which::GetUser => "getUser",
-            Which::Search3 => "search3",
-            Which::GetCoverArt => "getCoverArt",
-        }
-    }
-}
-
 // A function to build our routes
 pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
     logged(
         // public() is the whitelist: only these endpoints run without
-        // authentication. Every other endpoint sits behind require_auth().
+        // authentication. Keep its names out of dispatch()'s match, since
+        // public wins by or-order and a duplicate arm would be dead code.
         public()
             .or(auth::require_auth().and(private()).and_then(dispatch))
             .unify()
@@ -45,55 +27,45 @@ fn public() -> impl Filter<Extract = (warp::reply::Response,), Error = warp::Rej
         .map(|r: warp::reply::WithHeader<warp::reply::Json>| r.into_response())
 }
 
-// Private endpoints, as path matchers. Auth runs before these match, so
-// unknown paths with bad credentials get a 40 instead of a 404.
-fn private() -> impl Filter<Extract = (Which,), Error = warp::Rejection> + Clone {
-    get_user()
-        .or(search3())
-        .unify()
-        .or(get_cover_art())
-        .unify()
-}
-
-// Matches one private path and reports which handler to call.
-fn get_user() -> impl Filter<Extract = (Which,), Error = warp::Rejection> + Clone {
-    warp::path!("rest" / "getUser")
-        .or(warp::path!("rest" / "getUser.view"))
-        .unify()
+// Private endpoints. One generic matcher covers /rest/<name> and
+// /rest/<name>.view; dispatch() looks the name up and calls the handler.
+// Auth runs before this matches, so unknown paths with bad credentials
+// get a 40 instead of a 404.
+fn private() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clone {
+    warp::path("rest")
+        .and(warp::path::param::<String>())
+        .and(warp::path::end())
         .and(warp::get().or(warp::post()).unify())
-        .map(|| Which::GetUser)
-}
-
-fn search3() -> impl Filter<Extract = (Which,), Error = warp::Rejection> + Clone {
-    warp::path!("rest" / "search3")
-        .or(warp::path!("rest" / "search3.view"))
-        .unify()
-        .and(warp::get())
-        .map(|| Which::Search3)
-}
-
-fn get_cover_art() -> impl Filter<Extract = (Which,), Error = warp::Rejection> + Clone {
-    warp::path!("rest" / "getCoverArt")
-        .or(warp::path!("rest" / "getCoverArt.view"))
-        .unify()
-        .and(warp::get())
-        .map(|| Which::GetCoverArt)
+        .map(|name: String| name.strip_suffix(".view").unwrap_or(&name).to_string())
 }
 
 // Calls the matched handler with the authenticated params, then tags the
-// reply for the log wrapper.
+// reply for the log wrapper. Unknown names reject and 404 via the fallback.
+//
+// How to add an endpoint:
+//   1. client.rs: one get_json / get_json_q method returning Value.
+//   2. params.rs: add the endpoint's query params.
+//   3. mapping/ + models.rs: conversion and Subsonic response structs.
+//   4. handlers.rs: compose params -> client -> mapping -> ok().
+//   5. Add one arm here. The .view suffix, GET+POST and the log tag come
+//      from the generic matcher. Keep names out of public().
 async fn dispatch(
     q: QueryParams,
     raw: String,
-    which: Which,
+    name: String,
 ) -> Result<warp::reply::Response, warp::Rejection> {
-    let reply = match which {
-        Which::GetUser => handlers::get_user().await?.into_response(),
-        Which::Search3 => handlers::search3(q).await?.into_response(),
-        Which::GetCoverArt => handlers::get_cover_art(q).await?.into_response(),
+    let reply = match name.as_str() {
+        "getUser" => handlers::get_user().await?.into_response(),
+        "search3" => handlers::search3(q).await?.into_response(),
+        "getCoverArt" => handlers::get_cover_art(q).await?.into_response(),
+        "getAlbumList2" => handlers::get_album_list2(q).await?.into_response(),
+        "getGenres" => handlers::get_genres().await?.into_response(),
+        "getPlaylists" => handlers::get_playlists().await?.into_response(),
+        "jukeboxControl" => handlers::jukebox_control(q).await?.into_response(),
+        _ => return Err(warp::reject::not_found()),
     };
     let reply = with_params(&raw)(reply);
-    Ok(named(which.name())(reply).into_response())
+    Ok(named(&name)(reply).into_response())
 }
 
 // A route to handle the OpenSubsonic ping endpoint
@@ -104,15 +76,6 @@ fn ping() -> impl Filter<Extract = (warp::reply::WithHeader<warp::reply::Json>,)
         .and(warp::get().or(warp::post()).unify())
         .and_then(handlers::ping)
         .map(named("ping"))
-}
-
-fn get_album_list2() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {    warp::path!("rest" / "getAlbumList2")
-        .or(warp::path!("rest" / "getAlbumList2.view"))
-        .unify()
-        .and(warp::get().or(warp::post()).unify())
-        // .and(warp::query::<QueryParams>())
-        .and_then(handlers::get_album_list2)
-        .map(named("getAlbumList2"))
 }
 
 // A route to handle the OpenSubsonic getOpenSubsonicExtensions endpoint
@@ -153,6 +116,10 @@ mod tests {
             "/rest/getUser.view",
             "/rest/search3",
             "/rest/getCoverArt",
+            "/rest/getAlbumList2",
+            "/rest/getPlaylists",
+            "/rest/getGenres",
+            "/rest/jukeboxControl",
         ] {
             let reply = warp::test::request()
                 .method("GET")
@@ -192,5 +159,13 @@ mod tests {
             .await;
         let body: serde_json::Value = serde_json::from_slice(reply.body()).unwrap();
         assert_eq!(body["subsonic-response"]["error"]["code"], 40);
+    }
+
+    // dispatch() rejects names no endpoint owns; the fallback turns that
+    // into a 404 for authenticated requests.
+    #[tokio::test]
+    async fn unknown_endpoint_name_rejects() {
+        let q = QueryParams::from_merged("").unwrap();
+        assert!(dispatch(q, String::new(), "bogus".into()).await.is_err());
     }
 }

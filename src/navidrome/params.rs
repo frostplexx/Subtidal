@@ -1,5 +1,27 @@
 use serde::Deserialize;
 
+// Repeated and single `id` params. serde_urlencoded cannot deserialize
+// Vec fields (it rejects both scalar and repeated keys with "expected a
+// sequence"), so id uses a custom visitor that accepts a single value.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct IdList(pub Vec<String>);
+
+impl<'de> Deserialize<'de> for IdList {
+    fn deserialize<D: serde::de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = IdList;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an id string")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(IdList(vec![v.to_string()]))
+            }
+        }
+        d.deserialize_any(Visitor)
+    }
+}
+
 // Query params shared by /rest/* endpoints. All optional at parse time;
 // per-endpoint and auth requirements are enforced in handlers/auth.
 #[derive(Deserialize)]
@@ -25,9 +47,25 @@ pub struct QueryParams {
     pub song_count: Option<u32>,
     #[serde(rename = "songOffset")]
     pub song_offset: Option<u32>,
-    // getCoverArt
-    pub id: Option<String>,
+    // getCoverArt (single id) / jukeboxControl add+set (many ids)
+    #[serde(default)]
+    pub id: IdList,
+    // jukeboxControl
+    pub action: Option<String>,
+    pub index: Option<u32>,
+    pub gain: Option<f32>,
+    // getAlbumList2
+    #[serde(rename = "type")]
+    pub r#type: Option<String>,
+    pub offset: Option<u32>,
+    // image/page size: getCoverArt defaults 640, getAlbumList2 defaults 20
     pub size: Option<u32>,
+    // getAlbumList2 byYear
+    #[serde(rename = "fromYear")]
+    pub from_year: Option<u32>,
+    #[serde(rename = "toYear")]
+    #[allow(dead_code)]
+    pub to_year: Option<u32>,
 }
 
 impl QueryParams {
@@ -89,5 +127,13 @@ mod tests {
     fn rejects_type_mismatch() {
         // size is u32; a non-numeric value must fail to parse.
         assert!(parse("size=abc", b"").is_err());
+    }
+
+    #[test]
+    fn parses_single_id_value() {
+        // getCoverArt sends id as a single scalar; it must deserialize into
+        // the IdList field, not fail the whole request.
+        let p = parse("id=xyz", b"").unwrap();
+        assert_eq!(p.id, IdList(vec!["xyz".to_string()]));
     }
 }
