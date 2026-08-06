@@ -1,4 +1,4 @@
-use super::auth;
+use super::auth::Unauthorized;
 use super::ids::{self, IdKind};
 use super::models::{
     GetOpenSubsonicExtensionsResponse, GetUserResponse, OpenSubsonicExtension, PingResponse,
@@ -8,6 +8,7 @@ use super::models::{
 use super::params::QueryParams;
 use crate::SETTINGS;
 use crate::tidal::mapping::{album_from_tidal, artist_from_tidal, artist_pic_url, cover_url, search_items, song_from_track};
+use warp::reject::Rejection;
 use warp::Reply;
 
 fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {
@@ -23,17 +24,6 @@ fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {
     })
 }
 
-// pub async fn get_album_list2() ->  Result<warp::reply::Json, warp::Rejection> {
-//     Ok(ok(serde_json::json!({
-//         "albumList": [
-//             {
-//                 "id": 1,
-//                 "name": "All",
-//                 "child": [],
-//             }
-//         ]
-//     })))
-// }
 
 fn fail(code: u32, message: &'static str) -> warp::reply::Json {
     warp::reply::json(&SubsonicResponse {
@@ -68,10 +58,17 @@ pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::R
     }))
 }
 
-pub async fn get_user(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    if !auth::authenticate(&q) {
-        return Ok(fail(40, "Wrong username or password"));
+// Converts middleware rejections into Subsonic error replies.
+// Any other rejection propagates to the 404 fallback route.
+pub async fn recover(r: Rejection) -> Result<warp::reply::Json, Rejection> {
+    if r.find::<Unauthorized>().is_some() {
+        Ok(fail(40, "Wrong username or password"))
+    } else {
+        Err(r)
     }
+}
+
+pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
     // The response describes the Tidal account, whatever username the
     // client passed. Fall back to the configured username when the
     // profile is unreachable.
@@ -122,9 +119,6 @@ pub async fn get_user(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
 // getCoverArt: resolve al<id>/ar<id>/bare album id to a Tidal image URL and
 // 302-redirect there. The server never proxies image bytes.
 pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
-    if !auth::authenticate(&q) {
-        return Ok(fail(40, "Wrong username or password").into_response());
-    }
     let Some(id) = q.id else {
         return Ok(fail(10, "Required parameter missing").into_response());
     };
@@ -170,9 +164,6 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
 }
 
 pub async fn search3(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    if !auth::authenticate(&q) {
-        return Ok(fail(40, "Wrong username or password"));
-    }
     let Some(query) = q.query else {
         return Ok(fail(10, "Required parameter missing"));
     };
@@ -217,4 +208,16 @@ pub async fn search3(q: QueryParams) -> Result<warp::reply::Json, warp::Rejectio
                 .collect(),
         },
     }))
+}
+
+pub async fn get_album_list2() ->  Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(serde_json::json!({
+        "albumList": [
+            {
+                "id": 1,
+                "name": "All",
+                "child": [],
+            }
+        ]
+    })))
 }
