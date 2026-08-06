@@ -215,6 +215,33 @@ pub struct TopSongs {
     pub song: Vec<Child>,
 }
 
+// getArtistInfo2 data: { artistInfo2: ArtistInfoID3 }. Images are the artist
+// portrait at the three documented sizes; musicBrainzId is empty until Tidal
+// exposes it (artist detail carries no external links today).
+#[derive(Serialize)]
+pub struct ArtistInfo2Response {
+    #[serde(rename = "artistInfo2")]
+    pub artist_info: ArtistInfo2,
+}
+
+#[derive(Serialize)]
+pub struct ArtistInfo2 {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub biography: String,
+    #[serde(rename = "musicBrainzId", skip_serializing_if = "String::is_empty")]
+    pub music_brainz_id: String,
+    #[serde(rename = "lastFmUrl", skip_serializing_if = "String::is_empty")]
+    pub last_fm_url: String,
+    #[serde(rename = "smallImageUrl", skip_serializing_if = "Option::is_none")]
+    pub small_image_url: Option<String>,
+    #[serde(rename = "mediumImageUrl", skip_serializing_if = "Option::is_none")]
+    pub medium_image_url: Option<String>,
+    #[serde(rename = "largeImageUrl", skip_serializing_if = "Option::is_none")]
+    pub large_image_url: Option<String>,
+    #[serde(rename = "similarArtist", skip_serializing_if = "Vec::is_empty")]
+    pub similar_artist: Vec<ArtistId3>,
+}
+
 // getStarred data: legacy shapes. Albums get a parent (the artist id) and
 // isDir; artists stay minimal.
 #[derive(Serialize)]
@@ -397,6 +424,28 @@ pub struct ArtistId3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artist_info2_omits_empty_and_unknown_fields() {
+        let resp = ArtistInfo2Response {
+            artist_info: ArtistInfo2 {
+                biography: "A band.".into(),
+                music_brainz_id: String::new(),
+                last_fm_url: String::new(),
+                small_image_url: Some("https://example.com/s.jpg".into()),
+                medium_image_url: None,
+                large_image_url: None,
+                similar_artist: vec![],
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        let info = &json["artistInfo2"];
+        assert_eq!(info["biography"], "A band.");
+        assert_eq!(info["smallImageUrl"], "https://example.com/s.jpg");
+        assert!(info.get("musicBrainzId").is_none());
+        assert!(info.get("largeImageUrl").is_none());
+        assert!(info.get("similarArtist").is_none());
+    }
 
     #[test]
     fn starred_and_starred2_shapes() {

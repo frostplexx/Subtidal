@@ -503,6 +503,24 @@ impl TidalClient {
         .await
     }
 
+    // An artist's biography. Backs getArtistInfo2. The text carries
+    // [wimpLink ...] wiki markup; the handler strips it.
+    pub async fn artist_bio(&self, artist_id: u64) -> Result<Value, Error> {
+        self.get_json(&format!("/artists/{artist_id}/bio"), &self.meta_cache)
+            .await
+    }
+
+    // Artists similar to the given one. Backs getArtistInfo2.
+    pub async fn artist_similar(&self, artist_id: u64, limit: u32) -> Result<Value, Error> {
+        let limit = limit.to_string();
+        self.get_json_q(
+            &format!("/artists/{artist_id}/similar"),
+            &[("limit", limit.as_str()), ("offset", "0")],
+            &self.meta_cache,
+        )
+        .await
+    }
+
     pub async fn search(&self, query: &str) -> Result<Value, Error> {
         // limit caps each section's page.
         self.get_json_q(

@@ -3,13 +3,13 @@ use std::sync::Mutex;
 use super::auth::Unauthorized;
 use super::ids::{self, IdKind};
 use super::models::{
-    AlbumId3, AlbumList2, AlbumList2Response, AlbumWithSongs, Genres, GenresResponse,
-    GetAlbumResponse, GetArtistResponse, GetOpenSubsonicExtensionsResponse, GetUserResponse,
-    JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension, PingResponse,
-    Playlists, PlaylistsResponse, SearchResult3, SearchResult3Response, Starred, Starred2,
-    Starred2Album, Starred2Artist, Starred2Response, StarredAlbum, StarredResponse, SubsonicBody,
-    SubsonicError, SubsonicErrorBody, SubsonicResponse, TopSongs, TopSongsResponse, User, Child,
-    ArtistWithAlbums,
+    AlbumId3, AlbumList2, AlbumList2Response, AlbumWithSongs, ArtistInfo2, ArtistInfo2Response,
+    Genres, GenresResponse, GetAlbumResponse, GetArtistResponse, GetOpenSubsonicExtensionsResponse,
+    GetUserResponse, JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension,
+    PingResponse, Playlists, PlaylistsResponse, SearchResult3, SearchResult3Response, Starred,
+    Starred2, Starred2Album, Starred2Artist, Starred2Response, StarredAlbum, StarredResponse,
+    SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse, TopSongs, TopSongsResponse,
+    User, Child, ArtistWithAlbums,
 };
 use super::params::QueryParams;
 use crate::SETTINGS;
@@ -368,6 +368,95 @@ pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Re
     Ok(ok(TopSongsResponse {
         top_songs: TopSongs { song },
     }))
+}
+
+// getArtistInfo2: biography, portraits, and similar artists. The id may be
+// an artist, album, or song id; albums and songs resolve through their first
+// artist. The bio carries [wimpLink ...] wiki markup, which gets stripped.
+pub async fn get_artist_info2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let Some(id) = q.id.0.first() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    let client = crate::tidal::client();
+    let artist_id = match ids::parse(id) {
+        Some((IdKind::Artist, n)) => n,
+        Some((IdKind::Album, n)) => match client.album(n).await {
+            Ok(v) => match v["artists"].get(0).and_then(|a| a["id"].as_u64()) {
+                Some(a) => a,
+                None => return Ok(fail(70, "Artist not found")),
+            },
+            Err(e) => {
+                tracing::error!("tidal album fetch failed: {e}");
+                return Ok(fail(0, "Artist info unavailable"));
+            }
+        },
+        Some((IdKind::Track, n)) => match client.track(n).await {
+            Ok(v) => match v["artists"].get(0).and_then(|a| a["id"].as_u64()) {
+                Some(a) => a,
+                None => return Ok(fail(70, "Artist not found")),
+            },
+            Err(e) => {
+                tracing::error!("tidal track fetch failed: {e}");
+                return Ok(fail(0, "Artist info unavailable"));
+            }
+        },
+        _ => match id.parse().ok() {
+            Some(n) => n,
+            None => return Ok(fail(70, "Artist not found")),
+        },
+    };
+    let count = q.count.unwrap_or(20).min(500);
+    let detail = match client.artist(artist_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal artist fetch failed: {e}");
+            return Ok(fail(0, "Artist info unavailable"));
+        }
+    };
+    let bio = match client.artist_bio(artist_id).await {
+        Ok(v) => v["text"].as_str().unwrap_or("").to_string(),
+        Err(e) => {
+            tracing::error!("tidal bio fetch failed: {e}");
+            return Ok(fail(0, "Artist info unavailable"));
+        }
+    };
+    let similar = match client.artist_similar(artist_id, count).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal similar artists fetch failed: {e}");
+            return Ok(fail(0, "Artist info unavailable"));
+        }
+    };
+    let picture = detail["picture"].as_str();
+    Ok(ok(ArtistInfo2Response {
+        artist_info: ArtistInfo2 {
+            biography: strip_wimplinks(&bio),
+            music_brainz_id: String::new(),
+            last_fm_url: String::new(),
+            small_image_url: picture.map(|p| artist_pic_url(p, 160)),
+            medium_image_url: picture.map(|p| artist_pic_url(p, 480)),
+            large_image_url: picture.map(|p| artist_pic_url(p, 750)),
+            similar_artist: similar["items"]
+                .as_array()
+                .map(|items| items.iter().filter_map(artist_from_tidal).collect())
+                .unwrap_or_default(),
+        },
+    }))
+}
+
+// Strip [wimpLink artistId=...]...[/wimpLink] wiki markup from bio text.
+fn strip_wimplinks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[wimpLink") {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        if let Some(end) = rest.find(']') {
+            rest = &rest[end + 1..];
+        }
+    }
+    out.push_str(&rest.replace("[/wimpLink]", ""));
+    out
 }
 
 // getStarred / getStarred2: the user's favorites in all three entity kinds.
