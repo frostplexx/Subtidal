@@ -140,14 +140,14 @@ impl super::TidalClient {
         }
         // Tidal returns HTTP 200 with an error payload for some failures.
         if let Ok(v) = serde_json::from_str::<Value>(&body) {
+            if v["sub_status"] == 1002 {
+                return Err(Error::Auth(
+                    "this client_id does not support the device-code flow. \
+                     use credentials from the native Android app, not the web player"
+                        .into(),
+                ));
+            }
             if v.get("sub_status").is_some() || v.get("error").is_some() {
-                if v["sub_status"] == 1002 {
-                    return Err(Error::Auth(
-                        "this client_id does not support the device-code flow. \
-                         use credentials from the native Android app, not the web player"
-                            .into(),
-                    ));
-                }
                 let msg = v["errorDescription"]
                     .as_str()
                     .or_else(|| v["error"].as_str())
@@ -252,10 +252,8 @@ impl super::TidalClient {
     // Returns a valid access token, refreshing and persisting when needed.
     pub(crate) async fn access_token(&self) -> Result<String, Error> {
         let mut guard = self.tokens.lock().await;
-        if let Some(t) = guard.as_ref() {
-            if !t.expired(unix_now()) {
-                return Ok(t.access_token.clone());
-            }
+        if let Some(t) = guard.as_ref().filter(|t| !t.expired(unix_now())) {
+            return Ok(t.access_token.clone());
         }
         let Some(tokens) = self.load_tokens()? else {
             return Err(Error::NotLoggedIn);

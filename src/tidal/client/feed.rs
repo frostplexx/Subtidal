@@ -77,10 +77,11 @@ fn collect_v2_sections(sections: Option<&Value>, out: &mut Vec<Value>) {
         for section in sections {
             if let Some(items) = section.get("items").and_then(|i| i.as_array()) {
                 for item in items {
-                    if item.get("type").and_then(|t| t.as_str()) == Some("ALBUM") {
-                        if let Some(data) = item.get("data") {
-                            out.push(data.clone());
-                        }
+                    if let (Some("ALBUM"), Some(data)) = (
+                        item.get("type").and_then(|t| t.as_str()),
+                        item.get("data"),
+                    ) {
+                        out.push(data.clone());
                     }
                 }
             }

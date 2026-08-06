@@ -28,7 +28,7 @@ struct Jukebox {
 
 // Fisher-Yates with xorshift32; the jukebox avoids extra dependencies.
 // getAlbumList2 type=random also reuses it to shuffle favorites.
-pub(crate) fn shuffle<T>(playlist: &mut Vec<T>) {
+pub(crate) fn shuffle<T>(playlist: &mut [T]) {
     fn next(seed: &mut u32) -> u32 {
         let mut x = *seed;
         x ^= x << 13;
@@ -70,10 +70,8 @@ pub async fn jukebox_control(q: QueryParams) -> Result<warp::reply::Json, warp::
             "start" => jukebox.playing = true,
             "stop" => jukebox.playing = false,
             "skip" => {
-                if let Some(i) = q.index {
-                    if !jukebox.playlist.is_empty() {
-                        jukebox.current_index = i.min((jukebox.playlist.len() - 1) as u32);
-                    }
+                if let Some(i) = q.index.filter(|_| !jukebox.playlist.is_empty()) {
+                    jukebox.current_index = i.min((jukebox.playlist.len() - 1) as u32);
                 }
                 if let Some(pos) = q.offset {
                     jukebox.position = pos;
@@ -136,6 +134,6 @@ pub async fn jukebox_control(q: QueryParams) -> Result<warp::reply::Json, warp::
 
     Ok(ok(JukeboxControlResponse {
         status,
-        playlist: with_playlist.then(|| JukeboxPlaylist { entry: entries }),
+        playlist: with_playlist.then_some(JukeboxPlaylist { entry: entries }),
     }))
 }
