@@ -16,7 +16,7 @@
 - [ ] Add getIndexes + getArtists — expose favorited artists as the library index
 - [ ] Add getSong — single track detail; Feishin calls it from song context menus
 - [ ] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum
-- [ ] Add getAlbumInfo2 / getArtistInfo2 — Feishin's album/artist views call these for info sections
+- [ ] Add getAlbumInfo2 — album info (notes/artists); Tidal has no album notes, would be mostly empty
 
 ### Lists & playlists
 
@@ -57,6 +57,8 @@
 - [ ] Delete empty src/tidal/tidal_auth.rs — unreferenced leftover, still untracked
 
 ## Done
+
+- [x] Add getArtistInfo2 — bio (wimpLink markup stripped) + portraits 160/480/750 + similarArtist via /artists/{id}/bio + /similar; id resolves artist/album/song → first artist; musicBrainzId/lastFmUrl empty (Tidal exposes neither); commits f62486c + b953f2b (strip fix)
 
 - [x] Add getStarred / getStarred2 — favorited artists, albums, songs from /favorites/{albums,artists,tracks} (parallel); favorite time → starred; getStarred legacy shapes, getStarred2 ID3 + artistImageUrl; Child gains starred field; commit 8014388
 
