@@ -33,6 +33,19 @@ pub struct SubsonicBody<T: Serialize> {
 #[derive(Serialize)]
 pub struct PingResponse {}
 
+// getOpenSubsonicExtensions data: { openSubsonicExtensions: [ { name, versions } ] }
+#[derive(Serialize)]
+pub struct GetOpenSubsonicExtensionsResponse {
+    #[serde(rename = "openSubsonicExtensions")]
+    pub extensions: Vec<OpenSubsonicExtension>,
+}
+
+#[derive(Serialize)]
+pub struct OpenSubsonicExtension {
+    pub name: &'static str,
+    pub versions: Vec<u32>,
+}
+
 // Error body: { status: "failed", ..., error: { code, message } }
 #[derive(Serialize)]
 pub struct SubsonicErrorBody {
@@ -183,5 +196,20 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.starts_with(r##"{"subsonic-response":"##));
+    }
+
+    #[test]
+    fn open_subsonic_extensions_use_versions_array() {
+        let resp = GetOpenSubsonicExtensionsResponse {
+            extensions: vec![OpenSubsonicExtension {
+                name: "transcodeOffset",
+                versions: vec![1],
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(
+            json,
+            r##"{"openSubsonicExtensions":[{"name":"transcodeOffset","versions":[1]}]}"##
+        );
     }
 }

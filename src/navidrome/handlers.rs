@@ -1,8 +1,9 @@
 use super::auth;
 use super::ids::{self, IdKind};
 use super::models::{
-    GetUserResponse, PingResponse, SearchResult3, SearchResult3Response, SubsonicBody,
-    SubsonicError, SubsonicErrorBody, SubsonicResponse, User,
+    GetOpenSubsonicExtensionsResponse, GetUserResponse, OpenSubsonicExtension, PingResponse,
+    SearchResult3, SearchResult3Response, SubsonicBody, SubsonicError, SubsonicErrorBody,
+    SubsonicResponse, User,
 };
 use super::params::QueryParams;
 use crate::SETTINGS;
@@ -22,6 +23,18 @@ fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {
     })
 }
 
+// pub async fn get_album_list2() ->  Result<warp::reply::Json, warp::Rejection> {
+//     Ok(ok(serde_json::json!({
+//         "albumList": [
+//             {
+//                 "id": 1,
+//                 "name": "All",
+//                 "child": [],
+//             }
+//         ]
+//     })))
+// }
+
 fn fail(code: u32, message: &'static str) -> warp::reply::Json {
     warp::reply::json(&SubsonicResponse {
         inner: SubsonicErrorBody {
@@ -37,6 +50,22 @@ fn fail(code: u32, message: &'static str) -> warp::reply::Json {
 
 pub async fn ping() -> Result<warp::reply::Json, warp::Rejection> {
     Ok(ok(PingResponse {}))
+}
+
+// getOpenSubsonicExtensions: advertise the OpenSubsonic extensions the server
+// supports. Mirrors Navidrome v0.63.2 (server/subsonic/opensubsonic.go).
+// Public endpoint: Navidrome serves it without authentication.
+pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(GetOpenSubsonicExtensionsResponse {
+        extensions: vec![
+            OpenSubsonicExtension { name: "transcodeOffset", versions: vec![1] },
+            OpenSubsonicExtension { name: "formPost", versions: vec![1] },
+            OpenSubsonicExtension { name: "songLyrics", versions: vec![1, 2] },
+            OpenSubsonicExtension { name: "indexBasedQueue", versions: vec![1] },
+            OpenSubsonicExtension { name: "transcoding", versions: vec![1] },
+            OpenSubsonicExtension { name: "playbackReport", versions: vec![1] },
+        ],
+    }))
 }
 
 pub async fn get_user(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
