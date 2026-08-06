@@ -26,7 +26,6 @@
 
 ### Favorites & art
 
-- [ ] Add getStarred / getStarred2 — favorited artists, albums, songs
 - [ ] Add star / unstar — mutate Tidal favorites
 
 ## Next: playback
@@ -58,6 +57,8 @@
 - [ ] Delete empty src/tidal/tidal_auth.rs — unreferenced leftover, still untracked
 
 ## Done
+
+- [x] Add getStarred / getStarred2 — favorited artists, albums, songs from /favorites/{albums,artists,tracks} (parallel); favorite time → starred; getStarred legacy shapes, getStarred2 ID3 + artistImageUrl; Child gains starred field; commit 8014388
 
 - [x] Fix album/artist covers — `coverArt` serialized as `cover_art` (missing serde rename); Feishin reads `coverArt`. Playlist covers: getCoverArt accepted only album ids; root cause was the `id` param parse (serde_urlencoded rejects Vec) breaking the whole query
 - [x] Add getTopSongs — artist's top tracks via /artists/{id}/toptracks; id param wins (topSongsByArtistId extension v1, advertised), artist name resolves via search, count defaults 50; commit 3996b56
