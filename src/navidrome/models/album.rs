@@ -1,0 +1,166 @@
+// Album models: the ID3 album, its wrappers, and the song-ful variant.
+use serde::Serialize;
+
+use super::song::Child;
+
+// getAlbumList2 data: { albumList2: { album: [ AlbumID3 ] } }
+// The wrapper object with the `album` array matches the Subsonic spec.
+#[derive(Serialize)]
+pub struct AlbumList2Response {
+    #[serde(rename = "albumList2")]
+    pub album_list: AlbumList2,
+}
+
+#[derive(Serialize)]
+pub struct AlbumList2 {
+    pub album: Vec<AlbumId3>,
+}
+
+// getAlbum data: { album: AlbumID3WithSongs }
+#[derive(Serialize)]
+pub struct GetAlbumResponse {
+    pub album: AlbumWithSongs,
+}
+
+// AlbumID3 plus its tracks. The album fields flatten from AlbumId3, so the
+// two share one field set; `song` carries the tracks in track order.
+#[derive(Serialize)]
+pub struct AlbumWithSongs {
+    #[serde(flatten)]
+    pub album: AlbumId3,
+    pub song: Vec<Child>,
+}
+
+#[derive(Serialize)]
+pub struct AlbumId3 {
+    pub id: String,
+    // Legacy aliases; the documented response repeats the name in all three.
+    pub album: String,
+    pub title: String,
+    pub name: String,
+    pub artist: String,
+    #[serde(rename = "artistId")]
+    pub artist_id: String,
+    #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
+    pub cover_art: Option<String>,
+    #[serde(rename = "songCount", skip_serializing_if = "Option::is_none")]
+    pub song_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u32>,
+    // No play tracking yet, so this is always 0, as in the documented example.
+    #[serde(rename = "playCount")]
+    pub play_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn album_list2_wraps_album_array() {
+        let resp = AlbumList2Response {
+            album_list: AlbumList2 {
+                album: vec![AlbumId3 {
+                    id: "al1".into(),
+                    album: "A".into(),
+                    title: "A".into(),
+                    name: "A".into(),
+                    artist: "X".into(),
+                    artist_id: "ar1".into(),
+                    cover_art: None,
+                    song_count: Some(20),
+                    duration: Some(4248),
+                    play_count: 0,
+                    created: Some("2021-07-22T02:09:31+00:00".into()),
+                    year: Some(2005),
+                    genre: Some("Hip-Hop".into()),
+                }],
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(
+            json,
+            r##"{"albumList2":{"album":[{"id":"al1","album":"A","title":"A","name":"A","artist":"X","artistId":"ar1","songCount":20,"duration":4248,"playCount":0,"created":"2021-07-22T02:09:31+00:00","year":2005,"genre":"Hip-Hop"}]}}"##
+        );
+    }
+
+    #[test]
+    fn album_with_songs_flattens_album_fields() {
+        let resp = GetAlbumResponse {
+            album: AlbumWithSongs {
+                album: AlbumId3 {
+                    id: "al1".into(),
+                    album: "A".into(),
+                    title: "A".into(),
+                    name: "A".into(),
+                    artist: "X".into(),
+                    artist_id: "ar1".into(),
+                    cover_art: Some("https://example.com/c.jpg".into()),
+                    song_count: Some(1),
+                    duration: Some(200),
+                    play_count: 0,
+                    created: None,
+                    year: Some(2020),
+                    genre: None,
+                },
+                song: vec![Child {
+                    id: "t9".into(),
+                    parent: "al1".into(),
+                    is_dir: false,
+                    is_video: false,
+                    title: "S".into(),
+                    album: "A".into(),
+                    artist: "X".into(),
+                    track: 1,
+                    year: Some(2020),
+                    genre: None,
+                    cover_art: None,
+                    duration: 200,
+                    disc_number: None,
+                    album_id: "al1".into(),
+                    artist_id: "ar1".into(),
+                    kind: "song",
+                    content_type: "audio/flac",
+                    suffix: "flac",
+                    size: 0,
+                    path: String::new(),
+                    created: String::new(),
+                    starred: None,
+                }],
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["album"]["id"], "al1");
+        assert_eq!(json["album"]["coverArt"], "https://example.com/c.jpg");
+        assert_eq!(json["album"]["song"][0]["contentType"], "audio/flac");
+        assert_eq!(json["album"]["song"][0]["type"], "song");
+    }
+
+    #[test]
+    fn album_id3_serializes_coverart_camelcase() {
+        let album = AlbumId3 {
+            id: "al1".into(),
+            album: "A".into(),
+            title: "A".into(),
+            name: "A".into(),
+            artist: "X".into(),
+            artist_id: "ar1".into(),
+            cover_art: Some("https://example.com/c.jpg".into()),
+            song_count: None,
+            duration: None,
+            play_count: 0,
+            created: None,
+            year: None,
+            genre: None,
+        };
+        let json = serde_json::to_value(&album).unwrap();
+        assert_eq!(json["coverArt"], "https://example.com/c.jpg");
+        assert!(json.get("cover_art").is_none());
+    }
+}
