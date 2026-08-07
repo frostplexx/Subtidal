@@ -1,6 +1,8 @@
 // Playlist models.
 use serde::Serialize;
 
+use super::song::Child;
+
 // getPlaylists data: { playlists: { playlist: [ Playlist ] } }
 #[derive(Serialize)]
 pub struct PlaylistsResponse {
@@ -35,9 +37,68 @@ pub struct Playlist {
     pub cover_art: Option<String>,
 }
 
+// getPlaylist data: { playlist: { ...Playlist fields, entry: [ Child ] } }
+#[derive(Serialize)]
+pub struct GetPlaylistResponse {
+    pub playlist: PlaylistWithSongs,
+}
+
+#[derive(Serialize)]
+pub struct PlaylistWithSongs {
+    #[serde(flatten)]
+    pub playlist: Playlist,
+    pub entry: Vec<Child>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playlist_with_songs_flattens_header_and_entry() {
+        let p = PlaylistWithSongs {
+            playlist: Playlist {
+                id: "abc-123".into(),
+                name: "Morning".into(),
+                comment: None,
+                owner: Some("Ada".into()),
+                r#public: true,
+                song_count: Some(1),
+                duration: Some(220),
+                created: None,
+                changed: None,
+                cover_art: None,
+            },
+            entry: vec![Child {
+                id: "t1".into(),
+                parent: "al2".into(),
+                is_dir: false,
+                is_video: false,
+                title: "Song One".into(),
+                album: "Album One".into(),
+                artist: "Artist A".into(),
+                track: 1,
+                year: None,
+                genre: None,
+                cover_art: None,
+                duration: 220,
+                disc_number: None,
+                album_id: "al2".into(),
+                artist_id: "ar3".into(),
+                kind: "song",
+                content_type: "audio/flac",
+                suffix: "flac",
+                size: 0,
+                path: String::new(),
+                created: String::new(),
+                starred: None,
+            }],
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.starts_with(r##"{"id":"abc-123""##));
+        assert!(json.contains(r##"title":"Song One""##));
+        assert!(json.ends_with(r##"}"##));
+    }
 
     #[test]
     fn playlist_serializes_subsonic_fields() {

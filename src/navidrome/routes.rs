@@ -72,6 +72,7 @@ async fn dispatch(
         "getStarred2" => handlers::get_starred2().await?.into_response(),
         "getGenres" => handlers::get_genres().await?.into_response(),
         "getPlaylists" => handlers::get_playlists().await?.into_response(),
+        "getPlaylist" => handlers::get_playlist(q).await?.into_response(),
         "jukeboxControl" => handlers::jukebox_control(q).await?.into_response(),
         _ => return Err(warp::reject::not_found()),
     };
@@ -140,6 +141,7 @@ mod tests {
             "/rest/getStarred",
             "/rest/getStarred2",
             "/rest/getPlaylists",
+            "/rest/getPlaylist",
             "/rest/getGenres",
             "/rest/jukeboxControl",
         ] {

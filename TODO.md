@@ -21,7 +21,7 @@
 
 ### Lists & playlists
 
-- [ ] Add getPlaylist — single playlist with its entries; Feishin's playlist detail view needs it (getPlaylists is done)
+- [x] Add getPlaylist — single playlist with its entries, paginated at 100 (Tidal's items cap); bad id → 70, missing → 10; commit <TBD>
 - [ ] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD
 - [ ] Add addToPlaylist / removeFromPlaylist — modify Tidal playlist contents
 

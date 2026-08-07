@@ -18,7 +18,7 @@ pub use favorites::{
     Starred, Starred2, Starred2Album, Starred2Artist, Starred2Response, StarredAlbum,
     StarredArtist, StarredResponse,
 };
-pub use playlist::{Playlist, Playlists, PlaylistsResponse};
+pub use playlist::{GetPlaylistResponse, Playlist, Playlists, PlaylistsResponse, PlaylistWithSongs};
 pub use search::{SearchResult3, SearchResult3Response};
 pub use song::{Child, GetSongResponse, TopSongs, TopSongsResponse};
 pub use system::{
