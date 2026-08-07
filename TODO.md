@@ -17,7 +17,7 @@
 - [ ] Add getIndexes + getArtists — expose favorited artists as the library index
 - [x] Add getSong — single track detail; Feishin calls it from song context menus
 - [ ] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum
-- [x] Add getAlbumInfo / getAlbumInfo2 — album artwork at 160/320/640; notes/musicBrainzId/lastFmUrl empty and omitted (Tidal exposes no album notes); commit <BATCH>
+- [x] Add getAlbumInfo / getAlbumInfo2 — album artwork at 160/320/640; notes/musicBrainzId/lastFmUrl empty and omitted (Tidal exposes no album notes); commit 2c8db59
 
 ### Lists & playlists
 
@@ -28,11 +28,11 @@
 - [ ] Add download — accept song/album/artist/playlist ids; a single-song download 302s to the stream; multi-item needs a decision
 - [ ] Add getShares + createShare/updateShare/deleteShare — fake empty lists (Tidal has no share backend)
 - [ ] Add getInternetRadioStations + create/update/deleteInternetRadioStation — fake empty lists
-- [x] Add getAlbumList (v1) — same list core as getAlbumList2, legacy Album shape; commit <BATCH>
-- [x] Add getSongsByGenre — favorite tracks filtered by the track's genre, offset/count; Tidal genres are sparse, so matches are rare; commit <BATCH>
-- [x] Add getSimilarSongs (v1) — same core as getSimilarSongs2 under the similarSongs wrapper; commit <BATCH>
-- [x] Add search2 — same Tidal search as search3, legacy Artist/Album shapes; commit <BATCH>
-- [x] Add getLyrics (legacy) — artist + title lookup via Tidal search, plain-text value; commit <BATCH>
+- [x] Add getAlbumList (v1) — same list core as getAlbumList2, legacy Album shape; commit 2c8db59
+- [x] Add getSongsByGenre — favorite tracks filtered by the track's genre, offset/count; Tidal genres are sparse, so matches are rare; commit 2c8db59
+- [x] Add getSimilarSongs (v1) — same core as getSimilarSongs2 under the similarSongs wrapper; commit 2c8db59
+- [x] Add search2 — same Tidal search as search3, legacy Artist/Album shapes; commit 2c8db59
+- [x] Add getLyrics (legacy) — artist + title lookup via Tidal search, plain-text value; commit 2c8db59
 
 ### Favorites & art
 
@@ -49,10 +49,10 @@
 
 ## Next: system & profile
 
-- [x] Add getLicense — always valid, like Navidrome; commit <BATCH>
-- [x] Add getUsers — the single authenticated user, like Navidrome; commit <BATCH>
-- [x] Add startScan — instant (nothing to scan); fullScan accepted and ignored; commit <BATCH>
-- [x] Add getAvatar — 302-redirects to the Tidal account picture when set (profile.picture; null on this account), else a 1x1 transparent PNG; commit <BATCH>
+- [x] Add getLicense — always valid, like Navidrome; commit 2c8db59
+- [x] Add getUsers — the single authenticated user, like Navidrome; commit 2c8db59
+- [x] Add startScan — instant (nothing to scan); fullScan accepted and ignored; commit 2c8db59
+- [x] Add getAvatar — 302-redirects to the Tidal account picture when set (profile.picture; null on this account), else a 1x1 transparent PNG; commit 2c8db59
 
 ## Next: scrobble middleware
 
