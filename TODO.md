@@ -12,7 +12,7 @@
 
 ### Browsing
 
-- [x] Add getMusicFolders — single "Tidal" folder id 1, matches getUser folder list; getScanStatus — scanning=false, count=0 (no local library; Arpeggi may prompt a scan); commit PLACEHOLDER
+- [x] Add getMusicFolders — single "Tidal" folder id 1, matches getUser folder list; getScanStatus — scanning=false, count=0 (no local library; Arpeggi may prompt a scan); commit 85e2d3a
 - [ ] Add getIndexes + getArtists — expose favorited artists as the library index
 - [x] Add getSong — single track detail; Feishin calls it from song context menus
 - [ ] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum
