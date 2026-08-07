@@ -31,6 +31,26 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
     Ok(ok(PingResponse {}))
 }
 
+// setRating: acknowledge a rating write. Tidal has no rating backend
+// for this account, so the reply is faked: validated and logged, then
+// an empty ok. rating 0 removes the rating; 1-5 sets it.
+pub async fn set_rating(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let Some(id) = q.id.0.first() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    if ids::decode(IdKind::Track, id).or_else(|| id.parse().ok()).is_none() {
+        return Ok(fail(70, "Song not found"));
+    }
+    let Some(rating) = q.rating else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    if rating > 5 {
+        return Ok(fail(70, "Invalid rating"));
+    }
+    tracing::info!("setRating id={id} rating={rating}");
+    Ok(ok(PingResponse {}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -44,6 +64,19 @@ mod tests {
             .and(warp::path::end())
             .and(warp::query::<QueryParams>())
             .and_then(scrobble)
+    }
+
+    fn rating_route() -> impl warp::Filter<Extract = (warp::reply::Json,), Error = warp::Rejection> + Clone {
+        use warp::Filter;
+        warp::path("rest")
+            .and(warp::path("setRating"))
+            .and(warp::path::end())
+            .and(warp::query::<QueryParams>())
+            .and_then(set_rating)
+    }
+
+    fn body_of(reply: &warp::http::Response<impl AsRef<[u8]>>) -> serde_json::Value {
+        serde_json::from_slice(reply.body().as_ref()).unwrap()
     }
 
     #[tokio::test]
@@ -67,5 +100,60 @@ mod tests {
         let sr = &body["subsonic-response"];
         assert_eq!(sr["status"], "ok");
         assert!(sr.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn rating_without_id_fails_with_code_10() {
+        let reply = warp::test::request()
+            .path("/rest/setRating?rating=4")
+            .reply(&rating_route())
+            .await;
+        let body = body_of(&reply);
+        assert_eq!(body["subsonic-response"]["status"], "failed");
+        assert_eq!(body["subsonic-response"]["error"]["code"], 10);
+    }
+
+    #[tokio::test]
+    async fn valid_rating_returns_ok() {
+        let reply = warp::test::request()
+            .path("/rest/setRating?id=t42&rating=4")
+            .reply(&rating_route())
+            .await;
+        let body = body_of(&reply);
+        let sr = &body["subsonic-response"];
+        assert_eq!(sr["status"], "ok");
+        assert!(sr.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn rating_of_zero_removes_and_returns_ok() {
+        let reply = warp::test::request()
+            .path("/rest/setRating?id=t42&rating=0")
+            .reply(&rating_route())
+            .await;
+        let body = body_of(&reply);
+        assert_eq!(body["subsonic-response"]["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn rating_above_five_fails_with_code_70() {
+        let reply = warp::test::request()
+            .path("/rest/setRating?id=t42&rating=6")
+            .reply(&rating_route())
+            .await;
+        let body = body_of(&reply);
+        assert_eq!(body["subsonic-response"]["status"], "failed");
+        assert_eq!(body["subsonic-response"]["error"]["code"], 70);
+    }
+
+    #[tokio::test]
+    async fn undecodable_id_fails_with_code_70() {
+        let reply = warp::test::request()
+            .path("/rest/setRating?id=abc&rating=3")
+            .reply(&rating_route())
+            .await;
+        let body = body_of(&reply);
+        assert_eq!(body["subsonic-response"]["status"], "failed");
+        assert_eq!(body["subsonic-response"]["error"]["code"], 70);
     }
 }

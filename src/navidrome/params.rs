@@ -72,6 +72,8 @@ pub struct QueryParams {
     pub state: Option<String>,
     pub playback_rate: Option<f64>,
     pub ignore_scrobble: Option<bool>,
+    // setRating: 0 removes, 1-5 sets.
+    pub rating: Option<u32>,
 }
 
 impl<'de> Deserialize<'de> for QueryParams {
@@ -139,6 +141,7 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "state" => q.state = Some(v),
         "playbackRate" => q.playback_rate = Some(v.parse().map_err(|_| E::custom("invalid playbackRate"))?),
         "ignoreScrobble" => q.ignore_scrobble = Some(v.parse().map_err(|_| E::custom("invalid ignoreScrobble"))?),
+        "rating" => q.rating = Some(v.parse().map_err(|_| E::custom("invalid rating"))?),
         _ => {}
     }
     Ok(())
