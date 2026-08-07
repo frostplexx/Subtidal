@@ -30,12 +30,12 @@
 
 ## Next: playback
 
-- [ ] Add stream endpoint — resolve Subsonic track ID to Tidal track, call playbackinfopostpaywall, serve audio
-- [ ] Rewrite DASH manifest into HLS playlist — m3u8 with EXT-X-MAP init segment pointing at Tidal CDN; zero server bandwidth; works only on HLS-sniffing clients (Symfonium, play:Sub, browsers)
+- [x] Add stream endpoint — resolve Subsonic track ID to Tidal track, call playbackinfopostpaywall, serve audio: 302-redirect to the single-file CDN URL (BTS), zero server bandwidth; quality via maxBitRate/format → tidal_quality; hi-res tracks answer segmented DASH, handler falls back to HIGH; commit PLACEHOLDER
+- [x] Map Subsonic maxBitRate to Tidal quality — 0/unspecified → LOSSLESS (cascades to what the account/track offers), 1-64 → LOW (HE-AAC 96k), 65-320 → HIGH (AAC 320k), >320 → LOSSLESS; format=flac lifts to LOSSLESS, lossy formats cap at HIGH (handlers/tracks.rs tidal_quality)
+- [ ] Rewrite DASH manifest into HLS playlist — m3u8 with EXT-X-MAP init segment pointing at Tidal CDN; zero server bandwidth; needed only for hi-res FLAC (LOW/HIGH/LOSSLESS come back as single-file BTS); works on HLS-sniffing clients
 - [ ] Add byte-proxy fallback — fetch init + segments server-side and return concatenated audio for raw-audio clients (DSub, Substreamer)
-- [ ] Map Subsonic maxBitRate to Tidal quality — 0/unspecified → LOSSLESS, <320 → HIGH, etc. (LOW/HIGH/LOSSLESS/HI_RES)
-- [ ] Parse MPD fully — segment templates and multiple representations; current extract_dash_url only grabs the first BaseURL (src/tidal/client.rs:482)
-- [ ] Set real contentType/suffix per stream — placeholder "audio/flac"/"flac" in Child until the stream URL is known (src/tidal/mapping/song.rs)
+- [ ] Parse MPD fully — segment templates and multiple representations; needed for the HLS rewrite (src/tidal/client/stream.rs keeps the raw manifest for it)
+- [ ] Set real contentType/suffix per stream — placeholder "audio/flac"/"flac" in Child; the LOSSLESS tier usually cascades to AAC, so the placeholder is wrong once streaming works (src/tidal/mapping/song.rs)
 
 ## Next: scrobble middleware
 

@@ -70,6 +70,11 @@ pub struct QueryParams {
     #[serde(rename = "toYear")]
     #[allow(dead_code)]
     pub to_year: Option<u32>,
+    // stream: Tidal has no real transcoding, so maxBitRate picks the
+    // quality tier; format is only a hint (flac lifts to LOSSLESS).
+    #[serde(rename = "maxBitRate")]
+    pub max_bit_rate: Option<u32>,
+    pub format: Option<String>,
 }
 
 impl QueryParams {
