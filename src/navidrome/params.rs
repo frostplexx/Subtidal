@@ -1,30 +1,17 @@
+// Query params shared by /rest/* endpoints. All optional at parse time;
+// per-endpoint and auth requirements are enforced in handlers/auth.
+//
+// serde_urlencoded cannot represent repeated keys (id, albumId, artistId)
+// through a derived struct — it rejects the second occurrence with
+// "duplicate field". QueryParams therefore deserializes manually: every
+// key/value pair is collected in wire order and assigned, repeats kept.
 use serde::Deserialize;
 
-// Repeated and single `id` params. serde_urlencoded cannot deserialize
-// Vec fields (it rejects both scalar and repeated keys with "expected a
-// sequence"), so id uses a custom visitor that accepts a single value.
+// One or more `id` params, in wire order.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct IdList(pub Vec<String>);
 
-impl<'de> Deserialize<'de> for IdList {
-    fn deserialize<D: serde::de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = IdList;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("an id string")
-            }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(IdList(vec![v.to_string()]))
-            }
-        }
-        d.deserialize_any(Visitor)
-    }
-}
-
-// Query params shared by /rest/* endpoints. All optional at parse time;
-// per-endpoint and auth requirements are enforced in handlers/auth.
-#[derive(Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct QueryParams {
     pub u: Option<String>,
     pub t: Option<String>,
@@ -35,21 +22,18 @@ pub struct QueryParams {
     #[allow(dead_code)]
     pub c: Option<String>,
     // search3
-    pub query: Option<String>,    #[serde(rename = "artistCount")]
+    pub query: Option<String>,
     pub artist_count: Option<u32>,
-    #[serde(rename = "artistOffset")]
     pub artist_offset: Option<u32>,
-    #[serde(rename = "albumCount")]
     pub album_count: Option<u32>,
-    #[serde(rename = "albumOffset")]
     pub album_offset: Option<u32>,
-    #[serde(rename = "songCount")]
     pub song_count: Option<u32>,
-    #[serde(rename = "songOffset")]
     pub song_offset: Option<u32>,
-    // getCoverArt (single id) / jukeboxControl add+set (many ids)
-    #[serde(default)]
+    // getCoverArt (single id) / jukeboxControl and star/unstar (many ids);
+    // id may carry t<id>, al<id>, ar<id>, or a bare number.
     pub id: IdList,
+    pub album_id: IdList,
+    pub artist_id: IdList,
     // getTopSongs: artist name, or the artist id via the topSongsByArtistId
     // extension; count defaults to 50
     pub artist: Option<String>,
@@ -59,20 +43,16 @@ pub struct QueryParams {
     pub index: Option<u32>,
     pub gain: Option<f32>,
     // getAlbumList2
-    #[serde(rename = "type")]
     pub r#type: Option<String>,
     pub offset: Option<u32>,
     // image/page size: getCoverArt defaults 640, getAlbumList2 defaults 20
     pub size: Option<u32>,
     // getAlbumList2 byYear
-    #[serde(rename = "fromYear")]
     pub from_year: Option<u32>,
-    #[serde(rename = "toYear")]
     #[allow(dead_code)]
     pub to_year: Option<u32>,
     // stream: Tidal has no real transcoding, so maxBitRate picks the
     // quality tier; format is only a hint (flac lifts to LOSSLESS).
-    #[serde(rename = "maxBitRate")]
     pub max_bit_rate: Option<u32>,
     pub format: Option<String>,
     // scrobble: playback report; time is ms since epoch, submission is
@@ -83,12 +63,72 @@ pub struct QueryParams {
     pub genre: Option<String>,
 }
 
+impl<'de> Deserialize<'de> for QueryParams {
+    fn deserialize<D: serde::de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Builder(QueryParams);
+        impl<'de> serde::de::Visitor<'de> for Builder {
+            type Value = QueryParams;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a urlencoded query string")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                mut self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while let Some((k, v)) = map.next_entry::<String, String>()? {
+                    assign(&mut self.0, &k, v)?;
+                }
+                Ok(self.0)
+            }
+        }
+        d.deserialize_map(Builder(QueryParams::default()))
+    }
+}
+
+// Assign one pair to the matching field. Unknown params are ignored, so
+// new client fields cannot break the server. Numeric fields reject
+// non-numeric values, mirroring serde's derived behavior.
+fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Result<(), E> {
+    match k {
+        "u" => q.u = Some(v),
+        "t" => q.t = Some(v),
+        "s" => q.s = Some(v),
+        "p" => q.p = Some(v),
+        "v" => q.v = Some(v),
+        "c" => q.c = Some(v),
+        "query" => q.query = Some(v),
+        "artistCount" => q.artist_count = Some(v.parse().map_err(|_| E::custom("invalid artistCount"))?),
+        "artistOffset" => q.artist_offset = Some(v.parse().map_err(|_| E::custom("invalid artistOffset"))?),
+        "albumCount" => q.album_count = Some(v.parse().map_err(|_| E::custom("invalid albumCount"))?),
+        "albumOffset" => q.album_offset = Some(v.parse().map_err(|_| E::custom("invalid albumOffset"))?),
+        "songCount" => q.song_count = Some(v.parse().map_err(|_| E::custom("invalid songCount"))?),
+        "songOffset" => q.song_offset = Some(v.parse().map_err(|_| E::custom("invalid songOffset"))?),
+        "id" => q.id.0.push(v),
+        "albumId" => q.album_id.0.push(v),
+        "artistId" => q.artist_id.0.push(v),
+        "artist" => q.artist = Some(v),
+        "count" => q.count = Some(v.parse().map_err(|_| E::custom("invalid count"))?),
+        "action" => q.action = Some(v),
+        "index" => q.index = Some(v.parse().map_err(|_| E::custom("invalid index"))?),
+        "gain" => q.gain = Some(v.parse().map_err(|_| E::custom("invalid gain"))?),
+        "type" => q.r#type = Some(v),
+        "offset" => q.offset = Some(v.parse().map_err(|_| E::custom("invalid offset"))?),
+        "size" => q.size = Some(v.parse().map_err(|_| E::custom("invalid size"))?),
+        "fromYear" => q.from_year = Some(v.parse().map_err(|_| E::custom("invalid fromYear"))?),
+        "toYear" => q.to_year = Some(v.parse().map_err(|_| E::custom("invalid toYear"))?),
+        "maxBitRate" => q.max_bit_rate = Some(v.parse().map_err(|_| E::custom("invalid maxBitRate"))?),
+        "format" => q.format = Some(v),
+        "time" => q.time = Some(v.parse().map_err(|_| E::custom("invalid time"))?),
+        "submission" => q.submission = Some(v.parse().map_err(|_| E::custom("invalid submission"))?),
+        "genre" => q.genre = Some(v),
+        _ => {}
+    }
+    Ok(())
+}
+
 impl QueryParams {
     // Merge the URL query string and a form-encoded body, then parse.
     // Subsonic clients send params either in the URL (GET) or in the
-    // body (POST, the OpenSubsonic formPost extension).
-    // Concatenate the URL query string and a form-encoded body into one
-    // urlencoded string. Clients send params in the URL (GET) or in the
     // body (POST, the OpenSubsonic formPost extension), rarely both.
     pub fn merge_raw(query: &str, body: &[u8]) -> String {
         let body = std::str::from_utf8(body).unwrap_or("");
@@ -150,6 +190,19 @@ mod tests {
         // the IdList field, not fail the whole request.
         let p = parse("id=xyz", b"").unwrap();
         assert_eq!(p.id, IdList(vec!["xyz".to_string()]));
+    }
+
+    #[test]
+    fn parses_repeated_id_values() {
+        // star/unstar and jukeboxControl send several id params.
+        let p = parse("id=t1&id=t2&id=al3", b"").unwrap();
+        assert_eq!(
+            p.id,
+            IdList(vec!["t1".to_string(), "t2".to_string(), "al3".to_string()])
+        );
+        let p = parse("id=t1&albumId=al5&albumId=6&artistId=ar7", b"").unwrap();
+        assert_eq!(p.album_id, IdList(vec!["al5".to_string(), "6".to_string()]));
+        assert_eq!(p.artist_id, IdList(vec!["ar7".to_string()]));
     }
 
     #[test]

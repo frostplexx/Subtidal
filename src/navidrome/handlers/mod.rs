@@ -19,7 +19,7 @@ pub use album::{get_album, get_album_list2};
 pub use annotate::scrobble;
 pub use artist::{get_artist, get_artist_info2, get_top_songs};
 pub use cover::get_cover_art;
-pub use favorites::{get_starred, get_starred2};
+pub use favorites::{get_starred, get_starred2, star, unstar};
 pub use jukebox::jukebox_control;
 pub use playlist::{get_genres, get_playlist, get_playlists};
 pub use search::search3;

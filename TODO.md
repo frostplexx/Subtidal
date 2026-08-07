@@ -27,7 +27,7 @@
 
 ### Favorites & art
 
-- [ ] Add star / unstar — mutate Tidal favorites
+- [x] Add star / unstar — mutate Tidal favorites; id/albumId/artistId, repeats allowed; cache invalidated on change; commit <TBD>
 
 ## Next: playback
 

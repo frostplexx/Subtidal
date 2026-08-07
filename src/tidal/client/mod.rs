@@ -17,6 +17,7 @@ use super::embedded;
 mod albums;
 mod artists;
 mod auth;
+mod favorites;
 mod feed;
 mod playlists;
 mod search;
@@ -29,6 +30,7 @@ mod tracks;
 mod users;
 
 pub(crate) use feed::albums_from_page;
+pub use favorites::FavoriteKind;
 
 const AUTH_URL: &str = "https://auth.tidal.com/v1/oauth2";
 const API_URL: &str = "https://api.tidal.com/v1";
@@ -102,6 +104,7 @@ impl TidalClient {
             meta_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(6 * 3600))
                 .max_capacity(10_000)
+                .support_invalidation_closures()
                 .build(),
             search_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(300))
