@@ -28,6 +28,14 @@ pub struct ArtistId3 {
     pub album_count: Option<u32>,
 }
 
+// getArtistInfo data: { artistInfo: ArtistInfoID3 }. Same payload as
+// getArtistInfo2, different wrapper name.
+#[derive(Serialize)]
+pub struct ArtistInfoResponse {
+    #[serde(rename = "artistInfo")]
+    pub artist_info: ArtistInfo2,
+}
+
 // getArtistInfo2 data: { artistInfo2: ArtistInfoID3 }. Images are the artist
 // portrait at the three documented sizes; musicBrainzId is empty until Tidal
 // exposes it (artist detail carries no external links today).
@@ -79,6 +87,24 @@ mod tests {
         assert!(info.get("musicBrainzId").is_none());
         assert!(info.get("largeImageUrl").is_none());
         assert!(info.get("similarArtist").is_none());
+    }
+
+    #[test]
+    fn artist_info_wraps_under_artist_info_name() {
+        let resp = ArtistInfoResponse {
+            artist_info: ArtistInfo2 {
+                biography: "A band.".into(),
+                music_brainz_id: String::new(),
+                last_fm_url: String::new(),
+                small_image_url: None,
+                medium_image_url: None,
+                large_image_url: None,
+                similar_artist: vec![],
+            },
+        };
+        let json = serde_json::to_value(&resp).unwrap();
+        assert_eq!(json["artistInfo"]["biography"], "A band.");
+        assert!(json.get("artistInfo2").is_none());
     }
 
     #[test]

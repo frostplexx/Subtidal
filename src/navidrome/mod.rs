@@ -5,3 +5,4 @@ pub mod routes;
 pub mod auth;
 pub mod params;
 pub mod ids;
+pub mod now_playing;

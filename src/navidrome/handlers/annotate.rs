@@ -1,14 +1,17 @@
-// Media annotation: scrobble. Playback reports from clients are
-// acknowledged and logged; there is no Last.fm/ListenBrainz backend yet
-// (TODO), so this is the future PlayReporter hook point.
+// Media annotation: scrobble and now-playing reports. Playback reports
+// are acknowledged and logged; there is no Last.fm/ListenBrainz backend
+// yet (TODO), so this is the future PlayReporter hook point.
 use crate::navidrome::models::PingResponse;
+use crate::navidrome::now_playing;
 use super::{fail, ok};
+use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::params::QueryParams;
 
 // scrobble: accept one or more playback reports. submission=false is a
 // now-playing notification, submission=true a real scrobble. Missing id
 // is a client error (code 10). Any id counts; Tidal tracks are not
-// looked up here.
+// looked up here. The latest report also feeds getNowPlaying; the entry
+// expires after ten minutes.
 pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     if q.id.0.is_empty() {
         return Ok(fail(10, "Required parameter missing"));
@@ -19,6 +22,11 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
             q.submission.unwrap_or(true),
             q.time
         );
+    }
+    if let Some(id) = q.id.0.last()
+        && let Some(track_id) = ids::decode(IdKind::Track, id).or_else(|| id.parse().ok())
+    {
+        now_playing::report(track_id, q.u.clone().unwrap_or_default());
     }
     Ok(ok(PingResponse {}))
 }

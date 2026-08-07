@@ -1,8 +1,8 @@
-// Artist browsing: getArtist, getTopSongs, and getArtistInfo2.
+// Artist browsing: getArtist, getTopSongs, getArtistInfo, and getArtistInfo2.
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::models::{
-    AlbumId3, ArtistInfo2, ArtistInfo2Response, ArtistWithAlbums, Child, GetArtistResponse,
-    TopSongs, TopSongsResponse,
+    AlbumId3, ArtistInfo2, ArtistInfo2Response, ArtistInfoResponse, ArtistWithAlbums, Child,
+    GetArtistResponse, TopSongs, TopSongsResponse,
 };
 use crate::navidrome::params::QueryParams;
 use super::{fail, ok};
@@ -96,12 +96,29 @@ pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Re
     }))
 }
 
+// getArtistInfo: the classic variant. Identical payload to getArtistInfo2,
+// wrapped under the artistInfo name. The id may be an artist, album, or
+// song id; albums and songs resolve through their first artist.
+pub async fn get_artist_info(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    match artist_info(q).await {
+        Ok(info) => Ok(ok(ArtistInfoResponse { artist_info: info })),
+        Err(f) => Ok(f),
+    }
+}
+
 // getArtistInfo2: biography, portraits, and similar artists. The id may be
 // an artist, album, or song id; albums and songs resolve through their first
 // artist. The bio carries [wimpLink ...] wiki markup, which gets stripped.
 pub async fn get_artist_info2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    match artist_info(q).await {
+        Ok(info) => Ok(ok(ArtistInfo2Response { artist_info: info })),
+        Err(f) => Ok(f),
+    }
+}
+
+async fn artist_info(q: QueryParams) -> Result<ArtistInfo2, warp::reply::Json> {
     let Some(id) = q.id.0.first() else {
-        return Ok(fail(10, "Required parameter missing"));
+        return Err(fail(10, "Required parameter missing"));
     };
     let client = crate::tidal::client();
     let artist_id = match ids::parse(id) {
@@ -109,26 +126,26 @@ pub async fn get_artist_info2(q: QueryParams) -> Result<warp::reply::Json, warp:
         Some((IdKind::Album, n)) => match client.album(n).await {
             Ok(v) => match v["artists"].get(0).and_then(|a| a["id"].as_u64()) {
                 Some(a) => a,
-                None => return Ok(fail(70, "Artist not found")),
+                None => return Err(fail(70, "Artist not found")),
             },
             Err(e) => {
                 tracing::error!("tidal album fetch failed: {e}");
-                return Ok(fail(0, "Artist info unavailable"));
+                return Err(fail(0, "Artist info unavailable"));
             }
         },
         Some((IdKind::Track, n)) => match client.track(n).await {
             Ok(v) => match v["artists"].get(0).and_then(|a| a["id"].as_u64()) {
                 Some(a) => a,
-                None => return Ok(fail(70, "Artist not found")),
+                None => return Err(fail(70, "Artist not found")),
             },
             Err(e) => {
                 tracing::error!("tidal track fetch failed: {e}");
-                return Ok(fail(0, "Artist info unavailable"));
+                return Err(fail(0, "Artist info unavailable"));
             }
         },
         _ => match id.parse().ok() {
             Some(n) => n,
-            None => return Ok(fail(70, "Artist not found")),
+            None => return Err(fail(70, "Artist not found")),
         },
     };
     let count = q.count.unwrap_or(20).min(500);
@@ -136,38 +153,36 @@ pub async fn get_artist_info2(q: QueryParams) -> Result<warp::reply::Json, warp:
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist fetch failed: {e}");
-            return Ok(fail(0, "Artist info unavailable"));
+            return Err(fail(0, "Artist info unavailable"));
         }
     };
     let bio = match client.artist_bio(artist_id).await {
         Ok(v) => v["text"].as_str().unwrap_or("").to_string(),
         Err(e) => {
             tracing::error!("tidal bio fetch failed: {e}");
-            return Ok(fail(0, "Artist info unavailable"));
+            return Err(fail(0, "Artist info unavailable"));
         }
     };
     let similar = match client.artist_similar(artist_id, count).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal similar artists fetch failed: {e}");
-            return Ok(fail(0, "Artist info unavailable"));
+            return Err(fail(0, "Artist info unavailable"));
         }
     };
     let picture = detail["picture"].as_str();
-    Ok(ok(ArtistInfo2Response {
-        artist_info: ArtistInfo2 {
-            biography: strip_wimplinks(&bio),
-            music_brainz_id: String::new(),
-            last_fm_url: String::new(),
-            small_image_url: picture.map(|p| artist_pic_url(p, 160)),
-            medium_image_url: picture.map(|p| artist_pic_url(p, 480)),
-            large_image_url: picture.map(|p| artist_pic_url(p, 750)),
-            similar_artist: similar["items"]
-                .as_array()
-                .map(|items| items.iter().filter_map(artist_from_tidal).collect())
-                .unwrap_or_default(),
-        },
-    }))
+    Ok(ArtistInfo2 {
+        biography: strip_wimplinks(&bio),
+        music_brainz_id: String::new(),
+        last_fm_url: String::new(),
+        small_image_url: picture.map(|p| artist_pic_url(p, 160)),
+        medium_image_url: picture.map(|p| artist_pic_url(p, 480)),
+        large_image_url: picture.map(|p| artist_pic_url(p, 750)),
+        similar_artist: similar["items"]
+            .as_array()
+            .map(|items| items.iter().filter_map(artist_from_tidal).collect())
+            .unwrap_or_default(),
+    })
 }
 
 // Strip [wimpLink artistId=...]...[/wimpLink] wiki markup from bio text.

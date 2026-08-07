@@ -1,7 +1,8 @@
-// Track browsing and streaming: getSong, getRandomSongs, and stream.
+// Track browsing and streaming: getSong, getRandomSongs, getSimilarSongs2,
+// and stream.
 use crate::navidrome::ids;
 use crate::navidrome::models::{
-    Child, GetSongResponse, RandomSongs, RandomSongsResponse,
+    Child, GetSongResponse, RandomSongs, RandomSongsResponse, SimilarSongs2, SimilarSongs2Response,
 };
 use crate::navidrome::params::QueryParams;
 use rand::seq::SliceRandom;
@@ -85,6 +86,59 @@ fn pick_random(
     songs.shuffle(&mut rand::rng());
     songs.truncate(size);
     songs
+}
+
+// getSimilarSongs2: a random collection from the given artist and similar
+// artists. The seed's top tracks plus the top tracks of the three closest
+// similar artists are shuffled and truncated to count. A similar artist's
+// fetch failure degrades to a warning; the seed's failure fails the request.
+pub async fn get_similar_songs2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let Some(id) = q.id.0.first() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    let Some(artist_id) = ids::decode(ids::IdKind::Artist, id).or_else(|| id.parse().ok()) else {
+        return Ok(fail(70, "Artist not found"));
+    };
+    let count = q.count.unwrap_or(50).min(500) as usize;
+    let client = crate::tidal::client();
+    let similar = match client.artist_similar(artist_id, 3).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal similar artists fetch failed: {e}");
+            return Ok(fail(0, "Similar songs unavailable"));
+        }
+    };
+    let mut artists: Vec<u64> = vec![artist_id];
+    artists.extend(
+        similar["items"]
+            .as_array()
+            .map(|items| items.iter().filter_map(|a| a["id"].as_u64()).collect::<Vec<_>>())
+            .unwrap_or_default(),
+    );
+    let per = (count / artists.len().max(1)).max(1) as u32;
+    let mut songs: Vec<Child> = Vec::new();
+    for (i, a) in artists.iter().enumerate() {
+        match client.artist_top_tracks(*a, per).await {
+            Ok(v) => songs.extend(
+                v["items"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(song_from_track).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            ),
+            Err(e) => {
+                if i == 0 {
+                    tracing::error!("tidal top tracks fetch failed: {e}");
+                    return Ok(fail(0, "Similar songs unavailable"));
+                }
+                tracing::warn!("tidal top tracks failed for artist {a}: {e}");
+            }
+        }
+    }
+    songs.shuffle(&mut rand::rng());
+    songs.truncate(count);
+    Ok(ok(SimilarSongs2Response {
+        similar_songs2: SimilarSongs2 { song: songs },
+    }))
 }
 
 // Map Subsonic maxBitRate (kbps) to a Tidal quality tier. Tidal has no

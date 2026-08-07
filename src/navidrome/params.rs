@@ -61,6 +61,10 @@ pub struct QueryParams {
     pub submission: Option<bool>,
     // getRandomSongs: genre filter; year window reuses fromYear/toYear
     pub genre: Option<String>,
+    // getLyricsBySongId: enhanced=true asks for the v2 shape (kind,
+    // cueLine). We serve only v1, so the flag is accepted and ignored
+    // beyond the shape of the reply.
+    pub enhanced: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for QueryParams {
@@ -121,6 +125,7 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "time" => q.time = Some(v.parse().map_err(|_| E::custom("invalid time"))?),
         "submission" => q.submission = Some(v.parse().map_err(|_| E::custom("invalid submission"))?),
         "genre" => q.genre = Some(v),
+        "enhanced" => q.enhanced = Some(v.parse().map_err(|_| E::custom("invalid enhanced"))?),
         _ => {}
     }
     Ok(())

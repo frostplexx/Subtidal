@@ -8,6 +8,13 @@ impl TidalClient {
         self.get_json(&format!("/tracks/{id}"), &self.meta_cache).await
     }
 
+    // A track's lyrics: plain text plus an LRC subtitle track. Backs
+    // getLyricsBySongId. Tidal 404s tracks without lyrics.
+    pub async fn track_lyrics(&self, track_id: u64) -> Result<Value, super::Error> {
+        self.get_json(&format!("/tracks/{track_id}/lyrics"), &self.meta_cache)
+            .await
+    }
+
     // Favorited tracks, newest first. Backs getStarred/getStarred2.
     // Same { item, created } wrapper shape as favorite_albums.
     pub async fn favorite_tracks(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
