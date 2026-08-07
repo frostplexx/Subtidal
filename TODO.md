@@ -34,7 +34,7 @@
 - [x] Map Subsonic maxBitRate to Tidal quality — 0/unspecified → LOSSLESS (cascades to what the account/track offers), 1-64 → LOW (HE-AAC 96k), 65-320 → HIGH (AAC 320k), >320 → LOSSLESS; format=flac lifts to LOSSLESS, lossy formats cap at HIGH (handlers/tracks.rs tidal_quality)
 - [x] Rewrite DASH manifest into HLS playlist — format=hls requests HI_RES and returns an m3u8 (EXT-X-MAP + numbered segments, absolute Tidal CDN URLs, zero server bandwidth); tracks without a hi-res master 302 to AAC; FLAC-in-fMP4 HLS plays in mpv/VLC/ExoPlayer, not hls.js; verify on a real network (sandbox proxy can't reach sp-ad-fa); commit 753bc25
 - [x] Parse MPD fully — regex-based DashInfo in src/tidal/client/stream.rs: segment template (init/media/timescale/startNumber), SegmentTimeline (d/r runs), picks the highest-bandwidth representation; unit-tested against the live hi-res MPD shape
-- [ ] Add byte-proxy fallback — fetch init + segments server-side and return concatenated audio for raw-audio clients (DSub, Substreamer)
+- [ ] Byte-serving hi-res (byte-proxy concat or ffmpeg remux to FLAC) — DECLINED by decision: the only universal path for non-HLS clients (Feishin, DSub) is server egress ≈ file size per play; user chose to keep zero server bandwidth; hi-res stays HLS-only (format=hls), default stream stays 302 to AAC
 - [ ] Set real contentType/suffix per stream — placeholder "audio/flac"/"flac" in Child; the LOSSLESS tier usually cascades to AAC, so the placeholder is wrong once streaming works (src/tidal/mapping/song.rs)
 
 ## Next: scrobble middleware
