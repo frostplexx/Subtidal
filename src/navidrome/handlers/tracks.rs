@@ -57,10 +57,13 @@ fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static st
     }
 }
 
-// stream: resolve a track to a single-file Tidal CDN URL and 302-redirect
-// there. The server never touches the audio bytes. Ids are t<id> or bare
-// numbers. Hi-res tracks answer DASH (segmented FLAC, no single URL), so
-// the handler falls back to HIGH, which is always one file.
+// stream: resolve a track to a Tidal CDN stream and serve it. Single-file
+// BTS streams (AAC) 302-redirect; the server never touches the audio
+// bytes. With format=hls the handler asks for HI_RES: hi-res tracks
+// answer segmented DASH (FLAC 24-bit), which is rewritten into an HLS
+// playlist pointing at Tidal's own init + segment URLs, so FLAC also
+// flows client-to-CDN without server egress. Tidal has no AAC HLS, so
+// hls requests ignore maxBitRate. Ids are t<id> or bare numbers.
 pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing").into_response());
@@ -69,38 +72,136 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
         return Ok(fail(70, "Song not found").into_response());
     };
     let client = crate::tidal::client();
-    let mut tier = tidal_quality(q.max_bit_rate, q.format.as_deref());
-    let url = loop {
+    let wants_hls = q.format.as_deref() == Some("hls");
+    let mut tier = if wants_hls {
+        "HI_RES"
+    } else {
+        tidal_quality(q.max_bit_rate, q.format.as_deref())
+    };
+    loop {
         match client.stream_info(track_id, tier).await {
-            Ok(info) if info.direct_url.is_some() => break info.direct_url.unwrap(),
             Ok(info) => {
+                if let Some(url) = info.direct_url {
+                    tracing::debug!("stream {track_id} tier={tier} -> redirect");
+                    return Ok(redirect(url));
+                }
+                if wants_hls && let Some(dash) = &info.dash {
+                    tracing::debug!(
+                        "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
+                        dash.sample_rate, dash.bit_depth, dash.codec
+                    );
+                    return Ok(hls_reply(build_hls_playlist(dash)));
+                }
                 tracing::debug!(
-                    "tier {tier} returned {} for track {track_id}; falling back to HIGH",
+                    "tier {tier} returned {} for track {track_id}; retrying HIGH",
                     info.mime_type
                 );
                 if tier == "HIGH" {
-                    return Ok(fail(0, "Stream unavailable").into_response());
+                    break;
                 }
                 tier = "HIGH";
             }
             Err(e) => {
                 tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-                return Ok(fail(0, "Stream unavailable").into_response());
+                break;
             }
         }
-    };
-    tracing::debug!("stream {track_id} tier={tier}");
-    Ok(warp::reply::with_header(
+    }
+    Ok(fail(0, "Stream unavailable").into_response())
+}
+
+fn redirect(url: String) -> warp::reply::Response {
+    warp::reply::with_header(
         warp::reply::with_status(warp::reply(), warp::http::StatusCode::FOUND),
         "Location",
         url,
     )
-    .into_response())
+    .into_response()
+}
+
+fn hls_reply(playlist: String) -> warp::reply::Response {
+    let reply = warp::reply::with_header(playlist, "Content-Type", "application/vnd.apple.mpegurl");
+    warp::reply::with_header(reply, "Cache-Control", "no-store").into_response()
+}
+
+// Rewrite a parsed DASH manifest into a VOD HLS media playlist. The init
+// segment and each numbered segment keep Tidal's absolute CDN URLs.
+fn build_hls_playlist(dash: &crate::tidal::client::DashInfo) -> String {
+    let mut out = String::new();
+    out.push_str("#EXTM3U\n");
+    out.push_str("#EXT-X-VERSION:6\n");
+    out.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
+    let target = dash
+        .segments
+        .iter()
+        .map(|s| (s.samples as f64 / dash.timescale as f64).ceil() as u64)
+        .max()
+        .unwrap_or(4);
+    out.push_str(&format!("#EXT-X-TARGETDURATION:{target}\n"));
+    out.push_str(&format!("#EXT-X-MAP:URI=\"{}\"\n", dash.init_url));
+    let mut number = dash.start_number;
+    for seg in &dash.segments {
+        let dur = seg.samples as f64 / dash.timescale as f64;
+        for _ in 0..seg.count {
+            out.push_str(&format!("#EXTINF:{dur:.3},\n"));
+            out.push_str(&format!(
+                "{}\n",
+                dash.media_url.replace("$Number$", &number.to_string())
+            ));
+            number += 1;
+        }
+    }
+    out.push_str("#EXT-X-ENDLIST\n");
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::tidal_quality;
+    use crate::tidal::client::{DashInfo, Segment};
+
+    // Fixture matching the live hi-res MPD: 52 segments of 176128
+    // samples at 44100 plus one partial of 118808.
+    fn dash_fixture() -> DashInfo {
+        DashInfo {
+            bandwidth: 1616237,
+            init_url: "https://cdn/init/0.mp4?token=t".into(),
+            media_url: "https://cdn/media/$Number$.mp4?token=t".into(),
+            timescale: 44100,
+            start_number: 1,
+            segments: vec![
+                Segment {
+                    samples: 176128,
+                    count: 52,
+                },
+                Segment {
+                    samples: 118808,
+                    count: 1,
+                },
+            ],
+            codec: "flac".into(),
+            sample_rate: 44100,
+            bit_depth: 24,
+        }
+    }
+
+    #[test]
+    fn hls_playlist_shape() {
+        let pl = super::build_hls_playlist(&dash_fixture());
+        let lines: Vec<&str> = pl.lines().collect();
+        assert_eq!(lines[0], "#EXTM3U");
+        assert!(pl.contains("#EXT-X-VERSION:6\n"));
+        assert!(pl.contains("#EXT-X-PLAYLIST-TYPE:VOD\n"));
+        assert!(pl.contains("#EXT-X-TARGETDURATION:4\n"));
+        assert!(pl.contains("#EXT-X-MAP:URI=\"https://cdn/init/0.mp4?token=t\"\n"));
+        assert!(pl.contains("#EXT-X-ENDLIST\n"));
+        // 52 full segments at 3.994s + 1 partial at 2.694s.
+        assert_eq!(pl.matches("#EXTINF:3.994,").count(), 52);
+        assert_eq!(pl.matches("#EXTINF:2.694,").count(), 1);
+        assert!(pl.contains("https://cdn/media/1.mp4?token=t"));
+        assert!(pl.contains("https://cdn/media/53.mp4?token=t"));
+        assert!(!pl.contains("$Number$"));
+    }
 
     #[test]
     fn bitrate_picks_tier() {

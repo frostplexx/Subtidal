@@ -21,6 +21,10 @@ mod feed;
 mod playlists;
 mod search;
 mod stream;
+pub use stream::DashInfo;
+// Test fixtures construct Segment values directly.
+#[cfg(test)]
+pub(crate) use stream::Segment;
 mod tracks;
 mod users;
 

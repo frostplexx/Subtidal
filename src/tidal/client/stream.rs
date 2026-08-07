@@ -1,21 +1,45 @@
 // Stream metadata: playbackinfo manifest decoding. Backs the stream
-// endpoint, which 302-redirects to a single-file Tidal CDN URL.
+// endpoint, which 302-redirects to a single-file Tidal CDN URL, or, for
+// hi-res FLAC, rewrites the segmented DASH manifest into an HLS playlist.
+use std::str::FromStr;
+use std::sync::LazyLock;
+
 use base64::Engine;
+use regex::Regex;
 use serde_json::Value;
 
 use super::{Error, TidalClient, API_URL};
 
+// One run of equal-length segments from the DASH SegmentTimeline.
+// count is r+1: DASH repeats a duration r extra times.
+pub struct Segment {
+    pub samples: u64,
+    pub count: u32,
+}
+
+// Parsed hi-res DASH manifest. The CDN URLs carry short-lived tokens, so
+// nothing here is cached.
+pub struct DashInfo {
+    pub bandwidth: u64,
+    pub init_url: String,
+    // Segment URL with a $Number$ placeholder to substitute.
+    pub media_url: String,
+    pub timescale: u64,
+    pub start_number: u64,
+    pub segments: Vec<Segment>,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub bit_depth: u8,
+}
+
 // Stream metadata for one track.
 pub struct StreamInfo {
     pub mime_type: String,
-    // Raw decoded manifest (MPD or BTS JSON). Unused for the 302 path;
-    // the DASH->HLS rewrite reads it.
-    #[allow(dead_code)]
-    pub manifest: String,
     // Direct single-file URL when the manifest is playable as one file
     // (BTS). Segmented DASH (hi-res FLAC) has no such URL; the stream
-    // handler falls back to a lower tier in that case.
+    // handler serves an HLS playlist instead, or falls back a tier.
     pub direct_url: Option<String>,
+    pub dash: Option<DashInfo>,
 }
 
 impl TidalClient {
@@ -65,13 +89,168 @@ fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
             .ok()
             .and_then(|v| v["urls"].get(0).and_then(|u| u.as_str()).map(String::from))
     } else {
-        // DASH: segmented manifest (hi-res FLAC). No single-file URL;
-        // a 302 cannot serve it. The stream handler falls back to HIGH.
+        None
+    };
+    let dash = if mime.contains("dash") {
+        parse_dash(&manifest)
+    } else {
         None
     };
     Ok(StreamInfo {
         mime_type: mime,
-        manifest,
         direct_url,
+        dash,
     })
+}
+
+static RE_REP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<Representation\b.*?</Representation>").unwrap());
+static RE_REP_OPEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<Representation\b[^>]*>").unwrap());
+static RE_TEMPLATE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<SegmentTemplate\b[^>]*>").unwrap());
+static RE_TIMELINE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)<SegmentTimeline>(.*?)</SegmentTimeline>").unwrap());
+static RE_SEG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<S\b[^>]*>").unwrap());
+static RE_ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\w+)="([^"]*)""#).unwrap());
+static RE_DUR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"mediaPresentationDuration="PT(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?"#)
+        .unwrap()
+});
+
+// Parse the highest-bandwidth representation of a Tidal audio MPD. The
+// segment template lives inside the representation; a whole-doc fallback
+// covers a shared template above it.
+fn parse_dash(mpd: &str) -> Option<DashInfo> {
+    RE_REP
+        .find_iter(mpd)
+        .filter_map(|m| parse_rep(m.as_str(), mpd))
+        .max_by_key(|d| d.bandwidth)
+}
+
+fn parse_rep(block: &str, mpd: &str) -> Option<DashInfo> {
+    let open = RE_REP_OPEN.find(block).map(|m| m.as_str())?;
+    let rep_attrs = tag_attrs(open);
+    let template = RE_TEMPLATE
+        .find(block)
+        .or_else(|| RE_TEMPLATE.find(mpd))
+        .map(|m| m.as_str())?;
+    let tpl_attrs = tag_attrs(template);
+    let segments = parse_segments(block);
+    let (segments, timescale) = if segments.is_empty() {
+        // No timeline: one segment of the full duration, in seconds.
+        match duration_seconds(mpd) {
+            Some(secs) => (vec![Segment { samples: secs, count: 1 }], 1),
+            None => (segments, num_attr(&tpl_attrs, "timescale").unwrap_or(1)),
+        }
+    } else {
+        (segments, num_attr(&tpl_attrs, "timescale").unwrap_or(1))
+    };
+    Some(DashInfo {
+        bandwidth: num_attr(&rep_attrs, "bandwidth")?,
+        init_url: str_attr(&tpl_attrs, "initialization")?,
+        media_url: str_attr(&tpl_attrs, "media")?,
+        timescale,
+        start_number: num_attr(&tpl_attrs, "startNumber").unwrap_or(1),
+        segments,
+        codec: str_attr(&rep_attrs, "codecs").unwrap_or_default(),
+        sample_rate: num_attr(&rep_attrs, "audioSamplingRate").unwrap_or(0),
+        bit_depth: str_attr(&rep_attrs, "id")
+            .and_then(|id| id.rsplit(',').next()?.parse().ok())
+            .unwrap_or(0),
+    })
+}
+
+// d="..." r="..." entries inside a SegmentTimeline.
+fn parse_segments(block: &str) -> Vec<Segment> {
+    let Some(tl) = RE_TIMELINE.captures(block) else {
+        return Vec::new();
+    };
+    RE_SEG
+        .find_iter(&tl[1])
+        .filter_map(|m| {
+            let attrs = tag_attrs(m.as_str());
+            let d: u64 = num_attr(&attrs, "d")?;
+            let r: u32 = num_attr(&attrs, "r").unwrap_or(0);
+            (d > 0).then_some(Segment {
+                samples: d,
+                count: r + 1,
+            })
+        })
+        .collect()
+}
+
+fn tag_attrs(tag: &str) -> Vec<(String, String)> {
+    RE_ATTR
+        .captures_iter(tag)
+        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .collect()
+}
+
+fn str_attr(attrs: &[(String, String)], name: &str) -> Option<String> {
+    attrs
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.clone())
+}
+
+fn num_attr<T: FromStr>(attrs: &[(String, String)], name: &str) -> Option<T> {
+    str_attr(attrs, name)?.parse().ok()
+}
+
+// PT3M30.373S -> 210 seconds. Only feeds the no-timeline fallback in
+// parse_rep; Tidal audio MPDs always carry a timeline.
+fn duration_seconds(mpd: &str) -> Option<u64> {
+    let caps = RE_DUR.captures(mpd)?;
+    let mins: f64 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+    let secs: f64 = caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+    Some((mins * 60.0 + secs) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real shape of a hi-res MPD (captured live), URLs shortened.
+    const MPD: &str = r#"<?xml version='1.0' encoding='UTF-8'?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT3M30.373S"><Period><AdaptationSet contentType="audio" mimeType="audio/mp4"><Representation id="FLAC_HIRES,44100,24" codecs="flac" bandwidth="1616237" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T" startNumber="1"><SegmentTimeline><S d="176128" r="51"/><S d="118808"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
+
+    #[test]
+    fn parses_hires_dash() {
+        let d = parse_dash(MPD).expect("parses");
+        assert_eq!(d.bandwidth, 1616237);
+        assert_eq!(d.codec, "flac");
+        assert_eq!(d.sample_rate, 44100);
+        assert_eq!(d.bit_depth, 24);
+        assert_eq!(d.timescale, 44100);
+        assert!(d.init_url.contains("0.mp4"));
+        assert!(d.media_url.contains("$Number$"));
+        // 52 + 1 segments.
+        assert_eq!(d.segments.len(), 2);
+        assert_eq!(d.segments[0].samples, 176128);
+        assert_eq!(d.segments[0].count, 52);
+        assert_eq!(d.segments[1].samples, 118808);
+        assert_eq!(d.segments[1].count, 1);
+    }
+
+    #[test]
+    fn picks_highest_bandwidth_representation() {
+        let m = MPD.replace(
+            "</Representation></AdaptationSet>",
+            r#"<Representation id="FLAC_LOSSLESS,44100,16" codecs="flac" bandwidth="800000" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/BBB/0.mp4?token=T" media="https://sp-ad-fa.audio.tidal.com/mediatracks/BBB/$Number$.mp4?token=T" startNumber="1"><SegmentTimeline><S d="176128" r="51"/><S d="118808"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>"#,
+        );
+        let d = parse_dash(&m).expect("parses");
+        assert_eq!(d.bandwidth, 1616237);
+        assert!(d.init_url.contains("AAA"));
+    }
+
+    #[test]
+    fn bts_has_no_dash() {
+        let body: Value = serde_json::json!({
+            "manifestMimeType": "application/vnd.tidal.bts",
+            "manifest": base64::engine::general_purpose::STANDARD.encode(r#"{"mimeType":"audio/mp4","codecs":"mp4a.40.2","encryptionType":"NONE","urls":["https://cdn/1.mp4?token=x"]}"#)
+        });
+        let info = parse_stream(body).unwrap();
+        assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
+        assert!(info.dash.is_none());
+    }
 }

@@ -1,0 +1,36 @@
+Server started at http://localhost:8023
+[2m2026-08-07T15:23:25.670442Z[0m [34mDEBUG[0m [2mreqwest::connect[0m[2m:[0m starting new connection 'Some("api.tidal.com")'
+[2m2026-08-07T15:23:25.670541Z[0m [34mDEBUG[0m [2mreqwest::connect[0m[2m:[0m proxy(http://localhost:63302/) intercepts 'Some("api.tidal.com")'
+[2m2026-08-07T15:23:25.671634Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::connect::http[0m[2m:[0m connecting to [::1]:63302
+[2m2026-08-07T15:23:25.671950Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::connect::http[0m[2m:[0m connecting to 127.0.0.1:63302
+[2m2026-08-07T15:23:25.672116Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::connect::http[0m[2m:[0m connected to 127.0.0.1:63302
+[2m2026-08-07T15:23:25.814741Z[0m [34mDEBUG[0m [2mh2::client[0m[2m:[0m binding client connection
+[2m2026-08-07T15:23:25.814838Z[0m [34mDEBUG[0m [2mh2::client[0m[2m:[0m client connection bound
+[2m2026-08-07T15:23:25.814976Z[0m [34mDEBUG[0m [2mh2::codec::framed_write[0m[2m:[0m send [3mframe[0m[2m=[0mSettings { flags: (0x0), enable_push: 0, initial_window_size: 2097152, max_frame_size: 16384, max_header_list_size: 16384 }
+[2m2026-08-07T15:23:25.815463Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::pool[0m[2m:[0m pooling idle connection for ("https", api.tidal.com)
+[2m2026-08-07T15:23:25.815645Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_write[0m[2m:[0m send [3mframe[0m[2m=[0mWindowUpdate { stream_id: StreamId(0), size_increment: 5177345 }
+[2m2026-08-07T15:23:25.815707Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_write[0m[2m:[0m send [3mframe[0m[2m=[0mHeaders { stream_id: StreamId(1), flags: (0x5: END_HEADERS | END_STREAM) }
+[2m2026-08-07T15:23:25.844653Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mSettings { flags: (0x0), max_concurrent_streams: 128, initial_window_size: 65536, max_frame_size: 16777215 }
+[2m2026-08-07T15:23:25.844771Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_write[0m[2m:[0m send [3mframe[0m[2m=[0mSettings { flags: (0x1: ACK) }
+[2m2026-08-07T15:23:25.844857Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mWindowUpdate { stream_id: StreamId(0), size_increment: 2147418112 }
+[2m2026-08-07T15:23:25.878509Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mSettings { flags: (0x1: ACK) }
+[2m2026-08-07T15:23:25.878612Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::proto::settings[0m[2m:[0m received settings ACK; applying Settings { flags: (0x0), enable_push: 0, initial_window_size: 2097152, max_frame_size: 16384, max_header_list_size: 16384 }
+[2m2026-08-07T15:23:26.024468Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mHeaders { stream_id: StreamId(1), flags: (0x4: END_HEADERS) }
+[2m2026-08-07T15:23:26.024768Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mData { stream_id: StreamId(1) }
+[2m2026-08-07T15:23:26.024816Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mData { stream_id: StreamId(1), flags: (0x1: END_STREAM) }
+[2m2026-08-07T15:23:26.043467Z[0m [34mDEBUG[0m [2msubtidal::navidrome::handlers::tracks[0m[2m:[0m stream 363236466 tier=HI_RES -> hls playlist (44100 Hz, 24-bit flac)
+[2m2026-08-07T15:23:26.043696Z[0m [34mDEBUG[0m [2msubtidal[0m[2m:[0m 127.0.0.1:63578 stream "GET /rest/stream.view?u=admin&p=***&c=test&id=363236466&format=hls" 200 in 374.312875ms
+[2m2026-08-07T15:23:42.864324Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::pool[0m[2m:[0m reuse idle connection for ("https", api.tidal.com)
+[2m2026-08-07T15:23:42.864452Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_write[0m[2m:[0m send [3mframe[0m[2m=[0mHeaders { stream_id: StreamId(3), flags: (0x5: END_HEADERS | END_STREAM) }
+[2m2026-08-07T15:23:43.053528Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mHeaders { stream_id: StreamId(3), flags: (0x4: END_HEADERS) }
+[2m2026-08-07T15:23:43.053744Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mData { stream_id: StreamId(3) }
+[2m2026-08-07T15:23:43.053853Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mData { stream_id: StreamId(3), flags: (0x1: END_STREAM) }
+[2m2026-08-07T15:23:43.054408Z[0m [34mDEBUG[0m [2msubtidal::navidrome::handlers::tracks[0m[2m:[0m stream 491622454 tier=HI_RES -> redirect
+[2m2026-08-07T15:23:43.054589Z[0m [34mDEBUG[0m [2msubtidal[0m[2m:[0m 127.0.0.1:63584 stream "GET /rest/stream.view?u=admin&p=***&c=test&id=491622454&format=hls" 302 in 190.421125ms
+[2m2026-08-07T15:23:43.081376Z[0m [34mDEBUG[0m [2mhyper_util::client::legacy::pool[0m[2m:[0m reuse idle connection for ("https", api.tidal.com)
+[2m2026-08-07T15:23:43.081512Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_write[0m[2m:[0m send [3mframe[0m[2m=[0mHeaders { stream_id: StreamId(5), flags: (0x5: END_HEADERS | END_STREAM) }
+[2m2026-08-07T15:23:43.336921Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mHeaders { stream_id: StreamId(5), flags: (0x4: END_HEADERS) }
+[2m2026-08-07T15:23:43.337088Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mData { stream_id: StreamId(5) }
+[2m2026-08-07T15:23:43.337132Z[0m [34mDEBUG[0m [1mConnection[0m[1m{[0m[3mpeer[0m[2m=[0mClient[1m}[0m[2m:[0m [2mh2::codec::framed_read[0m[2m:[0m received [3mframe[0m[2m=[0mData { stream_id: StreamId(5), flags: (0x1: END_STREAM) }
+[2m2026-08-07T15:23:43.337553Z[0m [34mDEBUG[0m [2msubtidal::navidrome::handlers::tracks[0m[2m:[0m stream 363236466 tier=LOSSLESS -> redirect
+[2m2026-08-07T15:23:43.337684Z[0m [34mDEBUG[0m [2msubtidal[0m[2m:[0m 127.0.0.1:63586 stream "GET /rest/stream.view?u=admin&p=***&c=test&id=363236466" 302 in 256.465333ms

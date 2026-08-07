@@ -2256,6 +2256,7 @@ dependencies = [
  "keyring",
  "md-5",
  "moka",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
