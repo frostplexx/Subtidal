@@ -14,7 +14,7 @@
 
 - [ ] Add getMusicFolders — return a single "Tidal" folder
 - [ ] Add getIndexes + getArtists — expose favorited artists as the library index
-- [ ] Add getSong — single track detail; Feishin calls it from song context menus
+- [x] Add getSong — single track detail; Feishin calls it from song context menus
 - [ ] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum
 - [ ] Add getAlbumInfo2 — album info (notes/artists); Tidal has no album notes, would be mostly empty
 
@@ -57,6 +57,8 @@
 - [ ] Delete empty src/tidal/tidal_auth.rs — unreferenced leftover, still untracked
 
 ## Done
+
+- [x] Add getSong — single track via /tracks/{id}; t<id> or bare number; year filled from album detail (track JSON has no releaseDate, album fetch hits meta cache); commit <TBD>
 
 - [x] Add getArtistInfo2 — bio (wimpLink markup stripped) + portraits 160/480/750 + similarArtist via /artists/{id}/bio + /similar; id resolves artist/album/song → first artist; musicBrainzId/lastFmUrl empty (Tidal exposes neither); commits f62486c + b953f2b (strip fix)
 

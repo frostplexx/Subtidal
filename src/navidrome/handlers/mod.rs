@@ -8,6 +8,7 @@ pub mod jukebox;
 pub mod playlist;
 pub mod search;
 pub mod system;
+pub mod tracks;
 
 use super::auth::Unauthorized;
 use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse};
@@ -21,6 +22,7 @@ pub use jukebox::jukebox_control;
 pub use playlist::{get_genres, get_playlists};
 pub use search::search3;
 pub use system::{get_open_subsonic_extensions, get_user, ping};
+pub use tracks::get_song;
 
 // Response envelope helpers, shared by every handler.
 pub(crate) fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {

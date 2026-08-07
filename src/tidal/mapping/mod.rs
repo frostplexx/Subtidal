@@ -51,7 +51,7 @@ pub fn artist_pic_url(uuid: &str, size: u32) -> String {
     format!("https://resources.tidal.com/images/{path}/{snapped}x{snapped}.jpg")
 }
 
-fn year_from(s: Option<&str>) -> Option<u32> {
+pub(crate) fn year_from(s: Option<&str>) -> Option<u32> {
     let s = s?;
     s.get(..4)?.parse().ok()
 }

@@ -46,6 +46,12 @@ pub struct Child {
     pub starred: Option<String>,
 }
 
+// getSong data: { song: Child }
+#[derive(Serialize)]
+pub struct GetSongResponse {
+    pub song: Child,
+}
+
 // getTopSongs data: { topSongs: { song: [ Child ] } }
 #[derive(Serialize)]
 pub struct TopSongsResponse {
@@ -61,6 +67,7 @@ pub struct TopSongs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn top_songs_wraps_song_array() {
@@ -69,5 +76,20 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r##"{"topSongs":{"song":[]}}"##);
+    }
+
+    #[test]
+    fn get_song_wraps_child() {
+        let song = crate::tidal::mapping::song_from_track(&json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        }))
+        .unwrap();
+        let json = serde_json::to_string(&GetSongResponse { song }).unwrap();
+        assert!(json.contains(r#""song":{"id":"t123""#));
     }
 }
