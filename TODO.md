@@ -6,7 +6,7 @@
 - **Entity mapping** — Tidal v1 camelCase JSON → Subsonic models in src/tidal/mapping/. Song: title, artist (multi-artist joins "A feat. B"), album, albumId, artistId, duration, year from releaseDate, genre, trackNumber, discNumber, contentType/suffix placeholder ("flac") until streaming lands.
 - **Cover art** — never proxied: album/artist/playlist responses carry full `resources.tidal.com` image URLs in `coverArt`; getCoverArt 302-redirects to the resolved URL. Album/artist pics live at 160/320/640/1280, artist portraits 160/320/480/750.
 - **Favorites/playlists** — star/unstar/getStarred map to Tidal favorites CRUD; playlists to Tidal user playlists. Tidal has no public play counts; optional local JSON store for Navidrome-parity playCount.
-- [x] scrobble endpoint — accepts single/multiple id, submission, time; returns ok and logs the report (no backend yet); commit <TBD>
+- [x] scrobble endpoint — accepts single/multiple id, submission, time; returns ok and logs the report (no backend yet); commit cbfa61a
 - **Scrobble middleware** — `PlayReporter` trait, fan-out from the `scrobble` handler, best-effort (errors log, never fail the client request). Last.fm reporter: api_key + session key (sk), one-time auth.getToken → authorize → getSession, sk stored in Keychain. ListenBrainz: plain token, POST /1/submit-listen. Config = optional blocks in settings.toml.
 
 ## Next: catalog endpoints
