@@ -30,7 +30,7 @@
 
 ## Next: playback
 
-- [x] Add stream endpoint — resolve Subsonic track ID to Tidal track, call playbackinfopostpaywall, serve audio: 302-redirect to the single-file CDN URL (BTS), zero server bandwidth; quality via maxBitRate/format → tidal_quality; hi-res tracks answer segmented DASH, handler falls back to HIGH; commit PLACEHOLDER
+- [x] Add stream endpoint — resolve Subsonic track ID to Tidal track, call playbackinfopostpaywall, serve audio: 302-redirect to the single-file CDN URL (BTS), zero server bandwidth; quality via maxBitRate/format → tidal_quality; hi-res tracks answer segmented DASH, handler falls back to HIGH; commit ba99373
 - [x] Map Subsonic maxBitRate to Tidal quality — 0/unspecified → LOSSLESS (cascades to what the account/track offers), 1-64 → LOW (HE-AAC 96k), 65-320 → HIGH (AAC 320k), >320 → LOSSLESS; format=flac lifts to LOSSLESS, lossy formats cap at HIGH (handlers/tracks.rs tidal_quality)
 - [ ] Rewrite DASH manifest into HLS playlist — m3u8 with EXT-X-MAP init segment pointing at Tidal CDN; zero server bandwidth; needed only for hi-res FLAC (LOW/HIGH/LOSSLESS come back as single-file BTS); works on HLS-sniffing clients
 - [ ] Add byte-proxy fallback — fetch init + segments server-side and return concatenated audio for raw-audio clients (DSub, Substreamer)
