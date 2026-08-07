@@ -41,7 +41,8 @@
 ## Next: scrobble middleware
 
 - [x] Add updateNowPlaying + getNowPlaying — legacy updateNowPlaying aliased (VeloSonic still calls it; OpenSubsonic replaced it with scrobble submission=false); shared now-playing slot in navidrome/now_playing.rs, replaced per report, expired after 10 min; scrobble feeds it too; entry = full song + username/minutesAgo/playerId; commit 4b41274
-- [x] Add reportPlayback — playbackReport extension (v1, already advertised); states starting/playing/paused/stopped drive the slot; stopped clears it and logs the completion (future PlayReporter hook); positionMs estimated forward from the last report while playing (playbackRate aware), frozen on pause; getNowPlaying entries gain state/positionMs/playbackRate; mediaType restricted to song; commit 6d00dab
+&
+- [x] Add setRating — faked (no Tidal rating backend): id + rating 0-5 validated and logged, empty ok; missing id/rating -> 10, rating>5 -> 70; commit 4965a77
 - [x] Add getSimilarSongs2 — seed artist top tracks + 3 closest similar artists' top tracks, shuffled, truncated to count (default 50); similar-artist fetch failure degrades to a warning; commit 4b41274
 - [x] Add getArtistInfo — same payload as getArtistInfo2 wrapped as artistInfo; shared artist_info() core; commit 4b41274
 - [x] Add getLyricsBySongId — Tidal /tracks/{id}/lyrics (plain + LRC subtitles); LRC parsed to synced line[] (first timestamp per line, metadata tags skipped), plain fallback; 404 → empty list ok; v1 shape, kind omitted unless enhanced=true; commit 4b41274
