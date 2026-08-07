@@ -1,6 +1,7 @@
 // Subsonic endpoint handlers, one module per endpoint family. routes.rs
 // stays flat and calls the re-exports below.
 pub mod album;
+pub mod annotate;
 pub mod artist;
 pub mod cover;
 pub mod favorites;
@@ -15,6 +16,7 @@ use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResp
 use warp::reject::Rejection;
 
 pub use album::{get_album, get_album_list2};
+pub use annotate::scrobble;
 pub use artist::{get_artist, get_artist_info2, get_top_songs};
 pub use cover::get_cover_art;
 pub use favorites::{get_starred, get_starred2};

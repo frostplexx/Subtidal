@@ -75,6 +75,10 @@ pub struct QueryParams {
     #[serde(rename = "maxBitRate")]
     pub max_bit_rate: Option<u32>,
     pub format: Option<String>,
+    // scrobble: playback report; time is ms since epoch, submission is
+    // true for a real scrobble, false for a now-playing notification.
+    pub time: Option<i64>,
+    pub submission: Option<bool>,
 }
 
 impl QueryParams {
@@ -144,5 +148,12 @@ mod tests {
         // the IdList field, not fail the whole request.
         let p = parse("id=xyz", b"").unwrap();
         assert_eq!(p.id, IdList(vec!["xyz".to_string()]));
+    }
+
+    #[test]
+    fn parses_scrobble_params() {
+        let p = parse("id=t1&submission=true&time=1786116785370", b"").unwrap();
+        assert_eq!(p.submission, Some(true));
+        assert_eq!(p.time, Some(1786116785370));
     }
 }
