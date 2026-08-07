@@ -1,3 +1,14 @@
+
+This project is in an alpha state!
+
+# Getting Started
+
+1. Clone this repo
+2. Do `cargo run`
+3. It should print a link, log into tidal
+4. Connect to the server with admin as both user and password (can be changed in `settings.toml`
+
+
 ```
    src/
    ├── main.rs           # reads env config, builds TidalProvider, serves
