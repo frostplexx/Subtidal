@@ -68,6 +68,28 @@ pub struct GetUserResponse {
     pub user: User,
 }
 
+// getUsers data: { users: { user: [ User ] } }
+#[derive(Serialize)]
+pub struct GetUsersResponse {
+    pub users: Users,
+}
+
+#[derive(Serialize)]
+pub struct Users {
+    pub user: Vec<User>,
+}
+
+// getLicense data: { license: { valid } }
+#[derive(Serialize)]
+pub struct LicenseResponse {
+    pub license: License,
+}
+
+#[derive(Serialize)]
+pub struct License {
+    pub valid: bool,
+}
+
 // getMusicFolders data: { musicFolders: { musicFolder: [ { id, name } ] } }
 #[derive(Serialize)]
 pub struct MusicFoldersResponse {

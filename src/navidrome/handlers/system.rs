@@ -1,9 +1,11 @@
 // System endpoints: ping, extension advertisement, and the user profile.
 use crate::navidrome::models::{
-    GetOpenSubsonicExtensionsResponse, GetUserResponse, MusicFolder, MusicFolders,
-    MusicFoldersResponse, OpenSubsonicExtension, PingResponse, ScanStatus, ScanStatusResponse, User,
+    GetOpenSubsonicExtensionsResponse, GetUserResponse, GetUsersResponse, License,
+    LicenseResponse, MusicFolder, MusicFolders, MusicFoldersResponse, OpenSubsonicExtension,
+    PingResponse, ScanStatus, ScanStatusResponse, User, Users,
 };
-use super::{ok};
+use crate::navidrome::params::QueryParams;
+use super::ok;
 use crate::SETTINGS;
 
 pub async fn ping() -> Result<warp::reply::Json, warp::Rejection> {
@@ -27,13 +29,12 @@ pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::R
     }))
 }
 
-pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
-    // The response describes the Tidal account, whatever username the
-    // client passed. Fall back to the configured username when the
-    // profile is unreachable.
+// The Tidal account name and an email derived from it. Falls back to the
+// configured username when the profile is unreachable.
+async fn account_identity() -> (String, String) {
     let settings = SETTINGS.get().expect("settings not loaded");
     let fallback = settings.username.clone();
-    let (username, email) = match crate::tidal::client().user_profile().await {
+    match crate::tidal::client().user_profile().await {
         Ok(v) => {
             let name = v["username"]
                 .as_str()
@@ -53,25 +54,53 @@ pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
             tracing::warn!("user profile fetch failed: {e}");
             (fallback.clone(), format!("{fallback}@localhost"))
         }
-    };
+    }
+}
+
+// The single user of this server. Role flags mirror what the bridge can
+// actually do; scrobblingEnabled flips on when the middleware lands.
+fn user_of(username: String, email: String) -> User {
+    User {
+        folder: vec![1],
+        username,
+        email,
+        scrobbling_enabled: "false",
+        admin_role: "true",
+        settings_role: "true",
+        download_role: "true",
+        playlist_role: "true",
+        cover_art_role: "true",
+        stream_role: "true",
+        upload_role: "false",
+        comment_role: "false",
+        podcast_role: "false",
+        jukebox_role: "false",
+        share_role: "false",
+    }
+}
+
+pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
+    let (username, email) = account_identity().await;
     Ok(ok(GetUserResponse {
-        user: User {
-            folder: vec![1],
-            username,
-            email,
-            scrobbling_enabled: "false", // flips on when scrobble middleware is configured
-            admin_role: "true",
-            settings_role: "true",
-            download_role: "true",
-            playlist_role: "true",
-            cover_art_role: "true",
-            stream_role: "true",
-            upload_role: "false",
-            comment_role: "false",
-            podcast_role: "false",
-            jukebox_role: "false",
-            share_role: "false",
+        user: user_of(username, email),
+    }))
+}
+
+// getUsers: Navidrome returns only the user identified in the
+// authentication; this server has exactly one user.
+pub async fn get_users() -> Result<warp::reply::Json, warp::Rejection> {
+    let (username, email) = account_identity().await;
+    Ok(ok(GetUsersResponse {
+        users: Users {
+            user: vec![user_of(username, email)],
         },
+    }))
+}
+
+// getLicense: like Navidrome, the license is always valid.
+pub async fn get_license() -> Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(LicenseResponse {
+        license: License { valid: true },
     }))
 }
 
@@ -87,6 +116,17 @@ pub async fn get_music_folders() -> Result<warp::reply::Json, warp::Rejection> {
 // getScanStatus: there is no local library, so nothing scans. Arpeggi
 // may prompt for a scan after seeing count 0.
 pub async fn get_scan_status() -> Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(ScanStatusResponse {
+        scan_status: ScanStatus {
+            scanning: false,
+            count: 0,
+        },
+    }))
+}
+
+// startScan: nothing to scan, so the scan is instantly complete. The
+// optional fullScan param is accepted and ignored.
+pub async fn start_scan(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     Ok(ok(ScanStatusResponse {
         scan_status: ScanStatus {
             scanning: false,

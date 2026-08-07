@@ -1,12 +1,13 @@
-// Album browsing: getAlbum and the album list.
+// Album browsing: getAlbum, the album lists, and album info.
 use super::favorites::favorites_albums;
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::models::{
-    AlbumId3, AlbumList2, AlbumList2Response, AlbumWithSongs, Child, GetAlbumResponse,
+    Album, AlbumId3, AlbumInfo, AlbumInfo2Response, AlbumInfoResponse, AlbumList,
+    AlbumList2, AlbumList2Response, AlbumListResponse, AlbumWithSongs, Child, GetAlbumResponse,
 };
 use crate::navidrome::params::QueryParams;
 use super::{fail, ok};
-use crate::tidal::mapping::{album_from_tidal, song_from_track};
+use crate::tidal::mapping::{album_from_tidal, cover_url, song_from_track};
 
 // getAlbum: one album plus its tracks in track order. The album's year
 // fills in for tracks, which carry no release date of their own.
@@ -52,14 +53,9 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
     }))
 }
 
-// getAlbumList2: Subsonic's album listing. The mapping mirrors the
-// working TidalDrome reference: starred/frequent/recent/byGenre map to
-// favorites, newest maps to the personalized home feed (which includes the
-// "Suggested new albums for you" section), random shuffles favorites, and
-// alphabeticalByName/alphabeticalByArtist sort favorites. byYear filters
-// favorites by fromYear. All favorites are fetched for the sorted and
-// filtered types, then paginated locally.
-pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+// The list core shared by getAlbumList2 and getAlbumList. Returns the
+// album list for the requested type, already paginated.
+async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str> {
     let offset = q.offset.unwrap_or(0);
     let size = q.size.unwrap_or(10).min(500);
     let album: Vec<AlbumId3> = match q.r#type.as_deref() {
@@ -68,7 +64,7 @@ pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");
-                    return Ok(fail(0, "Album list unavailable"));
+                    return Err("Album list unavailable");
                 }
             };
             favorites_albums(&result)
@@ -78,7 +74,7 @@ pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");
-                    return Ok(fail(0, "Album list unavailable"));
+                    return Err("Album list unavailable");
                 }
             };
             let mut album = favorites_albums(&result);
@@ -90,7 +86,7 @@ pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal home feed fetch failed: {e}");
-                    return Ok(fail(0, "Album list unavailable"));
+                    return Err("Album list unavailable");
                 }
             };
             let raw = crate::tidal::client::albums_from_page(&result);
@@ -105,17 +101,17 @@ pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");
-                    return Ok(fail(0, "Album list unavailable"));
+                    return Err("Album list unavailable");
                 }
             };
             let mut album = favorites_albums(&result);
             match q.r#type.as_deref() {
-                Some("alphabeticalByName") => album.sort_by(|a, b| {
-                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                }),
-                Some("alphabeticalByArtist") => album.sort_by(|a, b| {
-                    a.artist.to_lowercase().cmp(&b.artist.to_lowercase())
-                }),
+                Some("alphabeticalByName") => {
+                    album.sort_by_key(|a| a.name.to_lowercase())
+                }
+                Some("alphabeticalByArtist") => {
+                    album.sort_by_key(|a| a.artist.to_lowercase())
+                }
                 _ => {
                     let year = q.from_year.unwrap_or(0);
                     album.retain(|a| a.year == Some(year));
@@ -125,7 +121,69 @@ pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::
         }
         _ => Vec::new(),
     };
-    Ok(ok(AlbumList2Response {
-        album_list: AlbumList2 { album },
-    }))
+    Ok(album)
+}
+
+pub async fn get_album_list2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    match album_list_core(&q).await {
+        Ok(album) => Ok(ok(AlbumList2Response {
+            album_list: AlbumList2 { album },
+        })),
+        Err(msg) => Ok(fail(0, msg)),
+    }
+}
+
+// getAlbumList v1: the same list types as v2, served with the legacy
+// Album shape.
+pub async fn get_album_list(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    match album_list_core(&q).await {
+        Ok(album) => Ok(ok(AlbumListResponse {
+            album_list: AlbumList {
+                album: album.iter().map(Album::from).collect(),
+            },
+        })),
+        Err(msg) => Ok(fail(0, msg)),
+    }
+}
+
+// The info core shared by getAlbumInfo and getAlbumInfo2: album artwork
+// at the three documented sizes. Tidal exposes no album notes and no
+// external ids, so those stay empty and are omitted.
+async fn album_info_core(q: &QueryParams) -> Result<AlbumInfo, (u32, &'static str)> {
+    let Some(id) = q.id.0.first() else {
+        return Err((10, "Required parameter missing"));
+    };
+    let Some(album_id) = ids::decode(IdKind::Album, id).or_else(|| id.parse().ok()) else {
+        return Err((70, "Album not found"));
+    };
+    let detail = match crate::tidal::client().album(album_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal album fetch failed: {e}");
+            return Err((0, "Album unavailable"));
+        }
+    };
+    let cover = detail["cover"].as_str();
+    Ok(AlbumInfo {
+        notes: String::new(),
+        music_brainz_id: String::new(),
+        last_fm_url: String::new(),
+        small_image_url: cover.map(|c| cover_url(c, 160)),
+        medium_image_url: cover.map(|c| cover_url(c, 320)),
+        large_image_url: cover.map(|c| cover_url(c, 640)),
+    })
+}
+
+pub async fn get_album_info(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    match album_info_core(&q).await {
+        Ok(album_info) => Ok(ok(AlbumInfoResponse { album_info })),
+        Err((code, msg)) => Ok(fail(code, msg)),
+    }
+}
+
+pub async fn get_album_info2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    match album_info_core(&q).await {
+        Ok(album_info) => Ok(ok(AlbumInfo2Response { album_info })),
+        Err((code, msg)) => Ok(fail(code, msg)),
+    }
 }

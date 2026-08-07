@@ -1,13 +1,43 @@
-// getCoverArt: resolve a cover id to a Tidal image URL and 302-redirect
-// there. The server never proxies image bytes. Accepted ids:
-//   - a full image URL (redirect straight through)
-//   - a bare UUID (playlist cover; playlists use UUID ids)
-//   - al<id> / ar<id> / bare album number
+// Image serving: getAvatar (user avatar) and getCoverArt (302 redirects
+// to Tidal's image CDN; the server never proxies image bytes).
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::params::QueryParams;
 use super::fail;
 use crate::tidal::mapping::{artist_pic_url, cover_url};
 use warp::Reply;
+
+// getAvatar: the Tidal account avatar, when one is set, else a neutral
+// placeholder PNG. The avatar 302-redirects to the image CDN (zero server
+// bandwidth); a missing picture falls back to the embedded placeholder.
+pub async fn get_avatar(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
+    let size = q.size.unwrap_or(640);
+    match crate::tidal::client().user_profile().await {
+        Ok(v) => {
+            if let Some(pic) = v["picture"].as_str().filter(|s| !s.is_empty()) {
+                let url = cover_url(pic, size);
+                return Ok(warp::reply::with_status(
+                    warp::reply::with_header(warp::reply(), "Location", url),
+                    warp::http::StatusCode::FOUND,
+                )
+                .into_response());
+            }
+        }
+        Err(e) => tracing::warn!("user profile fetch failed: {e}"),
+    }
+    Ok(warp::reply::with_header(
+        warp::reply::with_status(PLACEHOLDER_PNG, warp::http::StatusCode::OK),
+        "Content-Type",
+        "image/png",
+    )
+    .into_response())
+}
+
+// A 1x1 transparent PNG; the fallback avatar.
+const PLACEHOLDER_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
+    0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0,
+    1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
 pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing").into_response());

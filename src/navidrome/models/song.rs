@@ -133,6 +133,44 @@ pub struct LyricsList {
     pub structured_lyrics: Vec<StructuredLyrics>,
 }
 
+// getSimilarSongs v1 data: { similarSongs: { song: [ Child ] } }
+#[derive(Serialize)]
+pub struct SimilarSongsResponse {
+    #[serde(rename = "similarSongs")]
+    pub similar_songs: SimilarSongs,
+}
+
+#[derive(Serialize)]
+pub struct SimilarSongs {
+    pub song: Vec<Child>,
+}
+
+// getSongsByGenre data: { songsByGenre: { song: [ Child ] } }
+#[derive(Serialize)]
+pub struct SongsByGenreResponse {
+    #[serde(rename = "songsByGenre")]
+    pub songs_by_genre: SongsByGenre,
+}
+
+#[derive(Serialize)]
+pub struct SongsByGenre {
+    pub song: Vec<Child>,
+}
+
+// getLyrics (legacy) data: { lyrics: { artist, title, value } }. The
+// plain text of the song's lyrics goes in value.
+#[derive(Serialize)]
+pub struct LyricsResponse {
+    pub lyrics: Lyrics,
+}
+
+#[derive(Serialize)]
+pub struct Lyrics {
+    pub artist: String,
+    pub title: String,
+    pub value: String,
+}
+
 #[derive(Serialize)]
 pub struct StructuredLyrics {
     #[serde(rename = "displayArtist")]

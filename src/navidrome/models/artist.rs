@@ -18,6 +18,28 @@ pub struct ArtistWithAlbums {
     pub album: Vec<AlbumId3>,
 }
 
+// Legacy Artist element (search2): ArtistID3 minus albumCount when absent.
+#[derive(Serialize)]
+pub struct Artist {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
+    pub cover_art: Option<String>,
+    #[serde(rename = "albumCount", skip_serializing_if = "Option::is_none")]
+    pub album_count: Option<u32>,
+}
+
+impl From<&ArtistId3> for Artist {
+    fn from(a: &ArtistId3) -> Self {
+        Artist {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            cover_art: a.cover_art.clone(),
+            album_count: a.album_count,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct ArtistId3 {
     pub id: String,

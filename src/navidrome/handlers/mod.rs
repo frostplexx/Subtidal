@@ -17,18 +17,25 @@ use super::auth::Unauthorized;
 use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse};
 use warp::reject::Rejection;
 
-pub use album::{get_album, get_album_list2};
+pub use album::{
+    get_album, get_album_info, get_album_info2, get_album_list, get_album_list2,
+};
 pub use annotate::{scrobble, set_rating};
 pub use artist::{get_artist, get_artist_info, get_artist_info2, get_top_songs};
-pub use cover::get_cover_art;
+pub use cover::{get_avatar, get_cover_art};
 pub use favorites::{get_starred, get_starred2, star, unstar};
 pub use jukebox::jukebox_control;
-pub use lyrics::get_lyrics_by_song_id;
+pub use lyrics::{get_lyrics, get_lyrics_by_song_id};
 pub use now_playing::{get_now_playing, report_playback, update_now_playing};
 pub use playlist::{get_genres, get_playlist, get_playlists};
-pub use search::search3;
-pub use system::{get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user, ping};
-pub use tracks::{get_random_songs, get_similar_songs2, get_song, stream};
+pub use search::{search2, search3};
+pub use system::{
+    get_license, get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user,
+    get_users, ping, start_scan,
+};
+pub use tracks::{
+    get_random_songs, get_similar_songs, get_similar_songs2, get_song, get_songs_by_genre, stream,
+};
 
 // Response envelope helpers, shared by every handler.
 pub(crate) fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {

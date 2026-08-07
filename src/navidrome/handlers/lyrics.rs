@@ -1,14 +1,15 @@
-// Structured lyrics: getLyricsBySongId. Tidal returns plain text plus an
-// LRC subtitle track for the same song; the synced one wins when both
-// exist. Only the version 1 shape is served: no kind field unless
-// enhanced=true was requested, no cueLine data.
+// Structured lyrics: getLyricsBySongId and the legacy getLyrics. Tidal
+// returns plain text plus an LRC subtitle track for the same song; the
+// synced one wins when both exist. Only the version 1 shape is served:
+// no kind field unless enhanced=true was requested, no cueLine data.
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::models::{
-    LyricLine, LyricsList, LyricsListResponse, StructuredLyrics,
+    LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse, StructuredLyrics,
 };
 use crate::navidrome::params::QueryParams;
 use super::{fail, ok};
 use crate::tidal::client::Error;
+use crate::tidal::mapping::search_items;
 
 pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
@@ -83,6 +84,51 @@ pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, 
             structured_lyrics: vec![entry],
         },
     }))
+}
+
+// getLyrics (legacy): lookup by artist + title, then serve the plain
+// text. The Tidal search's first track wins; a missing track or missing
+// lyrics yields an empty value, not an error.
+pub async fn get_lyrics(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let Some(artist) = q.artist.as_deref() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    let Some(title) = q.title.as_deref() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
+    let client = crate::tidal::client();
+    let result = match client.search(&format!("{artist} {title}")).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal search failed: {e}");
+            return Ok(fail(0, "Lyrics unavailable"));
+        }
+    };
+    let Some(track) = search_items(&result, "tracks").into_iter().next() else {
+        return Ok(ok(lyrics_reply(artist, title, "")));
+    };
+    let Some(track_id) = track["id"].as_u64() else {
+        return Ok(ok(lyrics_reply(artist, title, "")));
+    };
+    let value = match client.track_lyrics(track_id).await {
+        Ok(lyrics) => lyrics["lyrics"].as_str().unwrap_or("").trim().to_string(),
+        Err(Error::Tidal(404, _)) => String::new(),
+        Err(e) => {
+            tracing::error!("tidal lyrics fetch failed: {e}");
+            return Ok(fail(0, "Lyrics unavailable"));
+        }
+    };
+    Ok(ok(lyrics_reply(artist, title, &value)))
+}
+
+fn lyrics_reply(artist: &str, title: &str, value: &str) -> LyricsResponse {
+    LyricsResponse {
+        lyrics: Lyrics {
+            artist: artist.to_string(),
+            title: title.to_string(),
+            value: value.to_string(),
+        },
+    }
 }
 
 // Parse an LRC subtitle track into timed lines. The first timestamp on

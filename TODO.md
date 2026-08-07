@@ -17,13 +17,22 @@
 - [ ] Add getIndexes + getArtists — expose favorited artists as the library index
 - [x] Add getSong — single track detail; Feishin calls it from song context menus
 - [ ] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum
-- [ ] Add getAlbumInfo2 — album info (notes/artists); Tidal has no album notes, would be mostly empty
+- [x] Add getAlbumInfo / getAlbumInfo2 — album artwork at 160/320/640; notes/musicBrainzId/lastFmUrl empty and omitted (Tidal exposes no album notes); commit <BATCH>
 
 ### Lists & playlists
 
 - [x] Add getPlaylist — single playlist with its entries, paginated at 100 (Tidal's items cap); bad id → 70, missing → 10; commit 123f071
-- [ ] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD
-- [ ] Add addToPlaylist / removeFromPlaylist — modify Tidal playlist contents
+- [ ] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD; updatePlaylist also covers add/remove of entries
+- [ ] Add getPlayQueue / savePlayQueue — in-memory queue store like the jukebox; Feishin persists its queue across restarts
+- [ ] Add getBookmarks / createBookmark / deleteBookmark — in-memory position store (music clients use bookmarks mostly for podcasts)
+- [ ] Add download — accept song/album/artist/playlist ids; a single-song download 302s to the stream; multi-item needs a decision
+- [ ] Add getShares + createShare/updateShare/deleteShare — fake empty lists (Tidal has no share backend)
+- [ ] Add getInternetRadioStations + create/update/deleteInternetRadioStation — fake empty lists
+- [x] Add getAlbumList (v1) — same list core as getAlbumList2, legacy Album shape; commit <BATCH>
+- [x] Add getSongsByGenre — favorite tracks filtered by the track's genre, offset/count; Tidal genres are sparse, so matches are rare; commit <BATCH>
+- [x] Add getSimilarSongs (v1) — same core as getSimilarSongs2 under the similarSongs wrapper; commit <BATCH>
+- [x] Add search2 — same Tidal search as search3, legacy Artist/Album shapes; commit <BATCH>
+- [x] Add getLyrics (legacy) — artist + title lookup via Tidal search, plain-text value; commit <BATCH>
 
 ### Favorites & art
 
@@ -38,10 +47,17 @@
 - [ ] Byte-serving hi-res (byte-proxy concat or ffmpeg remux to FLAC) — DECLINED by decision: the only universal path for non-HLS clients (Feishin, DSub) is server egress ≈ file size per play; user chose to keep zero server bandwidth; hi-res stays HLS-only (format=hls), default stream stays 302 to AAC
 - [ ] Set real contentType/suffix per stream — placeholder "audio/flac"/"flac" in Child; the LOSSLESS tier usually cascades to AAC, so the placeholder is wrong once streaming works (src/tidal/mapping/song.rs)
 
+## Next: system & profile
+
+- [x] Add getLicense — always valid, like Navidrome; commit <BATCH>
+- [x] Add getUsers — the single authenticated user, like Navidrome; commit <BATCH>
+- [x] Add startScan — instant (nothing to scan); fullScan accepted and ignored; commit <BATCH>
+- [x] Add getAvatar — 302-redirects to the Tidal account picture when set (profile.picture; null on this account), else a 1x1 transparent PNG; commit <BATCH>
+
 ## Next: scrobble middleware
 
 - [x] Add updateNowPlaying + getNowPlaying — legacy updateNowPlaying aliased (VeloSonic still calls it; OpenSubsonic replaced it with scrobble submission=false); shared now-playing slot in navidrome/now_playing.rs, replaced per report, expired after 10 min; scrobble feeds it too; entry = full song + username/minutesAgo/playerId; commit 4b41274
-&
+- [x] Add reportPlayback — playbackReport extension (v1, already advertised); states starting/playing/paused/stopped drive the slot; stopped clears it and logs the completion (future PlayReporter hook); positionMs estimated forward from the last report while playing (playbackRate aware), frozen on pause; getNowPlaying entries gain state/positionMs/playbackRate; mediaType restricted to song; commit 6d00dab
 - [x] Add setRating — faked (no Tidal rating backend): id + rating 0-5 validated and logged, empty ok; missing id/rating -> 10, rating>5 -> 70; commit 4965a77
 - [x] Add getSimilarSongs2 — seed artist top tracks + 3 closest similar artists' top tracks, shuffled, truncated to count (default 50); similar-artist fetch failure degrades to a warning; commit 4b41274
 - [x] Add getArtistInfo — same payload as getArtistInfo2 wrapped as artistInfo; shared artist_info() core; commit 4b41274
@@ -55,6 +71,9 @@
 
 - getNowPlaying serves a single shared slot (single-user server); entries expire after ten minutes without a report
 - reportPlayback accepts mediaType=song only; podcasts are unsupported (mediaType=podcast fails with code 0)
+- getAvatar serves a placeholder PNG until the Tidal account has a picture set (profile.picture is null today)
+- getSongsByGenre matches only the genre string on Tidal track JSON; with no genre catalog (getGenres empty) most requests return nothing
+- getAlbumInfo / getAlbumInfo2 return artwork only; notes, musicBrainzId, and lastFmUrl are always omitted
 
 ## Decided, not started
 

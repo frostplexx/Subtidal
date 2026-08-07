@@ -31,6 +31,92 @@ pub struct AlbumWithSongs {
     pub song: Vec<Child>,
 }
 
+// getAlbumList data: { albumList: { album: [ Album ] } } (v1 legacy shapes)
+#[derive(Serialize)]
+pub struct AlbumListResponse {
+    #[serde(rename = "albumList")]
+    pub album_list: AlbumList,
+}
+
+#[derive(Serialize)]
+pub struct AlbumList {
+    pub album: Vec<Album>,
+}
+
+// Legacy Album element (getAlbumList v1, search2): AlbumID3 without the
+// name aliases.
+#[derive(Serialize)]
+pub struct Album {
+    pub id: String,
+    pub name: String,
+    pub artist: String,
+    #[serde(rename = "artistId")]
+    pub artist_id: String,
+    #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
+    pub cover_art: Option<String>,
+    #[serde(rename = "songCount", skip_serializing_if = "Option::is_none")]
+    pub song_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<u32>,
+    #[serde(rename = "playCount")]
+    pub play_count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genre: Option<String>,
+}
+
+impl From<&AlbumId3> for Album {
+    fn from(a: &AlbumId3) -> Self {
+        Album {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            artist: a.artist.clone(),
+            artist_id: a.artist_id.clone(),
+            cover_art: a.cover_art.clone(),
+            song_count: a.song_count,
+            duration: a.duration,
+            play_count: a.play_count,
+            created: a.created.clone(),
+            year: a.year,
+            genre: a.genre.clone(),
+        }
+    }
+}
+
+// getAlbumInfo / getAlbumInfo2 data. Tidal has no album notes and no
+// external ids, so only the artwork is real; notes, musicBrainzId, and
+// lastFmUrl stay empty and are omitted.
+#[derive(Serialize)]
+pub struct AlbumInfoResponse {
+    #[serde(rename = "albumInfo")]
+    pub album_info: AlbumInfo,
+}
+
+#[derive(Serialize)]
+pub struct AlbumInfo2Response {
+    #[serde(rename = "albumInfo2")]
+    pub album_info: AlbumInfo,
+}
+
+#[derive(Serialize)]
+pub struct AlbumInfo {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    #[serde(rename = "musicBrainzId", skip_serializing_if = "String::is_empty")]
+    pub music_brainz_id: String,
+    #[serde(rename = "lastFmUrl", skip_serializing_if = "String::is_empty")]
+    pub last_fm_url: String,
+    #[serde(rename = "smallImageUrl", skip_serializing_if = "Option::is_none")]
+    pub small_image_url: Option<String>,
+    #[serde(rename = "mediumImageUrl", skip_serializing_if = "Option::is_none")]
+    pub medium_image_url: Option<String>,
+    #[serde(rename = "largeImageUrl", skip_serializing_if = "Option::is_none")]
+    pub large_image_url: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct AlbumId3 {
     pub id: String,

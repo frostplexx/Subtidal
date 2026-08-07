@@ -37,6 +37,8 @@ pub struct QueryParams {
     // getTopSongs: artist name, or the artist id via the topSongsByArtistId
     // extension; count defaults to 50
     pub artist: Option<String>,
+    // getLyrics (legacy): song lookup by artist + title
+    pub title: Option<String>,
     pub count: Option<u32>,
     // jukeboxControl
     pub action: Option<String>,
@@ -120,6 +122,7 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "albumId" => q.album_id.0.push(v),
         "artistId" => q.artist_id.0.push(v),
         "artist" => q.artist = Some(v),
+        "title" => q.title = Some(v),
         "count" => q.count = Some(v.parse().map_err(|_| E::custom("invalid count"))?),
         "action" => q.action = Some(v),
         "index" => q.index = Some(v.parse().map_err(|_| E::custom("invalid index"))?),
