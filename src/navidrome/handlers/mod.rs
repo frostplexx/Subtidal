@@ -21,7 +21,7 @@ pub use favorites::{get_starred, get_starred2};
 pub use jukebox::jukebox_control;
 pub use playlist::{get_genres, get_playlists};
 pub use search::search3;
-pub use system::{get_open_subsonic_extensions, get_user, ping};
+pub use system::{get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user, ping};
 pub use tracks::{get_song, stream};
 
 // Response envelope helpers, shared by every handler.

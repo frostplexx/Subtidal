@@ -23,6 +23,7 @@ pub use search::{SearchResult3, SearchResult3Response};
 pub use song::{Child, GetSongResponse, TopSongs, TopSongsResponse};
 pub use system::{
     GetOpenSubsonicExtensionsResponse, GetUserResponse, Genres, GenresResponse,
-    JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, OpenSubsonicExtension,
-    PingResponse, SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse, User,
+    JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, MusicFolder, MusicFolders,
+    MusicFoldersResponse, OpenSubsonicExtension, PingResponse, ScanStatus, ScanStatusResponse,
+    SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse, User,
 };

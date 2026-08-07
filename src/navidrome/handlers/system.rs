@@ -1,6 +1,7 @@
 // System endpoints: ping, extension advertisement, and the user profile.
 use crate::navidrome::models::{
-    GetOpenSubsonicExtensionsResponse, GetUserResponse, OpenSubsonicExtension, PingResponse, User,
+    GetOpenSubsonicExtensionsResponse, GetUserResponse, MusicFolder, MusicFolders,
+    MusicFoldersResponse, OpenSubsonicExtension, PingResponse, ScanStatus, ScanStatusResponse, User,
 };
 use super::{ok};
 use crate::SETTINGS;
@@ -70,6 +71,26 @@ pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
             podcast_role: "false",
             jukebox_role: "false",
             share_role: "false",
+        },
+    }))
+}
+
+// getMusicFolders: one virtual folder covering the whole Tidal catalog.
+pub async fn get_music_folders() -> Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(MusicFoldersResponse {
+        music_folders: MusicFolders {
+            music_folder: vec![MusicFolder { id: 1, name: "Tidal" }],
+        },
+    }))
+}
+
+// getScanStatus: there is no local library, so nothing scans. Arpeggi
+// may prompt for a scan after seeing count 0.
+pub async fn get_scan_status() -> Result<warp::reply::Json, warp::Rejection> {
+    Ok(ok(ScanStatusResponse {
+        scan_status: ScanStatus {
+            scanning: false,
+            count: 0,
         },
     }))
 }

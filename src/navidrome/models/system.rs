@@ -68,6 +68,38 @@ pub struct GetUserResponse {
     pub user: User,
 }
 
+// getMusicFolders data: { musicFolders: { musicFolder: [ { id, name } ] } }
+#[derive(Serialize)]
+pub struct MusicFoldersResponse {
+    #[serde(rename = "musicFolders")]
+    pub music_folders: MusicFolders,
+}
+
+#[derive(Serialize)]
+pub struct MusicFolders {
+    #[serde(rename = "musicFolder")]
+    pub music_folder: Vec<MusicFolder>,
+}
+
+#[derive(Serialize)]
+pub struct MusicFolder {
+    pub id: u32,
+    pub name: &'static str,
+}
+
+// getScanStatus data: { scanStatus: { scanning, count } }
+#[derive(Serialize)]
+pub struct ScanStatusResponse {
+    #[serde(rename = "scanStatus")]
+    pub scan_status: ScanStatus,
+}
+
+#[derive(Serialize)]
+pub struct ScanStatus {
+    pub scanning: bool,
+    pub count: u32,
+}
+
 // Role flags are strings ("true"/"false") to match the documented
 // OpenSubsonic JSON output, a legacy Subsonic quirk.
 #[derive(Serialize)]
@@ -178,6 +210,32 @@ mod tests {
             json,
             r##"{"openSubsonicExtensions":[{"name":"transcodeOffset","versions":[1]}]}"##
         );
+    }
+
+    #[test]
+    fn music_folders_serializes_one_folder() {
+        let resp = MusicFoldersResponse {
+            music_folders: MusicFolders {
+                music_folder: vec![MusicFolder { id: 1, name: "Tidal" }],
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(
+            json,
+            r##"{"musicFolders":{"musicFolder":[{"id":1,"name":"Tidal"}]}}"##
+        );
+    }
+
+    #[test]
+    fn scan_status_serializes_idle_scan() {
+        let resp = ScanStatusResponse {
+            scan_status: ScanStatus {
+                scanning: false,
+                count: 0,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert_eq!(json, r##"{"scanStatus":{"scanning":false,"count":0}}"##);
     }
 
     #[test]

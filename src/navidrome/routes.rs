@@ -56,6 +56,8 @@ async fn dispatch(
 ) -> Result<warp::reply::Response, warp::Rejection> {
     let reply = match name.as_str() {
         "getUser" => handlers::get_user().await?.into_response(),
+        "getMusicFolders" => handlers::get_music_folders().await?.into_response(),
+        "getScanStatus" => handlers::get_scan_status().await?.into_response(),
         "search3" => handlers::search3(q).await?.into_response(),
         "getCoverArt" => handlers::get_cover_art(q).await?.into_response(),
         "getAlbum" => handlers::get_album(q).await?.into_response(),
@@ -121,6 +123,8 @@ mod tests {
         let filter = routes();
         for path in [
             "/rest/getUser",
+            "/rest/getMusicFolders",
+            "/rest/getScanStatus",
             "/rest/getUser.view",
             "/rest/search3",
             "/rest/getCoverArt",
