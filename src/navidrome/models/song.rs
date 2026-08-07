@@ -64,6 +64,18 @@ pub struct TopSongs {
     pub song: Vec<Child>,
 }
 
+// getRandomSongs data: { randomSongs: { song: [ Child ] } }
+#[derive(Serialize)]
+pub struct RandomSongsResponse {
+    #[serde(rename = "randomSongs")]
+    pub random_songs: RandomSongs,
+}
+
+#[derive(Serialize)]
+pub struct RandomSongs {
+    pub song: Vec<Child>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

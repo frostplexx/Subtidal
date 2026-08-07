@@ -20,7 +20,7 @@ pub use favorites::{
 };
 pub use playlist::{GetPlaylistResponse, Playlist, Playlists, PlaylistsResponse, PlaylistWithSongs};
 pub use search::{SearchResult3, SearchResult3Response};
-pub use song::{Child, GetSongResponse, TopSongs, TopSongsResponse};
+pub use song::{Child, GetSongResponse, RandomSongs, RandomSongsResponse, TopSongs, TopSongsResponse};
 pub use system::{
     GetOpenSubsonicExtensionsResponse, GetUserResponse, Genres, GenresResponse,
     JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, MusicFolder, MusicFolders,

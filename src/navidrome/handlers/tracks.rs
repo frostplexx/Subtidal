@@ -1,7 +1,10 @@
-// Track browsing and streaming: getSong plus the stream endpoint.
+// Track browsing and streaming: getSong, getRandomSongs, and stream.
 use crate::navidrome::ids;
-use crate::navidrome::models::GetSongResponse;
+use crate::navidrome::models::{
+    Child, GetSongResponse, RandomSongs, RandomSongsResponse,
+};
 use crate::navidrome::params::QueryParams;
+use rand::seq::SliceRandom;
 use super::{fail, ok};
 use crate::tidal::mapping::{song_from_track, year_from};
 use warp::Reply;
@@ -36,6 +39,52 @@ pub async fn get_song(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
         song.year = year_from(album["releaseDate"].as_str());
     }
     Ok(ok(GetSongResponse { song }))
+}
+
+// getRandomSongs: shuffled favorites, the same random==favorites decision
+// as getAlbumList2. genre and the fromYear/toYear window filter before
+// the shuffle; musicFolderId is ignored (single virtual folder).
+pub async fn get_random_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let size = q.size.unwrap_or(10).min(500) as usize;
+    let result = match crate::tidal::client().favorite_tracks(0, 2000).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal favorites fetch failed: {e}");
+            return Ok(fail(0, "Favorites unavailable"));
+        }
+    };
+    let songs: Vec<Child> = result["items"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|entry| song_from_track(&entry["item"]))
+                .collect()
+        })
+        .unwrap_or_default();
+    let song = pick_random(songs, size, q.genre.as_deref(), q.from_year, q.to_year);
+    Ok(ok(RandomSongsResponse {
+        random_songs: RandomSongs { song },
+    }))
+}
+
+// Filter, shuffle, then truncate. Genre matches exactly; songs without a
+// year pass the year window.
+fn pick_random(
+    mut songs: Vec<Child>,
+    size: usize,
+    genre: Option<&str>,
+    from_year: Option<u32>,
+    to_year: Option<u32>,
+) -> Vec<Child> {
+    songs.retain(|s| {
+        genre.is_none_or(|g| s.genre.as_deref() == Some(g))
+            && from_year.is_none_or(|f| s.year.is_none_or(|y| y >= f))
+            && to_year.is_none_or(|t| s.year.is_none_or(|y| y <= t))
+    });
+    songs.shuffle(&mut rand::rng());
+    songs.truncate(size);
+    songs
 }
 
 // Map Subsonic maxBitRate (kbps) to a Tidal quality tier. Tidal has no
@@ -157,7 +206,8 @@ fn build_hls_playlist(dash: &crate::tidal::client::DashInfo) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::tidal_quality;
+    use super::{pick_random, tidal_quality};
+    use crate::navidrome::models::Child;
     use crate::tidal::client::{DashInfo, Segment};
 
     // Fixture matching the live hi-res MPD: 52 segments of 176128
@@ -219,5 +269,61 @@ mod tests {
         assert_eq!(tidal_quality(None, Some("mp3")), "HIGH");
         assert_eq!(tidal_quality(Some(128), Some("flac")), "HIGH");
         assert_eq!(tidal_quality(Some(64), Some("mp3")), "LOW");
+    }
+
+    // A minimal Child for pick_random tests.
+    fn song(id: &str, year: Option<u32>, genre: Option<&str>) -> Child {
+        Child {
+            id: id.into(),
+            parent: String::new(),
+            is_dir: false,
+            is_video: false,
+            title: String::new(),
+            album: String::new(),
+            artist: String::new(),
+            track: 0,
+            year,
+            genre: genre.map(String::from),
+            cover_art: None,
+            duration: 0,
+            disc_number: None,
+            album_id: String::new(),
+            artist_id: String::new(),
+            kind: "song",
+            content_type: "audio/flac",
+            suffix: "flac",
+            size: 0,
+            path: String::new(),
+            created: String::new(),
+            starred: None,
+        }
+    }
+
+    #[test]
+    fn random_songs_truncates_to_size() {
+        let songs = vec![song("a", None, None), song("b", None, None), song("c", None, None)];
+        let picked = pick_random(songs, 2, None, None, None);
+        assert_eq!(picked.len(), 2);
+    }
+
+    #[test]
+    fn random_songs_filters_by_genre_and_year() {
+        let songs = vec![
+            song("a", Some(2005), Some("Rock")),
+            song("b", Some(2010), Some("Jazz")),
+            song("c", Some(2015), Some("Rock")),
+        ];
+        let picked = pick_random(songs, 10, Some("Rock"), Some(2010), Some(2020));
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].id, "c");
+    }
+
+    #[test]
+    fn random_songs_keeps_all_ids_when_shuffling() {
+        let songs = vec![song("a", None, None), song("b", None, None), song("c", None, None)];
+        let picked = pick_random(songs, 10, None, None, None);
+        let mut ids: Vec<&str> = picked.iter().map(|s| s.id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a", "b", "c"]);
     }
 }

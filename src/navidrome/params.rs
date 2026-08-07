@@ -79,6 +79,8 @@ pub struct QueryParams {
     // true for a real scrobble, false for a now-playing notification.
     pub time: Option<i64>,
     pub submission: Option<bool>,
+    // getRandomSongs: genre filter; year window reuses fromYear/toYear
+    pub genre: Option<String>,
 }
 
 impl QueryParams {
