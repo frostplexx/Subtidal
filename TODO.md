@@ -21,7 +21,7 @@
 
 ### Lists & playlists
 
-- [x] Add getPlaylist — single playlist with its entries, paginated at 100 (Tidal's items cap); bad id → 70, missing → 10; commit <TBD>
+- [x] Add getPlaylist — single playlist with its entries, paginated at 100 (Tidal's items cap); bad id → 70, missing → 10; commit 123f071
 - [ ] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD
 - [ ] Add addToPlaylist / removeFromPlaylist — modify Tidal playlist contents
 
