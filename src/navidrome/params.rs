@@ -65,6 +65,13 @@ pub struct QueryParams {
     // cueLine). We serve only v1, so the flag is accepted and ignored
     // beyond the shape of the reply.
     pub enhanced: Option<bool>,
+    // reportPlayback: playback timeline events.
+    pub media_id: Option<String>,
+    pub media_type: Option<String>,
+    pub position_ms: Option<u64>,
+    pub state: Option<String>,
+    pub playback_rate: Option<f64>,
+    pub ignore_scrobble: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for QueryParams {
@@ -126,6 +133,12 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "submission" => q.submission = Some(v.parse().map_err(|_| E::custom("invalid submission"))?),
         "genre" => q.genre = Some(v),
         "enhanced" => q.enhanced = Some(v.parse().map_err(|_| E::custom("invalid enhanced"))?),
+        "mediaId" => q.media_id = Some(v),
+        "mediaType" => q.media_type = Some(v),
+        "positionMs" => q.position_ms = Some(v.parse().map_err(|_| E::custom("invalid positionMs"))?),
+        "state" => q.state = Some(v),
+        "playbackRate" => q.playback_rate = Some(v.parse().map_err(|_| E::custom("invalid playbackRate"))?),
+        "ignoreScrobble" => q.ignore_scrobble = Some(v.parse().map_err(|_| E::custom("invalid ignoreScrobble"))?),
         _ => {}
     }
     Ok(())

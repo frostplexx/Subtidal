@@ -98,6 +98,13 @@ pub struct NowPlayingEntry {
     pub minutes_ago: u32,
     #[serde(rename = "playerId")]
     pub player_id: u32,
+    // playbackReport extension fields; the server always estimates a
+    // position from the latest report.
+    pub state: &'static str,
+    #[serde(rename = "positionMs")]
+    pub position_ms: u64,
+    #[serde(rename = "playbackRate")]
+    pub playback_rate: f64,
 }
 
 // getSimilarSongs2 data: { similarSongs2: { song: [ Child ] } }
@@ -192,12 +199,18 @@ mod tests {
             username: "admin".into(),
             minutes_ago: 0,
             player_id: 0,
+            state: "playing",
+            position_ms: 120_000,
+            playback_rate: 1.0,
         })
         .unwrap();
         assert_eq!(json["id"], "t123");
         assert_eq!(json["username"], "admin");
         assert_eq!(json["minutesAgo"], 0);
         assert_eq!(json["playerId"], 0);
+        assert_eq!(json["state"], "playing");
+        assert_eq!(json["positionMs"], 120_000);
+        assert_eq!(json["playbackRate"], 1.0);
     }
 
     #[test]

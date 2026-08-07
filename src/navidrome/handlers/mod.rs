@@ -24,7 +24,7 @@ pub use cover::get_cover_art;
 pub use favorites::{get_starred, get_starred2, star, unstar};
 pub use jukebox::jukebox_control;
 pub use lyrics::get_lyrics_by_song_id;
-pub use now_playing::{get_now_playing, update_now_playing};
+pub use now_playing::{get_now_playing, report_playback, update_now_playing};
 pub use playlist::{get_genres, get_playlist, get_playlists};
 pub use search::search3;
 pub use system::{get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user, ping};
