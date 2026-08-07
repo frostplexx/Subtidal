@@ -59,17 +59,9 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
     let offset = q.offset.unwrap_or(0);
     let size = q.size.unwrap_or(10).min(500);
     let album: Vec<AlbumId3> = match q.r#type.as_deref() {
-        Some("starred" | "frequent" | "recent" | "byGenre") => {
-            let result = match crate::tidal::client().favorite_albums(offset, size).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("tidal favorites fetch failed: {e}");
-                    return Err("Album list unavailable");
-                }
-            };
-            favorites_albums(&result)
-        }
-        Some("random") => {
+        // starred/frequent/recent/byGenre page favorites directly; random
+        // shuffles the same page.
+        Some("starred" | "frequent" | "recent" | "byGenre" | "random") => {
             let result = match crate::tidal::client().favorite_albums(offset, size).await {
                 Ok(v) => v,
                 Err(e) => {
@@ -78,7 +70,9 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                 }
             };
             let mut album = favorites_albums(&result);
-            crate::navidrome::handlers::jukebox::shuffle(&mut album);
+            if q.r#type.as_deref() == Some("random") {
+                crate::navidrome::handlers::jukebox::shuffle(&mut album);
+            }
             album
         }
         Some("newest") => {

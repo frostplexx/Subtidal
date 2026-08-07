@@ -1,5 +1,6 @@
 // Track browsing and streaming: getSong, getRandomSongs, getSongsByGenre,
 // getSimilarSongs (v1 and v2), and stream.
+use super::favorites::favorite_track_songs;
 use crate::navidrome::ids;
 use crate::navidrome::models::{
     Child, GetSongResponse, RandomSongs, RandomSongsResponse, SimilarSongs, SimilarSongs2,
@@ -7,7 +8,7 @@ use crate::navidrome::models::{
 };
 use crate::navidrome::params::QueryParams;
 use rand::seq::SliceRandom;
-use super::{fail, ok};
+use super::{fail, ok, redirect};
 use crate::tidal::mapping::{song_from_track, year_from};
 use warp::Reply;
 
@@ -19,7 +20,7 @@ pub async fn get_song(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));
     };
-    let Some(track_id) = ids::decode(ids::IdKind::Track, id).or_else(|| id.parse().ok()) else {
+    let Some(track_id) = ids::parse_track_id(id) else {
         return Ok(fail(70, "Song not found"));
     };
     let client = crate::tidal::client();
@@ -55,15 +56,7 @@ pub async fn get_random_songs(q: QueryParams) -> Result<warp::reply::Json, warp:
             return Ok(fail(0, "Favorites unavailable"));
         }
     };
-    let songs: Vec<Child> = result["items"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|entry| song_from_track(&entry["item"]))
-                .collect()
-        })
-        .unwrap_or_default();
+    let songs = favorite_track_songs(&result);
     let song = pick_random(songs, size, q.genre.as_deref(), q.from_year, q.to_year);
     Ok(ok(RandomSongsResponse {
         random_songs: RandomSongs { song },
@@ -105,15 +98,7 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
             return Ok(fail(0, "Favorites unavailable"));
         }
     };
-    let song: Vec<Child> = result["items"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|entry| song_from_track(&entry["item"]))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
+    let song: Vec<Child> = favorite_track_songs(&result)
         .into_iter()
         .filter(|s| s.genre.as_deref() == Some(genre))
         .skip(offset)
@@ -266,15 +251,6 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
         }
     }
     Ok(fail(0, "Stream unavailable").into_response())
-}
-
-fn redirect(url: String) -> warp::reply::Response {
-    warp::reply::with_header(
-        warp::reply::with_status(warp::reply(), warp::http::StatusCode::FOUND),
-        "Location",
-        url,
-    )
-    .into_response()
 }
 
 fn hls_reply(playlist: String) -> warp::reply::Response {

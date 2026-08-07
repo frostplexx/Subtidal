@@ -26,26 +26,12 @@ struct Jukebox {
     position: u32,
 }
 
-// Fisher-Yates with xorshift32; the jukebox avoids extra dependencies.
-// getAlbumList2 type=random also reuses it to shuffle favorites.
+// Shuffle in place. rand is already a dependency (getRandomSongs), so
+// the jukebox reuses it instead of a hand-rolled generator. getAlbumList2
+// type=random also reuses this to shuffle favorites.
 pub(crate) fn shuffle<T>(playlist: &mut [T]) {
-    fn next(seed: &mut u32) -> u32 {
-        let mut x = *seed;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        *seed = x;
-        x
-    }
-    let mut seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0x9E37_79B9);
-    let len = playlist.len();
-    for i in (1..len).rev() {
-        let j = (next(&mut seed) % (i as u32 + 1)) as usize;
-        playlist.swap(i, j);
-    }
+    use rand::seq::SliceRandom;
+    playlist.shuffle(&mut rand::rng());
 }
 
 // jukeboxControl: state changes happen under the lock; the track lookups

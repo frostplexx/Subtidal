@@ -4,7 +4,7 @@
 use crate::navidrome::models::PingResponse;
 use crate::navidrome::now_playing;
 use super::{fail, ok};
-use crate::navidrome::ids::{self, IdKind};
+use crate::navidrome::ids;
 use crate::navidrome::params::QueryParams;
 
 // scrobble: accept one or more playback reports. submission=false is a
@@ -24,8 +24,12 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
         );
     }
     if let Some(id) = q.id.0.last()
-        && let Some(track_id) = ids::decode(IdKind::Track, id).or_else(|| id.parse().ok())
+        && let Some(track_id) = ids::parse_track_id(id)
     {
+        // TODO: only submission=false is a now-playing notification. A real
+        // scrobble (submission=true) feeds a finished song into the slot as
+        // "playing at position 0", contradicting the stopped-clears-slot
+        // semantics in now_playing. Gate this on q.submission == Some(false).
         now_playing::report(track_id, q.u.clone().unwrap_or_default());
     }
     Ok(ok(PingResponse {}))
@@ -38,7 +42,7 @@ pub async fn set_rating(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));
     };
-    if ids::decode(IdKind::Track, id).or_else(|| id.parse().ok()).is_none() {
+    if ids::parse_track_id(id).is_none() {
         return Ok(fail(70, "Song not found"));
     }
     let Some(rating) = q.rating else {

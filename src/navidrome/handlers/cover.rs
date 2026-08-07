@@ -2,7 +2,7 @@
 // to Tidal's image CDN; the server never proxies image bytes).
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::params::QueryParams;
-use super::fail;
+use super::{fail, redirect};
 use crate::tidal::mapping::{artist_pic_url, cover_url};
 use warp::Reply;
 
@@ -15,11 +15,7 @@ pub async fn get_avatar(q: QueryParams) -> Result<warp::reply::Response, warp::R
         Ok(v) => {
             if let Some(pic) = v["picture"].as_str().filter(|s| !s.is_empty()) {
                 let url = cover_url(pic, size);
-                return Ok(warp::reply::with_status(
-                    warp::reply::with_header(warp::reply(), "Location", url),
-                    warp::http::StatusCode::FOUND,
-                )
-                .into_response());
+                return Ok(redirect(url));
             }
         }
         Err(e) => tracing::warn!("user profile fetch failed: {e}"),
@@ -93,9 +89,5 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
         return Ok(fail(70, "Cover art not found").into_response());
     };
     let url = if artist_pic { artist_pic_url(&uuid, size) } else { cover_url(&uuid, size) };
-    Ok(warp::reply::with_status(
-        warp::reply::with_header(warp::reply(), "Location", url),
-        warp::http::StatusCode::FOUND,
-    )
-    .into_response())
+    Ok(redirect(url))
 }

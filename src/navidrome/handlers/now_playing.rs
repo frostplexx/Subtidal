@@ -3,7 +3,7 @@
 // endpoint (scrobble with submission=false is its OpenSubsonic
 // replacement); VeloSonic still calls it, so it is aliased here.
 // reportPlayback is the playbackReport extension: full timeline states.
-use crate::navidrome::ids::{self, IdKind};
+use crate::navidrome::ids;
 use crate::navidrome::models::{NowPlaying, NowPlayingEntry, NowPlayingResponse, PingResponse};
 use crate::navidrome::now_playing;
 use crate::navidrome::params::QueryParams;
@@ -15,7 +15,7 @@ pub async fn update_now_playing(q: QueryParams) -> Result<warp::reply::Json, war
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));
     };
-    let Some(track_id) = ids::decode(IdKind::Track, id).or_else(|| id.parse().ok()) else {
+    let Some(track_id) = ids::parse_track_id(id) else {
         return Ok(fail(70, "Song not found"));
     };
     now_playing::report(track_id, q.u.clone().unwrap_or_default());
@@ -79,7 +79,7 @@ pub async fn report_playback(q: QueryParams) -> Result<warp::reply::Json, warp::
     let Some(state) = q.state.as_deref() else {
         return Ok(fail(10, "Required parameter missing"));
     };
-    let Some(track_id) = ids::decode(IdKind::Track, id).or_else(|| id.parse().ok()) else {
+    let Some(track_id) = ids::parse_track_id(id) else {
         return Ok(fail(70, "Song not found"));
     };
     // Map the wire state onto a 'static string for the shared slot.

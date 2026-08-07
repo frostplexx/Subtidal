@@ -16,6 +16,7 @@ pub mod tracks;
 use super::auth::Unauthorized;
 use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse};
 use warp::reject::Rejection;
+use warp::Reply;
 
 pub use album::{
     get_album, get_album_info, get_album_info2, get_album_list, get_album_list2,
@@ -49,6 +50,17 @@ pub(crate) fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {
             data,
         },
     })
+}
+
+// A 302 redirect reply. stream, getCoverArt, and getAvatar use it to
+// point clients at Tidal's CDN without proxying bytes.
+pub(crate) fn redirect(url: String) -> warp::reply::Response {
+    warp::reply::with_header(
+        warp::reply::with_status(warp::reply(), warp::http::StatusCode::FOUND),
+        "Location",
+        url,
+    )
+    .into_response()
 }
 
 pub(crate) fn fail(code: u32, message: &'static str) -> warp::reply::Json {

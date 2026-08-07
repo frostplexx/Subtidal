@@ -2,7 +2,7 @@
 // returns plain text plus an LRC subtitle track for the same song; the
 // synced one wins when both exist. Only the version 1 shape is served:
 // no kind field unless enhanced=true was requested, no cueLine data.
-use crate::navidrome::ids::{self, IdKind};
+use crate::navidrome::ids;
 use crate::navidrome::models::{
     LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse, StructuredLyrics,
 };
@@ -15,7 +15,7 @@ pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, 
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));
     };
-    let Some(track_id) = ids::decode(IdKind::Track, id).or_else(|| id.parse().ok()) else {
+    let Some(track_id) = ids::parse_track_id(id) else {
         return Ok(fail(70, "Song not found"));
     };
     let client = crate::tidal::client();
