@@ -58,7 +58,7 @@
 
 ## Done
 
-- [x] Add getSong — single track via /tracks/{id}; t<id> or bare number; year filled from album detail (track JSON has no releaseDate, album fetch hits meta cache); commit <TBD>
+- [x] Add getSong — single track via /tracks/{id}; t<id> or bare number; year filled from album detail (track JSON has no releaseDate, album fetch hits meta cache); commit fee3b8e
 
 - [x] Add getArtistInfo2 — bio (wimpLink markup stripped) + portraits 160/480/750 + similarArtist via /artists/{id}/bio + /similar; id resolves artist/album/song → first artist; musicBrainzId/lastFmUrl empty (Tidal exposes neither); commits f62486c + b953f2b (strip fix)
 
