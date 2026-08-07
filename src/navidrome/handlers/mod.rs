@@ -52,8 +52,7 @@ pub(crate) fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {
     })
 }
 
-// A 302 redirect reply. stream, getCoverArt, and getAvatar use it to
-// point clients at Tidal's CDN without proxying bytes.
+// A 302 redirect reply (stream, cover art, avatar).
 pub(crate) fn redirect(url: String) -> warp::reply::Response {
     warp::reply::with_header(
         warp::reply::with_status(warp::reply(), warp::http::StatusCode::FOUND),

@@ -59,8 +59,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
     let offset = q.offset.unwrap_or(0);
     let size = q.size.unwrap_or(10).min(500);
     let album: Vec<AlbumId3> = match q.r#type.as_deref() {
-        // starred/frequent/recent/byGenre page favorites directly; random
-        // shuffles the same page.
+        // All five types page favorites; random also shuffles them.
         Some("starred" | "frequent" | "recent" | "byGenre" | "random") => {
             let result = match crate::tidal::client().favorite_albums(offset, size).await {
                 Ok(v) => v,

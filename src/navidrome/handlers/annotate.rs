@@ -26,10 +26,8 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
     if let Some(id) = q.id.0.last()
         && let Some(track_id) = ids::parse_track_id(id)
     {
-        // TODO: only submission=false is a now-playing notification. A real
-        // scrobble (submission=true) feeds a finished song into the slot as
-        // "playing at position 0", contradicting the stopped-clears-slot
-        // semantics in now_playing. Gate this on q.submission == Some(false).
+        // TODO: real scrobbles (submission=true) must not feed the
+        // now-playing slot; gate this on q.submission == Some(false).
         now_playing::report(track_id, q.u.clone().unwrap_or_default());
     }
     Ok(ok(PingResponse {}))

@@ -26,9 +26,7 @@ struct Jukebox {
     position: u32,
 }
 
-// Shuffle in place. rand is already a dependency (getRandomSongs), so
-// the jukebox reuses it instead of a hand-rolled generator. getAlbumList2
-// type=random also reuses this to shuffle favorites.
+// Shuffle in place. getAlbumList2 type=random also reuses this.
 pub(crate) fn shuffle<T>(playlist: &mut [T]) {
     use rand::seq::SliceRandom;
     playlist.shuffle(&mut rand::rng());

@@ -21,9 +21,7 @@ pub(crate) fn favorites_albums(result: &serde_json::Value) -> Vec<crate::navidro
         .unwrap_or_default()
 }
 
-// Map a favorites track list to Child entries, without the favorite
-// time. getRandomSongs and getSongsByGenre reuse this; favorites_songs
-// below adds the time for getStarred/getStarred2.
+// Map a favorites track list to Child, without the favorite time.
 pub(crate) fn favorite_track_songs(result: &serde_json::Value) -> Vec<Child> {
     result["items"]
         .as_array()
