@@ -25,6 +25,36 @@ impl TidalClient {
         .await
     }
 
+    // One mix's tracks. Same { item } wrapper as playlist items, so
+    // playlist_song_from_item maps them; totalNumberOfItems is the count.
+    pub async fn mix_items(
+        &self,
+        mix_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        let offset = offset.to_string();
+        let limit = limit.to_string();
+        self.get_json_q(
+            &format!("/mixes/{mix_id}/items"),
+            &[("offset", offset.as_str()), ("limit", limit.as_str())],
+            &self.mix_cache,
+        )
+        .await
+    }
+
+    // The user's mixes (Daily Mix, My Mix, Discovery). Backs the mix
+    // entries blended into getPlaylists. Mixes regenerate daily, so they
+    // live in the short mix_cache, never the 6h meta_cache.
+    pub async fn my_mixes(&self) -> Result<Value, super::Error> {
+        self.get_json_q(
+            "/pages/my_collection_my_mixes",
+            &[("deviceType", "BROWSER"), ("locale", "en_US")],
+            &self.mix_cache,
+        )
+        .await
+    }
+
     // One playlist by UUID. Backs getCoverArt for playlist covers.
     pub async fn playlist(&self, uuid: &str) -> Result<Value, super::Error> {
         self.get_json(&format!("/playlists/{uuid}"), &self.meta_cache)

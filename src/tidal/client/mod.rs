@@ -84,6 +84,7 @@ pub struct TidalClient {
     tokens: Mutex<Option<auth::Tokens>>,
     meta_cache: Cache<String, Value>,
     search_cache: Cache<String, Value>,
+    mix_cache: Cache<String, Value>,
 }
 
 impl TidalClient {
@@ -107,6 +108,12 @@ impl TidalClient {
                 .support_invalidation_closures()
                 .build(),
             search_cache: Cache::builder()
+                .time_to_live(Duration::from_secs(300))
+                .max_capacity(1_000)
+                .build(),
+            // Mixes regenerate, so their pages and items never enter the
+            // 6h meta_cache; five minutes keeps them near-fresh.
+            mix_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(300))
                 .max_capacity(1_000)
                 .build(),

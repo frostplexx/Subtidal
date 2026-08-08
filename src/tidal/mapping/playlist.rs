@@ -33,6 +33,67 @@ pub fn playlist_song_from_item(v: &Value) -> Option<crate::navidrome::models::Ch
     song_from_track(&v["item"])
 }
 
+// Collect the mix objects from a my_collection_my_mixes page: rows ->
+// modules -> pagedList -> items, keeping only entries that carry a
+// mixType. Video mixes ("My Video Mix"/"My Video Mixes") are dropped:
+// they mix music videos, which stream differently and are not playable
+// here. Any structural drift simply yields no mixes.
+pub fn mixes_from_page(v: &Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    if let Some(rows) = v["rows"].as_array() {
+        for row in rows {
+            if let Some(modules) = row["modules"].as_array() {
+                for module in modules {
+                    if module["type"].as_str() == Some("MIX_LIST")
+                        && let Some(items) = module["pagedList"]["items"].as_array()
+                    {
+                        out.extend(
+                            items
+                                .iter()
+                                .filter(|i| i["mixType"].is_string())
+                                .filter(|i| {
+                                    !i["title"]
+                                        .as_str()
+                                        .is_some_and(|t| t.starts_with("My Video Mix"))
+                                })
+                                .cloned(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+// Map a mix object to a Subsonic Playlist. The id keeps an mx prefix so
+// getPlaylist can route it to the mix items endpoint; the cover is a full
+// image URL, like playlist covers. Mixes have no owner or stable track
+// count; created/duration get epoch/zero placeholders so clients render
+// them cleanly instead of showing a broken value.
+pub fn mix_from_tidal(v: &Value) -> Option<Playlist> {
+    let id = format!("mx{}", v["id"].as_str()?);
+    let name = v["title"].as_str()?.to_string();
+    Some(Playlist {
+        id,
+        name,
+        comment: v["subTitle"]
+            .as_str()
+            .or_else(|| v["description"].as_str())
+            .map(String::from),
+        owner: Some("TIDAL".into()),
+        r#public: false,
+        song_count: None,
+        duration: Some(0),
+        created: Some("1970-01-01T00:00:00.000Z".into()),
+        changed: None,
+        cover_art: v["images"]["MEDIUM"]["url"]
+            .as_str()
+            .or_else(|| v["images"]["SMALL"]["url"].as_str())
+            .map(String::from),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +142,89 @@ mod tests {
         assert_eq!(
             pl.cover_art.as_deref(),
             Some("https://resources.tidal.com/images/1a2b3c4d/5e6f/4a7b/8c9d/0e1f2a3b4c5d/320x320.jpg")
+        );
+    }
+
+
+
+    #[test]
+    fn mixes_from_page_unwraps_paged_list() {
+        // Shape captured live from pages/my_collection_my_mixes.
+        let page = json!({
+            "id": "page-1",
+            "rows": [{
+                "modules": [{
+                    "type": "MIX_LIST",
+                    "pagedList": {
+                        "totalNumberOfItems": 17,
+                        "items": [
+                            {"id": "mix-1", "title": "My Daily Discovery", "mixType": "DISCOVERY_MIX"},
+                            {"id": "mix-2", "title": "My Mix 1", "mixType": "DAILY_MIX"},
+                            {"id": "mix-3", "title": "My Video Mix", "mixType": "VIDEO_MIX"},
+                            {"id": "mix-4", "title": "My Video Mix 1", "mixType": "VIDEO_MIX"}
+                        ]
+                    }
+                }]
+            }]
+        });
+        let mixes = mixes_from_page(&page);
+        assert_eq!(mixes.len(), 2);
+        assert_eq!(mixes[0]["id"], "mix-1");
+        assert_eq!(mixes[1]["title"], "My Mix 1");
+        assert!(mixes.iter().all(|m| !m["title"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("My Video Mix"))));
+    }
+
+    #[test]
+    fn mixes_from_page_skips_non_mix_modules() {
+        let page = json!({
+            "rows": [{
+                "modules": [
+                    {"type": "CAROUSEL", "pagedList": {"items": [{"id": "x", "mixType": "DAILY_MIX"}]}},
+                    {"type": "MIX_LIST", "pagedList": {"items": [{"id": "y", "title": "T", "mixType": "DAILY_MIX"}]}}
+                ]
+            }]
+        });
+        let mixes = mixes_from_page(&page);
+        assert_eq!(mixes.len(), 1);
+        assert_eq!(mixes[0]["id"], "y");
+    }
+
+    #[test]
+    fn mix_maps_to_prefixed_playlist() {
+        let mix = json!({
+            "id": "002a925a8721401af44e9ccb59a2fb",
+            "title": "My Mix 1",
+            "subTitle": "Cattle Decapitation, Bolt Thrower and more",
+            "mixType": "DAILY_MIX",
+            "images": {
+                "SMALL": {"url": "https://images.tidal.com/s.jpg"},
+                "MEDIUM": {"url": "https://images.tidal.com/m.jpg"}
+            }
+        });
+        let p = mix_from_tidal(&mix).unwrap();
+        assert_eq!(p.id, "mx002a925a8721401af44e9ccb59a2fb");
+        assert_eq!(p.name, "My Mix 1");
+        assert_eq!(p.comment.as_deref(), Some("Cattle Decapitation, Bolt Thrower and more"));
+        assert_eq!(p.owner.as_deref(), Some("TIDAL"));
+        assert_eq!(p.cover_art.as_deref(), Some("https://images.tidal.com/m.jpg"));
+        // Placeholders so clients render cleanly instead of a broken value.
+        assert_eq!(p.duration, Some(0));
+        assert_eq!(p.created.as_deref(), Some("1970-01-01T00:00:00.000Z"));
+    }
+
+    #[test]
+    fn mix_cover_falls_back_to_small() {
+        let mix = json!({
+            "id": "abc",
+            "title": "T",
+            "mixType": "DAILY_MIX",
+            "images": {"SMALL": {"url": "https://images.tidal.com/s.jpg"}}
+        });
+        assert_eq!(
+            mix_from_tidal(&mix).unwrap().cover_art.as_deref(),
+            Some("https://images.tidal.com/s.jpg")
         );
     }
 }

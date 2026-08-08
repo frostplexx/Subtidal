@@ -10,3 +10,7 @@ port = 8000
 # Default stream quality when a client sends no bitrate or format hint:
 # LOSSLESS | HIGH | LOW. The client's own hints still win.
 # tidal_quality = "LOSSLESS"
+
+# Blend the Tidal mixes (Daily Mix, My Mix, Discovery) into getPlaylists
+# as read-only playlists.
+show_mixes = true

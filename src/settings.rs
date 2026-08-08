@@ -18,10 +18,18 @@ pub struct Settings {
     // hint: LOSSLESS | HIGH | LOW. The client's own hints still win.
     #[serde(default = "default_tidal_quality")]
     pub tidal_quality: String,
+    // Blend the Tidal mixes (Daily Mix, My Mix, Discovery) into
+    // getPlaylists as read-only playlists.
+    #[serde(default = "default_show_mixes")]
+    pub show_mixes: bool,
 }
 
 fn default_tidal_quality() -> String {
     "LOSSLESS".into()
+}
+
+fn default_show_mixes() -> bool {
+    true
 }
 
 // Builds the settings from ./settings.toml and APP_* env vars.

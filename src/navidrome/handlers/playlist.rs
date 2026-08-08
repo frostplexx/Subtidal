@@ -8,25 +8,87 @@ use crate::navidrome::models::{
 };
 use crate::navidrome::params::{IdList, QueryParams};
 use crate::tidal::client::{Error, TidalClient};
-use crate::tidal::mapping::{playlist_from_tidal, playlist_song_from_item};
+use crate::tidal::mapping::{
+    mix_from_tidal, mixes_from_page, playlist_from_tidal, playlist_song_from_item,
+};
 use super::{fail, ok};
 
-// getPlaylists: the user's playlists, newest first. The Subsonic API takes
-// no params here; Tidal's page cap is high, so one request suffices.
+// Whether getPlaylists blends in the Tidal mixes (show_mixes setting).
+fn show_mixes() -> bool {
+    crate::SETTINGS.get().map(|s| s.show_mixes).unwrap_or(true)
+}
+
+// getPlaylists: the user's playlists, newest first, then the Tidal mixes
+// (Daily Mix, My Mix, Discovery) when show_mixes is on. The Subsonic API
+// takes no params here; Tidal's page cap is high, so one request
+// suffices. Mixes regenerate, so their fetch failure only drops the mix
+// entries, never the whole list.
 pub async fn get_playlists() -> Result<warp::reply::Json, warp::Rejection> {
-    let result = match crate::tidal::client().user_playlists(0, 500).await {
-        Ok(v) => v,
+    let client = crate::tidal::client();
+    let mut playlist: Vec<Playlist> = match client.user_playlists(0, 500).await {
+        Ok(v) => v["items"]
+            .as_array()
+            .map(|items| items.iter().filter_map(playlist_from_tidal).collect())
+            .unwrap_or_default(),
         Err(e) => {
             tracing::error!("tidal playlists fetch failed: {e}");
             return Ok(fail(0, "Playlists unavailable"));
         }
     };
-    let playlist: Vec<Playlist> = result["items"]
-        .as_array()
-        .map(|items| items.iter().filter_map(playlist_from_tidal).collect())
-        .unwrap_or_default();
+    if show_mixes() {
+        match client.my_mixes().await {
+            Ok(v) => playlist.extend(
+                mixes_from_page(&v)
+                    .into_iter()
+                    .filter_map(|m| mix_from_tidal(&m)),
+            ),
+            Err(e) => tracing::error!("tidal mixes fetch failed: {e}"),
+        }
+    }
     Ok(ok(PlaylistsResponse {
         playlists: Playlists { playlist },
+    }))
+}
+
+// getPlaylist for a mix: the header comes from the mixes page (the items
+// endpoint carries no title or cover), the songs from /mixes/{id}/items.
+// The page lookup and the items fetch both hit the short mix cache.
+async fn get_mix_playlist(
+    client: &TidalClient,
+    mix_id: &str,
+) -> Result<warp::reply::Json, warp::Rejection> {
+    let list = match client.my_mixes().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal mixes fetch failed: {e}");
+            return Ok(fail(0, "Mix unavailable"));
+        }
+    };
+    let Some(mix) = mixes_from_page(&list)
+        .into_iter()
+        .find(|m| m["id"].as_str() == Some(mix_id))
+    else {
+        return Ok(fail(70, "Mix not found"));
+    };
+    let Some(playlist) = mix_from_tidal(&mix) else {
+        return Ok(fail(70, "Mix not found"));
+    };
+    let result = match client.mix_items(mix_id, 0, 10_000).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal mix items fetch failed: {e}");
+            return Ok(fail(0, "Mix unavailable"));
+        }
+    };
+    let entry: Vec<Child> = result["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(playlist_song_from_item).collect())
+        .unwrap_or_default();
+    Ok(ok(GetPlaylistResponse {
+        playlist: PlaylistWithSongs {
+            playlist,
+            entry,
+        },
     }))
 }
 
@@ -38,6 +100,10 @@ pub async fn get_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
         return Ok(fail(10, "Required parameter missing"));
     };
     let client = crate::tidal::client();
+    // A mix id routes to the mix items endpoint; mixes are read-only.
+    if let Some(mix_id) = id.strip_prefix("mx") {
+        return get_mix_playlist(client, mix_id).await;
+    }
     let result = match client.playlist(id).await {
         Ok(v) => v,
         Err(Error::Tidal(404, _)) => return Ok(fail(70, "Playlist not found")),
@@ -148,6 +214,9 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
     let Some(pid) = q.playlist_id.as_deref().filter(|s| !s.is_empty()) else {
         return Ok(fail(10, "Required parameter missing"));
     };
+    if pid.starts_with("mx") {
+        return Ok(fail(0, "Mixes are read-only"));
+    }
     let client = crate::tidal::client();
     if q.r#public.is_some() {
         tracing::debug!("playlist publicity changes are unsupported; public ignored");
@@ -196,6 +265,9 @@ pub async fn delete_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
     let Some(pid) = q.id.0.first().map(String::as_str).filter(|s| !s.is_empty()) else {
         return Ok(fail(10, "Required parameter missing"));
     };
+    if pid.starts_with("mx") {
+        return Ok(fail(0, "Mixes are read-only"));
+    }
     let client = crate::tidal::client();
     match client.delete_playlist(pid).await {
         Ok(()) => Ok(ok(PingResponse {})),
