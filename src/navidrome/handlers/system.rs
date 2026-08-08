@@ -23,6 +23,7 @@ pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::R
             OpenSubsonicExtension { name: "songLyrics", versions: vec![1, 2] },
             OpenSubsonicExtension { name: "indexBasedQueue", versions: vec![1] },
             OpenSubsonicExtension { name: "transcoding", versions: vec![1] },
+            OpenSubsonicExtension { name: "transcodeDecision", versions: vec![1] },
             OpenSubsonicExtension { name: "playbackReport", versions: vec![1] },
             OpenSubsonicExtension { name: "topSongsByArtistId", versions: vec![1] },
         ],

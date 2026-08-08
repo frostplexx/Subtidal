@@ -2,6 +2,7 @@ use super::auth;
 use super::handlers;
 use super::log::{logged, named, with_params};
 use super::params::QueryParams;
+use bytes::Bytes;
 use warp::Filter;
 use warp::Reply;
 
@@ -31,12 +32,18 @@ fn public() -> impl Filter<Extract = (warp::reply::Response,), Error = warp::Rej
 // /rest/<name>.view; dispatch() looks the name up and calls the handler.
 // Auth runs before this matches, so unknown paths with bad credentials
 // get a 40 instead of a 404.
-fn private() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clone {
+fn private() -> impl Filter<Extract = (String, Bytes), Error = warp::Rejection> + Clone {
     warp::path("rest")
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::get().or(warp::post()).unify())
-        .map(|name: String| name.strip_suffix(".view").unwrap_or(&name).to_string())
+        // The transcode decision endpoint POSTs a ClientInfo JSON body;
+        // every other endpoint has none, so treat a missing body as empty.
+        .and(warp::body::bytes().or_else(|_| async { Ok::<_, warp::Rejection>((Bytes::new(),)) }))
+        .map(|name: String, body: Bytes| {
+            (name.strip_suffix(".view").unwrap_or(&name).to_string(), body)
+        })
+        .untuple_one()
 }
 
 // Calls the matched handler with the authenticated params, then tags the
@@ -53,6 +60,7 @@ async fn dispatch(
     q: QueryParams,
     raw: String,
     name: String,
+    body: Bytes,
 ) -> Result<warp::reply::Response, warp::Rejection> {
     let reply = match name.as_str() {
         "getUser" => handlers::get_user().await?.into_response(),
@@ -115,6 +123,7 @@ async fn dispatch(
         "updateInternetRadioStation" => handlers::update_internet_radio_station(q).await?.into_response(),
         "deleteInternetRadioStation" => handlers::delete_internet_radio_station(q).await?.into_response(),
         "download" => handlers::download(q).await?,
+        "getTranscodeDecision" => handlers::get_transcode_decision(q, body).await?.into_response(),
         _ => return Err(warp::reject::not_found()),
     };
     let reply = with_params(&raw)(reply);
@@ -226,6 +235,7 @@ mod tests {
             "/rest/updateInternetRadioStation",
             "/rest/deleteInternetRadioStation",
             "/rest/download",
+            "/rest/getTranscodeDecision",
         ] {
             let reply = warp::test::request()
                 .method("GET")
@@ -272,6 +282,6 @@ mod tests {
     #[tokio::test]
     async fn unknown_endpoint_name_rejects() {
         let q = QueryParams::from_merged("").unwrap();
-        assert!(dispatch(q, String::new(), "bogus".into()).await.is_err());
+        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new()).await.is_err());
     }
 }

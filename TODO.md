@@ -28,6 +28,7 @@
 - [x] Add download — single-song 302 to the BTS CDN stream URL (same resolution as stream, direct-only, tiers cascade to HIGH); multi-id fails 0 (no zip builder); no-id fails 10
 - [x] Add getShares + createShare/updateShare/deleteShare — fake empty lists (Tidal has no share backend); writes fail 0 "Sharing is not supported"
 - [x] Add getInternetRadioStations + create/update/deleteInternetRadioStation — fake empty lists; writes fail 0 "Internet radio is not supported"
+- [x] Add getTranscodeDecision (OS #168) — POST + ClientInfo body; server never transcodes, so always canDirectPlay=true, canTranscode=false, transcodeStream omitted, sourceStream derived from the track's audioQuality; Feishin (gated on the "transcoding" extension) then uses /rest/stream directly; also advertises "transcodeDecision" extension
 - [x] Add getAlbumList (v1) — same list core as getAlbumList2, legacy Album shape; commit 2c8db59
 - [x] Add getSongsByGenre — favorite tracks filtered by the track's genre, offset/count; Tidal genres are sparse, so matches are rare; commit 2c8db59
 - [x] Add getSimilarSongs (v1) — same core as getSimilarSongs2 under the similarSongs wrapper; commit 2c8db59

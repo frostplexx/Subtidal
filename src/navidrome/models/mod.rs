@@ -10,6 +10,7 @@ pub mod queue;
 pub mod search;
 pub mod song;
 pub mod system;
+pub mod transcode;
 
 pub use album::{
     Album, AlbumId3, AlbumInfo, AlbumInfo2Response, AlbumInfoResponse, AlbumList,
@@ -46,3 +47,4 @@ pub use system::{
     ScanStatusResponse, SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse, User,
     Users,
 };
+pub use transcode::{StreamDetails, TranscodeDecision, TranscodeDecisionResponse};
