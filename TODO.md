@@ -14,17 +14,17 @@
 ### Browsing
 
 - [x] Add getMusicFolders — single "Tidal" folder id 1, matches getUser folder list; getScanStatus — scanning=false, count=0 (no local library; Arpeggi may prompt a scan); commit 85e2d3a
-- [ ] Add getIndexes + getArtists — expose favorited artists as the library index
+- [x] Add getIndexes + getArtists — expose favorited artists as the library index; both share one index build (article stripping + letter buckets, "#" fallback); getIndexes adds starred (favorite time) + lastModified (newest favorite, ISO-8601 parsed); src/navidrome/handlers/browse.rs
 - [x] Add getSong — single track detail; Feishin calls it from song context menus
-- [ ] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum
+- [x] Add getMusicDirectory — album dir listing; some clients use it instead of getAlbum; id 1 = favorited artists as dirs, ar<id> = albums as dirs, al<id> = tracks; bare numbers try artist then album; 404 → 70
 - [x] Add getAlbumInfo / getAlbumInfo2 — album artwork at 160/320/640; notes/musicBrainzId/lastFmUrl empty and omitted (Tidal exposes no album notes); commit 2c8db59
 
 ### Lists & playlists
 
 - [x] Add getPlaylist — single playlist with its entries, paginated at 100 (Tidal's items cap); bad id → 70, missing → 10; commit 123f071
-- [ ] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD; updatePlaylist also covers add/remove of entries
-- [ ] Add getPlayQueue / savePlayQueue — in-memory queue store like the jukebox; Feishin persists its queue across restarts
-- [ ] Add getBookmarks / createBookmark / deleteBookmark — in-memory position store (music clients use bookmarks mostly for podcasts)
+- [x] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD; updatePlaylist also covers add/remove of entries; createPlaylist with playlistId renames + replaces songs (Navidrome semantics); songIndexToRemove runs before songIdToAdd, descending, 0-based; cache invalidated on every mutation
+- [x] Add getPlayQueue / savePlayQueue — in-memory queue store (play_state); empty id list clears per OpenSubsonic; current required unless empty; getPlayQueue fetches fresh song detail, one track call each, dropping vanished tracks
+- [x] Add getBookmarks / createBookmark / deleteBookmark — in-memory position store (play_state); upsert keeps original created time; delete of a missing bookmark is ok; changed/created served as RFC 3339 via hand-rolled civil_from_days formatter (no chrono)
 - [ ] Add download — accept song/album/artist/playlist ids; a single-song download 302s to the stream; multi-item needs a decision
 - [ ] Add getShares + createShare/updateShare/deleteShare — fake empty lists (Tidal has no share backend)
 - [ ] Add getInternetRadioStations + create/update/deleteInternetRadioStation — fake empty lists

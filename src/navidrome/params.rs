@@ -76,6 +76,26 @@ pub struct QueryParams {
     pub ignore_scrobble: Option<bool>,
     // setRating: 0 removes, 1-5 sets.
     pub rating: Option<u32>,
+    // getIndexes/getArtists: only folder 1 exists; ifModifiedSince is
+    // accepted and ignored.
+    pub music_folder_id: Option<u32>,
+    pub if_modified_since: Option<i64>,
+    // playlist CRUD: createPlaylist (playlistId + name + songId),
+    // updatePlaylist (playlistId + name/comment/public + songIdToAdd +
+    // songIndexToRemove), deletePlaylist (id). Publicity has no Tidal v1
+    // setter, so public is accepted and ignored.
+    pub playlist_id: Option<String>,
+    pub name: Option<String>,
+    pub comment: Option<String>,
+    pub r#public: Option<bool>,
+    pub song_id: IdList,
+    pub song_id_to_add: IdList,
+    pub song_index_to_remove: IdList,
+    // savePlayQueue: the id list is the queue (repeated id), current is
+    // the playing song, position is ms within it. deleteBookmark reuses
+    // id; createBookmark reuses comment.
+    pub current: Option<String>,
+    pub position: Option<u64>,
 }
 
 impl<'de> Deserialize<'de> for QueryParams {
@@ -145,6 +165,17 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "playbackRate" => q.playback_rate = Some(v.parse().map_err(|_| E::custom("invalid playbackRate"))?),
         "ignoreScrobble" => q.ignore_scrobble = Some(v.parse().map_err(|_| E::custom("invalid ignoreScrobble"))?),
         "rating" => q.rating = Some(v.parse().map_err(|_| E::custom("invalid rating"))?),
+        "musicFolderId" => q.music_folder_id = Some(v.parse().map_err(|_| E::custom("invalid musicFolderId"))?),
+        "ifModifiedSince" => q.if_modified_since = Some(v.parse().map_err(|_| E::custom("invalid ifModifiedSince"))?),
+        "playlistId" => q.playlist_id = Some(v),
+        "name" => q.name = Some(v),
+        "comment" => q.comment = Some(v),
+        "public" => q.r#public = Some(v.parse().map_err(|_| E::custom("invalid public"))?),
+        "songId" => q.song_id.0.push(v),
+        "songIdToAdd" => q.song_id_to_add.0.push(v),
+        "songIndexToRemove" => q.song_index_to_remove.0.push(v),
+        "current" => q.current = Some(v),
+        "position" => q.position = Some(v.parse().map_err(|_| E::custom("invalid position"))?),
         _ => {}
     }
     Ok(())

@@ -3,12 +3,15 @@
 pub mod album;
 pub mod annotate;
 pub mod artist;
+pub mod bookmarks;
+pub mod browse;
 pub mod cover;
 pub mod favorites;
 pub mod jukebox;
 pub mod lyrics;
 pub mod now_playing;
 pub mod playlist;
+pub mod playqueue;
 pub mod search;
 pub mod system;
 pub mod tracks;
@@ -23,12 +26,15 @@ pub use album::{
 };
 pub use annotate::{scrobble, set_rating};
 pub use artist::{get_artist, get_artist_info, get_artist_info2, get_top_songs};
+pub use bookmarks::{create_bookmark, delete_bookmark, get_bookmarks};
+pub use browse::{get_artists, get_indexes, get_music_directory};
 pub use cover::{get_avatar, get_cover_art};
 pub use favorites::{get_starred, get_starred2, star, unstar};
 pub use jukebox::jukebox_control;
 pub use lyrics::{get_lyrics, get_lyrics_by_song_id};
 pub use now_playing::{get_now_playing, report_playback, update_now_playing};
-pub use playlist::{get_genres, get_playlist, get_playlists};
+pub use playlist::{create_playlist, delete_playlist, get_genres, get_playlist, get_playlists, update_playlist};
+pub use playqueue::{get_play_queue, save_play_queue};
 pub use search::{search2, search3};
 pub use system::{
     get_license, get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user,

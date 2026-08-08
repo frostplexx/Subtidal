@@ -19,5 +19,6 @@ keyring = "4.1.6"
 tracing = "0.1"
 regex = "1.13.1"
 rand = { version = "0.10", features = ["thread_rng"] }
+chrono = "0.4.45"
 
 [dev-dependencies]

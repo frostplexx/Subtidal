@@ -2,8 +2,10 @@
 // response struct sits next to its payload types.
 pub mod album;
 pub mod artist;
+pub mod browse;
 pub mod favorites;
 pub mod playlist;
+pub mod queue;
 pub mod search;
 pub mod song;
 pub mod system;
@@ -16,11 +18,16 @@ pub use artist::{
     Artist, ArtistId3, ArtistInfo2, ArtistInfo2Response, ArtistInfoResponse, ArtistWithAlbums,
     GetArtistResponse,
 };
+pub use browse::{
+    Artists, ArtistsResponse, Directory, DirectoryChild, DirectoryResponse, IndexArtist,
+    IndexGroup, Indexes, IndexesResponse,
+};
 pub use favorites::{
     Starred, Starred2, Starred2Album, Starred2Artist, Starred2Response, StarredAlbum,
     StarredArtist, StarredResponse,
 };
 pub use playlist::{GetPlaylistResponse, Playlist, Playlists, PlaylistsResponse, PlaylistWithSongs};
+pub use queue::{Bookmark, Bookmarks, BookmarksResponse, PlayQueue, PlayQueueResponse};
 pub use search::{SearchResult2, SearchResult2Response, SearchResult3, SearchResult3Response};
 pub use song::{
     Child, GetSongResponse, LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse,

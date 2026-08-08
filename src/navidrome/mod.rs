@@ -6,3 +6,4 @@ pub mod auth;
 pub mod params;
 pub mod ids;
 pub mod now_playing;
+pub mod play_state;
