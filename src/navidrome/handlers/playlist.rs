@@ -37,17 +37,48 @@ pub async fn get_playlists() -> Result<warp::reply::Json, warp::Rejection> {
     };
     if show_mixes() {
         match client.my_mixes().await {
-            Ok(v) => playlist.extend(
-                mixes_from_page(&v)
+            Ok(v) => {
+                let mut mixes: Vec<Playlist> = mixes_from_page(&v)
                     .into_iter()
-                    .filter_map(|m| mix_from_tidal(&m)),
-            ),
+                    .filter_map(|m| mix_from_tidal(&m))
+                    .collect();
+                fill_mix_counts(client, &mut mixes).await;
+                playlist.extend(mixes);
+            }
             Err(e) => tracing::error!("tidal mixes fetch failed: {e}"),
         }
     }
     Ok(ok(PlaylistsResponse {
         playlists: Playlists { playlist },
     }))
+}
+
+// Mix entries carry no track count in the page; each count comes from
+// the items endpoint's totalNumberOfItems (limit 1 is enough). The
+// requests run in parallel; a failure leaves the count absent rather
+// than failing the whole list.
+async fn fill_mix_counts(client: &'static TidalClient, mixes: &mut [Playlist]) {
+    let mut handles = Vec::with_capacity(mixes.len());
+    for (i, m) in mixes.iter().enumerate() {
+        let Some(mix_id) = m.id.strip_prefix("mx") else {
+            continue;
+        };
+        let mix_id = mix_id.to_string();
+        handles.push((i, tokio::spawn(async move {
+            match client.mix_items(&mix_id, 0, 1).await {
+                Ok(v) => v["totalNumberOfItems"].as_u64().map(|n| n as u32),
+                Err(e) => {
+                    tracing::debug!("tidal mix count fetch failed: {e}");
+                    None
+                }
+            }
+        })));
+    }
+    for (i, handle) in handles {
+        if let Ok(Some(n)) = handle.await {
+            mixes[i].song_count = Some(n);
+        }
+    }
 }
 
 // getPlaylist for a mix: the header comes from the mixes page (the items

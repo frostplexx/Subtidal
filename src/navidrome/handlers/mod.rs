@@ -40,7 +40,7 @@ pub use misc::{
 };
 pub use now_playing::{get_now_playing, report_playback, update_now_playing};
 pub use playlist::{create_playlist, delete_playlist, get_genres, get_playlist, get_playlists, update_playlist};
-pub use playqueue::{get_play_queue, save_play_queue};
+pub use playqueue::{get_play_queue, get_play_queue_by_index, save_play_queue, save_play_queue_by_index};
 pub use search::{search2, search3};
 pub use system::{
     get_license, get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user,

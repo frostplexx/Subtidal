@@ -32,7 +32,7 @@ pub use misc::{
     InternetRadioStations, InternetRadioStationsResponse, Shares, SharesResponse,
 };
 pub use playlist::{GetPlaylistResponse, Playlist, Playlists, PlaylistsResponse, PlaylistWithSongs};
-pub use queue::{Bookmark, Bookmarks, BookmarksResponse, PlayQueue, PlayQueueResponse};
+pub use queue::{Bookmark, Bookmarks, BookmarksResponse, PlayQueue, PlayQueueByIndex, PlayQueueByIndexResponse, PlayQueueResponse};
 pub use search::{SearchResult2, SearchResult2Response, SearchResult3, SearchResult3Response};
 pub use song::{
     Child, GetSongResponse, LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse,

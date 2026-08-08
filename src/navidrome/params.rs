@@ -93,8 +93,10 @@ pub struct QueryParams {
     pub song_index_to_remove: IdList,
     // savePlayQueue: the id list is the queue (repeated id), current is
     // the playing song, position is ms within it. deleteBookmark reuses
-    // id; createBookmark reuses comment.
+    // id; createBookmark reuses comment. savePlayQueueByIndex uses
+    // currentIndex, the queue position of the playing song.
     pub current: Option<String>,
+    pub current_index: Option<i64>,
     pub position: Option<u64>,
 }
 
@@ -175,6 +177,9 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "songIdToAdd" => q.song_id_to_add.0.push(v),
         "songIndexToRemove" => q.song_index_to_remove.0.push(v),
         "current" => q.current = Some(v),
+        "currentIndex" => {
+            q.current_index = Some(v.parse().map_err(|_| E::custom("invalid currentIndex"))?)
+        }
         "position" => q.position = Some(v.parse().map_err(|_| E::custom("invalid position"))?),
         _ => {}
     }

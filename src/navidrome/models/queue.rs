@@ -23,6 +23,26 @@ pub struct PlayQueue {
     pub entry: Vec<Child>,
 }
 
+// getPlayQueueByIndex data (OpenSubsonic indexBasedQueue): like
+// playQueue, but the current song is the queue index, not the song id.
+#[derive(Serialize)]
+pub struct PlayQueueByIndexResponse {
+    #[serde(rename = "playQueueByIndex")]
+    pub play_queue: PlayQueueByIndex,
+}
+
+#[derive(Serialize)]
+pub struct PlayQueueByIndex {
+    #[serde(rename = "currentIndex", skip_serializing_if = "Option::is_none")]
+    pub current_index: Option<u32>,
+    pub position: u64,
+    pub username: String,
+    pub changed: String,
+    #[serde(rename = "changedBy")]
+    pub changed_by: String,
+    pub entry: Vec<Child>,
+}
+
 // getBookmarks data: { bookmarks: { bookmark: [ Bookmark ] } }
 #[derive(Serialize)]
 pub struct BookmarksResponse {
@@ -107,6 +127,38 @@ mod tests {
         let v = serde_json::to_value(PlayQueueResponse { play_queue: pq }).unwrap();
         assert!(v["playQueue"].get("current").is_none());
         assert!(v["playQueue"]["entry"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn play_queue_by_index_serializes_os_fields() {
+        let pq = PlayQueueByIndex {
+            current_index: Some(1),
+            position: 5_000,
+            username: "demo".into(),
+            changed: "2023-03-10T02:19:35Z".into(),
+            changed_by: "client".into(),
+            entry: vec![song(2)],
+        };
+        let v = serde_json::to_value(PlayQueueByIndexResponse { play_queue: pq }).unwrap();
+        let pq = &v["playQueueByIndex"];
+        assert_eq!(pq["currentIndex"], 1);
+        assert_eq!(pq["position"], 5_000);
+        assert_eq!(pq["changedBy"], "client");
+        assert_eq!(pq["entry"][0]["id"], "t2");
+    }
+
+    #[test]
+    fn play_queue_by_index_omits_current_index_when_absent() {
+        let pq = PlayQueueByIndex {
+            current_index: None,
+            position: 0,
+            username: "demo".into(),
+            changed: "2023-03-10T02:19:35Z".into(),
+            changed_by: "client".into(),
+            entry: vec![],
+        };
+        let v = serde_json::to_value(PlayQueueByIndexResponse { play_queue: pq }).unwrap();
+        assert!(v["playQueueByIndex"].get("currentIndex").is_none());
     }
 
     #[test]
