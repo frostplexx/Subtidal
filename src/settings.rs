@@ -14,6 +14,14 @@ pub struct Settings {
     pub tidal_client_id: Option<String>,
     #[serde(default)]
     pub tidal_client_secret: Option<String>,
+    // Default stream quality when a client sends no bitrate or format
+    // hint: LOSSLESS | HIGH | LOW. The client's own hints still win.
+    #[serde(default = "default_tidal_quality")]
+    pub tidal_quality: String,
+}
+
+fn default_tidal_quality() -> String {
+    "LOSSLESS".into()
 }
 
 // Builds the settings from ./settings.toml and APP_* env vars.

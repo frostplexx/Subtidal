@@ -200,6 +200,16 @@ fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static st
     }
 }
 
+// The default tier when the client sends no bitrate and no format hint:
+// the tidal_quality setting, LOSSLESS when unset or unknown.
+fn default_tier() -> &'static str {
+    match crate::SETTINGS.get().map(|s| s.tidal_quality.as_str()) {
+        Some("HIGH") => "HIGH",
+        Some("LOW") => "LOW",
+        _ => "LOSSLESS",
+    }
+}
+
 // stream: resolve a track to a Tidal CDN stream and serve it. Single-file
 // BTS streams (AAC) 302-redirect; the server never touches the audio
 // bytes. With format=hls the handler asks for HI_RES: hi-res tracks
@@ -216,11 +226,14 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
     };
     let client = crate::tidal::client();
     let wants_hls = q.format.as_deref() == Some("hls");
-    let mut tier = if wants_hls {
+    let tier = if wants_hls {
         "HI_RES"
+    } else if q.max_bit_rate.is_none() && q.format.is_none() {
+        default_tier()
     } else {
         tidal_quality(q.max_bit_rate, q.format.as_deref())
     };
+    let mut tier: &str = tier;
     loop {
         match client.stream_info(track_id, tier).await {
             Ok(info) => {
@@ -239,6 +252,49 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
                     "tier {tier} returned {} for track {track_id}; retrying HIGH",
                     info.mime_type
                 );
+                if tier == "HIGH" {
+                    break;
+                }
+                tier = "HIGH";
+            }
+            Err(e) => {
+                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                break;
+            }
+        }
+    }
+    Ok(fail(0, "Stream unavailable").into_response())
+}
+
+// download: a song as a 302 to its Tidal CDN stream URL, like stream.
+// Subsonic allows several ids (a zip archive); the server builds no zip,
+// so a multi-id request fails. Only direct single-file streams (BTS)
+// serve as downloads; segmented hi-res DASH has no single URL and
+// cascades a tier down to HIGH.
+pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
+    let ids = &q.id.0;
+    if ids.is_empty() {
+        return Ok(fail(10, "Required parameter missing").into_response());
+    }
+    if ids.len() > 1 {
+        return Ok(fail(0, "Multiple downloads not supported").into_response());
+    }
+    let Some(track_id) = ids::parse_track_id(&ids[0]) else {
+        return Ok(fail(70, "Song not found").into_response());
+    };
+    let client = crate::tidal::client();
+    let tier = if q.max_bit_rate.is_none() && q.format.is_none() {
+        default_tier()
+    } else {
+        tidal_quality(q.max_bit_rate, q.format.as_deref())
+    };
+    let mut tier: &str = tier;
+    loop {
+        match client.stream_info(track_id, tier).await {
+            Ok(info) => {
+                if let Some(url) = info.direct_url {
+                    return Ok(redirect(url));
+                }
                 if tier == "HIGH" {
                     break;
                 }

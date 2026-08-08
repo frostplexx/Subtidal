@@ -216,6 +216,7 @@ mod tests {
         let song = crate::tidal::mapping::song_from_track(&json!({
             "id": 123,
             "title": "Song One",
+            "audioQuality": "LOSSLESS",
             "duration": 220,
             "trackNumber": 3,
             "artists": [{"id": 9, "name": "Artist A"}],

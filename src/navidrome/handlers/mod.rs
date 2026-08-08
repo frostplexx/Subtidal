@@ -9,6 +9,7 @@ pub mod cover;
 pub mod favorites;
 pub mod jukebox;
 pub mod lyrics;
+pub mod misc;
 pub mod now_playing;
 pub mod playlist;
 pub mod playqueue;
@@ -32,6 +33,10 @@ pub use cover::{get_avatar, get_cover_art};
 pub use favorites::{get_starred, get_starred2, star, unstar};
 pub use jukebox::jukebox_control;
 pub use lyrics::{get_lyrics, get_lyrics_by_song_id};
+pub use misc::{
+    create_internet_radio_station, create_share, delete_internet_radio_station, delete_share,
+    get_internet_radio_stations, get_shares, update_internet_radio_station, update_share,
+};
 pub use now_playing::{get_now_playing, report_playback, update_now_playing};
 pub use playlist::{create_playlist, delete_playlist, get_genres, get_playlist, get_playlists, update_playlist};
 pub use playqueue::{get_play_queue, save_play_queue};
@@ -41,7 +46,8 @@ pub use system::{
     get_users, ping, start_scan,
 };
 pub use tracks::{
-    get_random_songs, get_similar_songs, get_similar_songs2, get_song, get_songs_by_genre, stream,
+    download, get_random_songs, get_similar_songs, get_similar_songs2, get_song,
+    get_songs_by_genre, stream,
 };
 
 // Response envelope helpers, shared by every handler.

@@ -15,6 +15,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     let (artist_id, artist_name) = primary_artist(v);
     let year = year_from(v["releaseDate"].as_str())
         .or_else(|| year_from(album.get("releaseDate").and_then(|r| r.as_str())));
+    let (content_type, suffix) = container(v["audioQuality"].as_str());
     Some(Child {
         id: ids::encode_track(id),
         parent: ids::encode_album(album_id),
@@ -38,15 +39,25 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
         kind: "song",
-        // Tidal streams lossless FLAC by default; the real container is
-        // only known once streaming lands, so this stays a placeholder.
-        content_type: "audio/flac",
-        suffix: "flac",
+        content_type,
+        suffix,
         size: 0,
         path: String::new(),
         created: String::new(),
         starred: None,
     })
+}
+
+// The stream container follows the account's quality tier: lossless
+// tiers stream FLAC, the others AAC in an MP4 container. The tier in the
+// track JSON is the only signal available without a stream fetch; the
+// manifest mimeType (Sone reads it too) would be exact but costs one
+// playbackinfo call per track.
+fn container(quality: Option<&str>) -> (&'static str, &'static str) {
+    match quality {
+        Some("LOSSLESS") | Some("HIRES_LOSSLESS") => ("audio/flac", "flac"),
+        _ => ("audio/mp4", "m4a"),
+    }
 }
 
 #[cfg(test)]
@@ -78,5 +89,30 @@ mod tests {
             song.cover_art.unwrap(),
             "https://resources.tidal.com/images/abc/123/640x640.jpg"
         );
+    }
+
+    #[test]
+    fn container_follows_quality_tier() {
+        assert_eq!(container(Some("LOSSLESS")), ("audio/flac", "flac"));
+        assert_eq!(container(Some("HIRES_LOSSLESS")), ("audio/flac", "flac"));
+        assert_eq!(container(Some("HIGH")), ("audio/mp4", "m4a"));
+        assert_eq!(container(Some("LOW")), ("audio/mp4", "m4a"));
+        assert_eq!(container(None), ("audio/mp4", "m4a"));
+    }
+
+    #[test]
+    fn song_maps_container_from_quality() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "audioQuality": "HIGH",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.content_type, "audio/mp4");
+        assert_eq!(song.suffix, "m4a");
     }
 }

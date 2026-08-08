@@ -4,6 +4,7 @@ pub mod album;
 pub mod artist;
 pub mod browse;
 pub mod favorites;
+pub mod misc;
 pub mod playlist;
 pub mod queue;
 pub mod search;
@@ -25,6 +26,9 @@ pub use browse::{
 pub use favorites::{
     Starred, Starred2, Starred2Album, Starred2Artist, Starred2Response, StarredAlbum,
     StarredArtist, StarredResponse,
+};
+pub use misc::{
+    InternetRadioStations, InternetRadioStationsResponse, Shares, SharesResponse,
 };
 pub use playlist::{GetPlaylistResponse, Playlist, Playlists, PlaylistsResponse, PlaylistWithSongs};
 pub use queue::{Bookmark, Bookmarks, BookmarksResponse, PlayQueue, PlayQueueResponse};

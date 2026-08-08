@@ -3,7 +3,7 @@
 ## Design decisions
 
 - **ID scheme** — prefixed, reversible IDs encoding the Tidal ID: `t<track>`, `al<album>`, `ar<artist>`, `pl<playlist>`. Deterministic across sessions, no database (src/navidrome/ids.rs). Lenient parse: bare number = raw Tidal ID.
-- **Entity mapping** — Tidal v1 camelCase JSON → Subsonic models in src/tidal/mapping/. Song: title, artist (multi-artist joins "A feat. B"), album, albumId, artistId, duration, year from releaseDate, genre, trackNumber, discNumber, contentType/suffix placeholder ("flac") until streaming lands.
+- **Entity mapping** — Tidal v1 camelCase JSON → Subsonic models in src/tidal/mapping/. Song: title, artist (multi-artist joins "A feat. B"), album, albumId, artistId, duration, year from releaseDate, genre, trackNumber, discNumber, contentType/suffix derived from audioQuality (LOSSLESS→flac, else m4a).
 - **Cover art** — never proxied: album/artist/playlist responses carry full `resources.tidal.com` image URLs in `coverArt`; getCoverArt 302-redirects to the resolved URL. Album/artist pics live at 160/320/640/1280, artist portraits 160/320/480/750.
 - **Favorites/playlists** — star/unstar/getStarred map to Tidal favorites CRUD; playlists to Tidal user playlists. Tidal has no public play counts; optional local JSON store for Navidrome-parity playCount.
 - [x] scrobble endpoint — accepts single/multiple id, submission, time; returns ok and logs the report (no backend yet); commit cbfa61a
@@ -24,10 +24,10 @@
 - [x] Add getPlaylist — single playlist with its entries, paginated at 100 (Tidal's items cap); bad id → 70, missing → 10; commit 123f071
 - [x] Add createPlaylist / updatePlaylist / deletePlaylist — Tidal playlist CRUD; updatePlaylist also covers add/remove of entries; createPlaylist with playlistId renames + replaces songs (Navidrome semantics); songIndexToRemove runs before songIdToAdd, descending, 0-based; cache invalidated on every mutation
 - [x] Add getPlayQueue / savePlayQueue — in-memory queue store (play_state); empty id list clears per OpenSubsonic; current required unless empty; getPlayQueue fetches fresh song detail, one track call each, dropping vanished tracks
-- [x] Add getBookmarks / createBookmark / deleteBookmark — in-memory position store (play_state); upsert keeps original created time; delete of a missing bookmark is ok; changed/created served as RFC 3339 via hand-rolled civil_from_days formatter (no chrono)
-- [ ] Add download — accept song/album/artist/playlist ids; a single-song download 302s to the stream; multi-item needs a decision
-- [ ] Add getShares + createShare/updateShare/deleteShare — fake empty lists (Tidal has no share backend)
-- [ ] Add getInternetRadioStations + create/update/deleteInternetRadioStation — fake empty lists
+- [x] Add getBookmarks / createBookmark / deleteBookmark — in-memory position store (play_state); upsert keeps original created time; delete of a missing bookmark is ok; changed/created as RFC 3339 via chrono iso8601_z
+- [x] Add download — single-song 302 to the BTS CDN stream URL (same resolution as stream, direct-only, tiers cascade to HIGH); multi-id fails 0 (no zip builder); no-id fails 10
+- [x] Add getShares + createShare/updateShare/deleteShare — fake empty lists (Tidal has no share backend); writes fail 0 "Sharing is not supported"
+- [x] Add getInternetRadioStations + create/update/deleteInternetRadioStation — fake empty lists; writes fail 0 "Internet radio is not supported"
 - [x] Add getAlbumList (v1) — same list core as getAlbumList2, legacy Album shape; commit 2c8db59
 - [x] Add getSongsByGenre — favorite tracks filtered by the track's genre, offset/count; Tidal genres are sparse, so matches are rare; commit 2c8db59
 - [x] Add getSimilarSongs (v1) — same core as getSimilarSongs2 under the similarSongs wrapper; commit 2c8db59
@@ -45,7 +45,7 @@
 - [x] Rewrite DASH manifest into HLS playlist — format=hls requests HI_RES and returns an m3u8 (EXT-X-MAP + numbered segments, absolute Tidal CDN URLs, zero server bandwidth); tracks without a hi-res master 302 to AAC; FLAC-in-fMP4 HLS plays in mpv/VLC/ExoPlayer, not hls.js; verify on a real network (sandbox proxy can't reach sp-ad-fa); commit 753bc25
 - [x] Parse MPD fully — regex-based DashInfo in src/tidal/client/stream.rs: segment template (init/media/timescale/startNumber), SegmentTimeline (d/r runs), picks the highest-bandwidth representation; unit-tested against the live hi-res MPD shape
 - [ ] Byte-serving hi-res (byte-proxy concat or ffmpeg remux to FLAC) — DECLINED by decision: the only universal path for non-HLS clients (Feishin, DSub) is server egress ≈ file size per play; user chose to keep zero server bandwidth; hi-res stays HLS-only (format=hls), default stream stays 302 to AAC
-- [ ] Set real contentType/suffix per stream — placeholder "audio/flac"/"flac" in Child; the LOSSLESS tier usually cascades to AAC, so the placeholder is wrong once streaming works (src/tidal/mapping/song.rs)
+- [x] Set real contentType/suffix per stream — derived from track audioQuality: LOSSLESS/HIRES_LOSSLESS → audio/flac+flac, everything else audio/mp4+m4a (the manifest mimeType would be exact but costs a playbackinfo call per track; Sone reads it the same way)
 
 ## Next: system & profile
 
@@ -77,11 +77,11 @@
 
 ## Decided, not started
 
-- [ ] Add tidal_quality setting — optional override in settings.toml for stream quality
+- [x] Add tidal_quality setting — optional override in settings.toml (LOSSLESS | HIGH | LOW), default when a client sends no bitrate/format; client hints still win (src/settings.rs, handlers/tracks.rs default_tier)
 
 ## Housekeeping
 
-- [ ] Delete empty src/tidal/tidal_auth.rs — unreferenced leftover, still untracked
+- [x] Delete empty src/tidal/tidal_auth.rs — already gone, no stale references
 
 ## Done
 

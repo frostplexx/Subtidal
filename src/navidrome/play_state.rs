@@ -2,7 +2,7 @@
 // Single-user server, in memory; both are per-user by construction. All
 // functions take the wall clock as a parameter, so tests run without a
 // chrono dependency or timing flakiness.
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 

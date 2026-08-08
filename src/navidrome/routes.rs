@@ -106,6 +106,15 @@ async fn dispatch(
         "createBookmark" => handlers::create_bookmark(q).await?.into_response(),
         "deleteBookmark" => handlers::delete_bookmark(q).await?.into_response(),
         "jukeboxControl" => handlers::jukebox_control(q).await?.into_response(),
+        "getShares" => handlers::get_shares().await?.into_response(),
+        "createShare" => handlers::create_share(q).await?.into_response(),
+        "updateShare" => handlers::update_share(q).await?.into_response(),
+        "deleteShare" => handlers::delete_share(q).await?.into_response(),
+        "getInternetRadioStations" => handlers::get_internet_radio_stations().await?.into_response(),
+        "createInternetRadioStation" => handlers::create_internet_radio_station(q).await?.into_response(),
+        "updateInternetRadioStation" => handlers::update_internet_radio_station(q).await?.into_response(),
+        "deleteInternetRadioStation" => handlers::delete_internet_radio_station(q).await?.into_response(),
+        "download" => handlers::download(q).await?,
         _ => return Err(warp::reject::not_found()),
     };
     let reply = with_params(&raw)(reply);
@@ -208,6 +217,15 @@ mod tests {
             "/rest/deleteBookmark",
             "/rest/getGenres",
             "/rest/jukeboxControl",
+            "/rest/getShares",
+            "/rest/createShare",
+            "/rest/updateShare",
+            "/rest/deleteShare",
+            "/rest/getInternetRadioStations",
+            "/rest/createInternetRadioStation",
+            "/rest/updateInternetRadioStation",
+            "/rest/deleteInternetRadioStation",
+            "/rest/download",
         ] {
             let reply = warp::test::request()
                 .method("GET")

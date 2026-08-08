@@ -6,3 +6,7 @@ port = 8000
 # Optional: override the embedded Tidal app credentials.
 # tidal_client_id = ""
 # tidal_client_secret = ""
+
+# Default stream quality when a client sends no bitrate or format hint:
+# LOSSLESS | HIGH | LOW. The client's own hints still win.
+# tidal_quality = "LOSSLESS"
