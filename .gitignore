@@ -1,6 +1,7 @@
 /target
 .direnv
 .nix-cache
+.uv-cache
 .docker-build.log
 .docker-config
 .tmp-tokens
