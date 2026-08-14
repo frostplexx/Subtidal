@@ -3,7 +3,7 @@
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::params::QueryParams;
 use super::{fail, redirect};
-use crate::tidal::mapping::{artist_pic_url, cover_url};
+use crate::tidal::mapping::{artist_pic_url, cover_url, tidal_image_url};
 use warp::Reply;
 
 // getAvatar: the Tidal account avatar, when one is set, else a neutral
@@ -39,10 +39,17 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
         return Ok(fail(10, "Required parameter missing").into_response());
     };
     let size = q.size.unwrap_or(640);
-    // The id must be a UUID or a prefixed/bare Tidal id. A client cannot
-    // pass a full URL here: that would turn the 302 into an open
-    // redirect. Tidal-sourced full image URLs still pass through
-    // cover_url, which whitelists Tidal-owned hosts.
+    // A client may echo a coverArt URL (which is a full image URL on a
+    // Tidal-owned host) back into the id parameter. Pass it through only
+    // when the host is Tidal-owned; anything else is an attempted open
+    // redirect.
+    if id.starts_with("http") {
+        if tidal_image_url(&id) {
+            return Ok(redirect(id.clone()));
+        }
+        return Ok(fail(70, "Cover art not found").into_response());
+    }
+    // The id must be a UUID or a prefixed/bare Tidal id.
     let (uuid, artist_pic) = if id.contains('-') {
         // Bare UUID: a playlist id. Playlist covers come from squareImage.
         let result = match crate::tidal::client().playlist(id).await {

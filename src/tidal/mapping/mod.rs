@@ -23,7 +23,7 @@ use serde_json::Value;
 // Tidal-owned image URLs pass through unchanged. Anything else that
 // starts with http is not trusted: treating it as a UUID keeps client
 // input from turning the 302 into an open redirect.
-fn tidal_image_url(uuid: &str) -> bool {
+pub(crate) fn tidal_image_url(uuid: &str) -> bool {
     let Some(rest) = uuid
         .strip_prefix("https://")
         .or_else(|| uuid.strip_prefix("http://"))
