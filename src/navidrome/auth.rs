@@ -214,8 +214,9 @@ fn rate_limit_enabled() -> bool {
 // POST, the OpenSubsonic formPost extension), authenticate, and reject
 // with Unauthorized on bad credentials. With the rate_limit setting on,
 // repeated failures from one IP double the lockout before the credential
-// check. Yields the merged params for the handler.
-pub fn require_auth() -> impl Filter<Extract = (QueryParams, String), Error = Rejection> + Clone {
+// check. Yields the merged params, the raw query string, and the raw
+// body bytes for the handler.
+pub fn require_auth() -> impl Filter<Extract = (QueryParams, String, Bytes), Error = Rejection> + Clone {
     warp::query::raw()
         .or_else(|_| async { Ok::<_, Infallible>((String::new(),)) })
         .and(warp::addr::remote())
@@ -231,13 +232,13 @@ pub fn require_auth() -> impl Filter<Extract = (QueryParams, String), Error = Re
                 }
                 if authenticate(&params) {
                     limiter.record_success(ip);
-                    Ok((params, merged))
+                    Ok((params, merged, body))
                 } else {
                     limiter.record_failure(ip);
                     Err(warp::reject::custom(Unauthorized))
                 }
             } else if authenticate(&params) {
-                Ok((params, merged))
+                Ok((params, merged, body))
             } else {
                 Err(warp::reject::custom(Unauthorized))
             }

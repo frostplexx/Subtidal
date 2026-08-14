@@ -13,7 +13,11 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
         // authentication. Keep its names out of dispatch()'s match, since
         // public wins by or-order and a duplicate arm would be dead code.
         public()
-            .or(auth::require_auth().and(private()).and_then(dispatch))
+            .or(auth::require_auth()
+                .and(private())
+                .and_then(|q: QueryParams, raw: String, body: Bytes, name: String| {
+                    dispatch(q, raw, name, body)
+                }))
             .unify()
             .recover(handlers::recover)
             .or(fallback()),
@@ -31,19 +35,14 @@ fn public() -> impl Filter<Extract = (warp::reply::Response,), Error = warp::Rej
 // Private endpoints. One generic matcher covers /rest/<name> and
 // /rest/<name>.view; dispatch() looks the name up and calls the handler.
 // Auth runs before this matches, so unknown paths with bad credentials
-// get a 40 instead of a 404.
-fn private() -> impl Filter<Extract = (String, Bytes), Error = warp::Rejection> + Clone {
+// get a 40 instead of a 404. The request body is read once, inside
+// require_auth, and passed to dispatch as raw bytes.
+fn private() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clone {
     warp::path("rest")
         .and(warp::path::param::<String>())
         .and(warp::path::end())
         .and(warp::get().or(warp::post()).unify())
-        // The transcode decision endpoint POSTs a ClientInfo JSON body;
-        // every other endpoint has none, so treat a missing body as empty.
-        .and(warp::body::bytes().or_else(|_| async { Ok::<_, warp::Rejection>((Bytes::new(),)) }))
-        .map(|name: String, body: Bytes| {
-            (name.strip_suffix(".view").unwrap_or(&name).to_string(), body)
-        })
-        .untuple_one()
+        .map(|name: String| name.strip_suffix(".view").unwrap_or(&name).to_string())
 }
 
 // Calls the matched handler with the authenticated params, then tags the
