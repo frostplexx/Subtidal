@@ -11,7 +11,7 @@ serde_urlencoded = "0.7"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 md-5 = "0.11"
 config = "0.15.25"
-moka = { version = "0.12.15", features = ["future"] }
+moka = { version = "0.12.16", features = ["future"] }
 reqwest = { version = "0.13", features = ["json", "form", "query"] }
 base64 = "0.23"
 serde_json = "1.0.151"
@@ -20,6 +20,7 @@ tracing = "0.1"
 regex = "1.13.1"
 rand = { version = "0.10", features = ["thread_rng"] }
 chrono = "0.4.45"
-bytes = "1.11"
+bytes = "1.12"
+futures-util = "0.3"
 
 [dev-dependencies]

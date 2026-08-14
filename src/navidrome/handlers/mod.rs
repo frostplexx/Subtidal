@@ -18,7 +18,7 @@ pub mod system;
 pub mod tracks;
 pub mod transcode;
 
-use super::auth::Unauthorized;
+use super::auth::{BodyReadFailed, BodyTooLarge, Unauthorized};
 use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse};
 use warp::reject::Rejection;
 use warp::Reply;
@@ -91,9 +91,21 @@ pub(crate) fn fail(code: u32, message: &'static str) -> warp::reply::Json {
 
 // Converts middleware rejections into Subsonic error replies.
 // Any other rejection propagates to the 404 fallback route.
-pub async fn recover(r: Rejection) -> Result<warp::reply::Json, Rejection> {
+pub async fn recover(r: Rejection) -> Result<Box<dyn warp::Reply>, Rejection> {
     if r.find::<Unauthorized>().is_some() {
-        Ok(fail(40, "Wrong username or password"))
+        Ok(Box::new(fail(40, "Wrong username or password")))
+    } else if r.find::<BodyTooLarge>().is_some()
+        || r.find::<warp::reject::PayloadTooLarge>().is_some()
+    {
+        Ok(Box::new(warp::reply::with_status(
+            warp::reply(),
+            warp::http::StatusCode::PAYLOAD_TOO_LARGE,
+        )))
+    } else if r.find::<BodyReadFailed>().is_some() {
+        Ok(Box::new(warp::reply::with_status(
+            warp::reply(),
+            warp::http::StatusCode::BAD_REQUEST,
+        )))
     } else {
         Err(r)
     }

@@ -20,9 +20,25 @@ pub use song::song_from_track;
 
 use serde_json::Value;
 
+// Tidal-owned image URLs pass through unchanged. Anything else that
+// starts with http is not trusted: treating it as a UUID keeps client
+// input from turning the 302 into an open redirect.
+fn tidal_image_url(uuid: &str) -> bool {
+    let Some(rest) = uuid
+        .strip_prefix("https://")
+        .or_else(|| uuid.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let Some(host) = rest.split('/').next() else {
+        return false;
+    };
+    host == "tidal.com" || host.ends_with(".tidal.com")
+}
+
 // Album cover sizes: 160/320/640/1280. Snap the requested size upward.
 pub fn cover_url(uuid: &str, size: u32) -> String {
-    if uuid.starts_with("http") {
+    if tidal_image_url(uuid) {
         return uuid.to_string();
     }
     // Tidal cover UUIDs become slash paths: abc-def -> abc/def.
@@ -38,7 +54,7 @@ pub fn cover_url(uuid: &str, size: u32) -> String {
 
 // Artist pictures only exist at 160/320/480/750; 640 and 1280 403.
 pub fn artist_pic_url(uuid: &str, size: u32) -> String {
-    if uuid.starts_with("http") {
+    if tidal_image_url(uuid) {
         return uuid.to_string();
     }
     let path = uuid.replace('-', "/");
@@ -96,6 +112,29 @@ pub fn search_items<'a>(v: &'a Value, section: &str) -> Vec<&'a Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tidal_image_url_whitelists_tidal_hosts_only() {
+        assert!(tidal_image_url("https://resources.tidal.com/images/x/640x640.jpg"));
+        assert!(tidal_image_url("http://images.tidal.com/pic.jpg"));
+        assert!(tidal_image_url("https://tidal.com/x"));
+        assert!(!tidal_image_url("https://evil.com/phish"));
+        assert!(!tidal_image_url("https://resources.tidal.com.evil.com/x"));
+        assert!(!tidal_image_url("https://evil-tidal.com/x"));
+        assert!(!tidal_image_url("not-a-url"));
+    }
+
+    #[test]
+    fn cover_url_passes_through_tidal_urls_but_not_foreign_ones() {
+        assert_eq!(
+            cover_url("https://resources.tidal.com/images/x/640x640.jpg", 320),
+            "https://resources.tidal.com/images/x/640x640.jpg"
+        );
+        assert_eq!(
+            cover_url("https://evil.com/x", 320),
+            "https://resources.tidal.com/images/https://evil.com/x/320x320.jpg"
+        );
+    }
 
     #[test]
     fn search_items_extracts_section() {

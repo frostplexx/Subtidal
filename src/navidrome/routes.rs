@@ -288,4 +288,19 @@ mod tests {
         let q = QueryParams::from_merged("").unwrap();
         assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new()).await.is_err());
     }
+
+    // A POST body over the 1 MiB cap must be rejected before it is read
+    // into memory, with a 413, even without valid credentials.
+    #[tokio::test]
+    async fn oversized_body_rejected_with_413() {
+        let filter = routes();
+        let big = vec![0u8; 1024 * 1024 + 1];
+        let reply = warp::test::request()
+            .method("POST")
+            .path("/rest/getUser")
+            .body(big)
+            .reply(&filter)
+            .await;
+        assert_eq!(reply.status(), 413);
+    }
 }

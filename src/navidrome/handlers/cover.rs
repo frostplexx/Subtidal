@@ -39,9 +39,11 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
         return Ok(fail(10, "Required parameter missing").into_response());
     };
     let size = q.size.unwrap_or(640);
-    let (uuid, artist_pic) = if id.starts_with("http") {
-        (Some(id.clone()), false)
-    } else if id.contains('-') {
+    // The id must be a UUID or a prefixed/bare Tidal id. A client cannot
+    // pass a full URL here: that would turn the 302 into an open
+    // redirect. Tidal-sourced full image URLs still pass through
+    // cover_url, which whitelists Tidal-owned hosts.
+    let (uuid, artist_pic) = if id.contains('-') {
         // Bare UUID: a playlist id. Playlist covers come from squareImage.
         let result = match crate::tidal::client().playlist(id).await {
             Ok(v) => v,

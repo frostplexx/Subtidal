@@ -1,7 +1,8 @@
 use config::Config;
 use serde::Deserialize;
+use std::path::PathBuf;
 
-// Typed view of ./settings.toml merged with APP_* env vars.
+// Typed view of the settings file merged with APP_* env vars.
 // Add fields here and to settings.toml as the app grows.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
@@ -22,6 +23,11 @@ pub struct Settings {
     // getPlaylists as read-only playlists.
     #[serde(default = "default_show_mixes")]
     pub show_mixes: bool,
+    // Exponential backoff on failed logins (2s, 4s, 8s, ... per client
+    // IP). Off by default: behind a reverse proxy every client shares
+    // the proxy IP, so one attacker can lock out everyone.
+    #[serde(default)]
+    pub rate_limit: bool,
 }
 
 fn default_tidal_quality() -> String {
@@ -32,16 +38,68 @@ fn default_show_mixes() -> bool {
     true
 }
 
-// Builds the settings from ./settings.toml and APP_* env vars.
+// The settings file, in order of preference:
+//   1. --config <path> (or -c <path>); the path must exist,
+//   2. $XDG_CONFIG_HOME/subtidal/settings.toml,
+//   3. ~/.config/subtidal/settings.toml,
+//   4. ./settings.toml, the in-repo example (development only).
+fn find_config_path() -> Option<PathBuf> {
+    if let Some(p) = config_arg() {
+        if !p.exists() {
+            panic!("config file {} does not exist", p.display());
+        }
+        return Some(p);
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+        let p = xdg.join("subtidal").join("settings.toml");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let p = home.join(".config").join("subtidal").join("settings.toml");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let local = PathBuf::from("settings.toml");
+    local.is_file().then_some(local)
+}
+
+// --config <path>, --config=<path>, or -c <path>.
+fn config_arg() -> Option<PathBuf> {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if let Some(p) = a.strip_prefix("--config=") {
+            return Some(PathBuf::from(p));
+        }
+        if a == "--config" || a == "-c" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
+}
+
+// Builds the settings from the discovered file and APP_* env vars.
 // Eg.. `APP_PASSWORD=x ./target/debug/subtidal` would override the password.
 pub fn load_settings() -> Settings {
-    Config::builder()
-        // Add in `./settings.toml`
-        .add_source(config::File::with_name("settings"))
-        // Add in settings from the environment (with a prefix of APP)
+    let mut builder = Config::builder();
+    match find_config_path() {
+        Some(p) => {
+            builder = builder.add_source(config::File::from(p));
+        }
+        None => {
+            eprintln!("warning: no settings file found; using APP_* env vars only");
+            eprintln!(
+                "copy settings.toml to $XDG_CONFIG_HOME/subtidal/settings.toml, \
+                 or pass --config <path>"
+            );
+        }
+    }
+    builder
         .add_source(config::Environment::with_prefix("APP"))
         .build()
         .expect("failed to build settings")
         .try_deserialize()
-        .expect("failed to deserialize settings")
+        .expect("failed to deserialize settings: username, password and port are required")
 }
