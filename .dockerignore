@@ -1,0 +1,15 @@
+target
+.git
+.direnv
+.nix-cache
+.uv-cache
+docs
+scripts
+.github
+f-types.ts
+justfile
+flake.lock
+flake.nix
+.envrc
+TODO.md
+*.log

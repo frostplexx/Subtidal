@@ -1,0 +1,41 @@
+services:
+  subtidal:
+    # ghcr.io/frostplexx/subtidal is pushed on every new tag by
+    # .github/workflows/build-image.yml. `docker compose up --build`
+    # builds from source instead.
+    image: ghcr.io/frostplexx/subtidal:latest
+    build:
+      context: .
+    container_name: subtidal
+    ports:
+      # Host port on the left; the right side must match the `port`
+      # value in the mounted settings.toml.
+      - "8000:8000"
+    environment:
+      # The settings file is mounted below and found via XDG_CONFIG_HOME.
+      # APP_* env vars (APP_USERNAME, APP_PORT, ...) still work and
+      # override the file; see settings.toml for all options.
+      XDG_CONFIG_HOME: /config
+      # The Tidal session lives here. On first start the container runs
+      # the device-code login and prints a URL to the logs; complete it
+      # once and the token persists in the volume.
+      SUBTIDAL_TOKEN_FILE: /data/tokens.json
+      # Tracing filter; falls back to info when unset. Override from the
+      # shell: RUST_LOG=subtidal=debug docker compose up -d
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      # Map any settings.toml from the host to the path subtidal looks
+      # for. The file must be readable by the container user (uid 10001):
+      # chmod 644 settings.toml if subtidal fails to start.
+      - ./settings.toml:/config/subtidal/settings.toml:ro
+      - subtidal-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${APP_PORT:-8000}/rest/ping > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  subtidal-data:
