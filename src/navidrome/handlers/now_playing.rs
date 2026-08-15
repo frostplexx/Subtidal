@@ -19,6 +19,7 @@ pub async fn update_now_playing(q: QueryParams) -> Result<warp::reply::Json, war
         return Ok(fail(70, "Song not found"));
     };
     now_playing::report(track_id, q.u.clone().unwrap_or_default());
+    tokio::spawn(crate::navidrome::scrobble::report_now_playing(track_id));
     tracing::info!("updateNowPlaying id={id}");
     Ok(ok(PingResponse {}))
 }
@@ -97,6 +98,13 @@ pub async fn report_playback(q: QueryParams) -> Result<warp::reply::Json, warp::
     );
     if state == "stopped" && !ignore {
         tracing::info!("scrobble (completed) id={id}");
+    }
+    // starting and playing begin a playback session: tell the backends
+    // in the background. paused and stopped do not; the dedup guard in
+    // report_now_playing collapses the starting+playing pair into one
+    // update per track.
+    if matches!(state, "starting" | "playing") {
+        tokio::spawn(crate::navidrome::scrobble::report_now_playing(track_id));
     }
     now_playing::report_playback(
         track_id,

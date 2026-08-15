@@ -1,7 +1,8 @@
-// Scrobble reporting: best-effort fan-out from the scrobble handler to
-// configurable backends (Last.fm, ListenBrainz). A failing reporter only
-// logs; it never fails the client request. The reporter registry is built
-// once at startup from settings.
+// Scrobble and now-playing reporting: best-effort fan-out from the
+// scrobble, updateNowPlaying, and reportPlayback handlers to
+// configurable backends (Last.fm, ListenBrainz). A failing reporter
+// only logs; it never fails the client request. The reporter registry
+// is built once at startup from settings.
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,6 +33,17 @@ pub trait PlayReporter: Send + Sync {
         song: &'a ScrobbleSong,
         timestamp_ms: i64,
     ) -> futures_util::future::BoxFuture<'a, Result<(), String>>;
+    // Now-playing notification: the song currently playing. Best-effort
+    // like report; the default is a no-op.
+    fn now_playing<'a>(
+        &'a self,
+        song: &'a ScrobbleSong,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let _ = song;
+            Ok(())
+        })
+    }
 }
 
 const KEYRING_SERVICE: &str = "Subtidal";
@@ -99,7 +111,7 @@ pub fn init(settings: &Settings) {
     let mut reporters: Vec<Box<dyn PlayReporter>> = Vec::new();
     if let Some(cfg) = &settings.lastfm {
         // The reporter is always added: a missing session key only skips
-        // individual scrobbles, and a background re-authorization stores
+        // individual reports, and a background re-authorization stores
         // a new key without rebuilding the registry.
         if lastfm_session_key().ok().flatten().is_none() {
             tracing::warn!("lastfm: not authorized; scrobbles are skipped until authorized");
@@ -134,6 +146,74 @@ pub async fn report_song(song: &ScrobbleSong, timestamp_ms: i64) {
         if let Err(e) = reporter.report(song, timestamp_ms).await {
             tracing::warn!(
                 "scrobble failed ({}) for {}: {e}",
+                reporter.name(),
+                song.track_id
+            );
+        }
+    }
+}
+
+// A track start can arrive through three signals (scrobble with
+// submission=false, updateNowPlaying, reportPlayback), so the guard
+// reports one now-playing update per track per cooldown. The cooldown
+// still lets a repeat play of the same track refresh the notification.
+const NP_COOLDOWN_MS: i64 = 120_000;
+
+struct LastNowPlaying {
+    track_id: u64,
+    at_ms: i64,
+}
+
+fn np_due(track_id: u64, now: i64, last: &Option<LastNowPlaying>) -> bool {
+    match last {
+        None => true,
+        Some(l) => l.track_id != track_id || now - l.at_ms > NP_COOLDOWN_MS,
+    }
+}
+
+fn last_np() -> &'static Mutex<Option<LastNowPlaying>> {
+    static LAST: OnceLock<Mutex<Option<LastNowPlaying>>> = OnceLock::new();
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+// Report the currently playing track to every backend. Best-effort:
+// track metadata is fetched through the Tidal client; when it is
+// unavailable the report is skipped and logged, never an error.
+pub(crate) async fn report_now_playing(track_id: u64) {
+    {
+        let mut last = last_np().lock().unwrap();
+        let now = crate::navidrome::now_playing::now_ms();
+        if !np_due(track_id, now, &last) {
+            return;
+        }
+        *last = Some(LastNowPlaying { track_id, at_ms: now });
+    }
+    let Some(client) = crate::tidal::client_opt() else {
+        tracing::warn!("now-playing id={track_id}: tidal client unavailable; skipped");
+        return;
+    };
+    let detail = match client.track(track_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("now-playing id={track_id}: track fetch failed: {e}");
+            return;
+        }
+    };
+    let Some(song) = scrobble_song_from_track(&detail) else {
+        tracing::warn!("now-playing id={track_id}: track metadata incomplete; skipped");
+        return;
+    };
+    report_now_playing_song(&song).await;
+}
+
+// Fan out one now-playing notification to every configured reporter.
+// A failing reporter only logs; it never fails the caller.
+pub(crate) async fn report_now_playing_song(song: &ScrobbleSong) {
+    let reporters = registry().lock().unwrap().clone();
+    for reporter in reporters.iter() {
+        if let Err(e) = reporter.now_playing(song).await {
+            tracing::warn!(
+                "now-playing failed ({}) for {}: {e}",
                 reporter.name(),
                 song.track_id
             );
@@ -250,6 +330,63 @@ impl LastFmReporter {
         }
         Ok(json)
     }
+
+    // Signed track submission: track.scrobble (with a timestamp) or
+    // track.updateNowPlaying (without). Errors log; an invalid session
+    // key triggers the background re-authorization.
+    async fn submit(
+        &self,
+        method: &str,
+        song: &ScrobbleSong,
+        timestamp_ms: Option<i64>,
+    ) -> Result<(), String> {
+        // Read the session key fresh: a background re-authorization
+        // stores a new key without rebuilding the reporters.
+        let key = match (self.session_key)() {
+            Ok(Some(k)) => k,
+            Ok(None) => {
+                tracing::warn!("lastfm: not authorized; {method} skipped");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!("lastfm: session key unavailable: {e}");
+                return Ok(());
+            }
+        };
+        let mut params: BTreeMap<&str, String> = BTreeMap::new();
+        params.insert("method", method.into());
+        params.insert("api_key", self.api_key.clone());
+        params.insert("sk", key);
+        params.insert("artist", song.artist.clone());
+        params.insert("track", song.title.clone());
+        if let Some(ts) = timestamp_ms {
+            params.insert("timestamp", (ts / 1000).to_string());
+        }
+        params.insert("duration", song.duration.to_string());
+        if let Some(album) = &song.album {
+            params.insert("album", album.clone());
+        }
+        let sig = self.sign(&params);
+        params.insert("api_sig", sig);
+        params.insert("format", "json".into());
+        match self.post(params).await {
+            Ok(_) => Ok(()),
+            // 8: invalid session key; the user revoked access or
+            // Last.fm invalidated the key. Re-authorize in the
+            // background; the next submission uses the new key.
+            Err((8, _msg)) => {
+                tracing::warn!(
+                    "lastfm: session key invalid; re-authorization started (check the terminal for the authorize URL)"
+                );
+                (self.reauth)(&self.api_key, &self.api_secret);
+                Ok(())
+            }
+            Err((code, msg)) => {
+                tracing::warn!("lastfm: API error {code}: {msg}");
+                Ok(())
+            }
+        }
+    }
 }
 
 impl PlayReporter for LastFmReporter {
@@ -262,52 +399,14 @@ impl PlayReporter for LastFmReporter {
         song: &'a ScrobbleSong,
         timestamp_ms: i64,
     ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move {
-            // Read the session key fresh: a background re-authorization
-            // stores a new key without rebuilding the reporters.
-            let key = match (self.session_key)() {
-                Ok(Some(k)) => k,
-                Ok(None) => {
-                    tracing::warn!("lastfm: not authorized; scrobble skipped");
-                    return Ok(());
-                }
-                Err(e) => {
-                    tracing::warn!("lastfm: session key unavailable: {e}");
-                    return Ok(());
-                }
-            };
-            let mut params: BTreeMap<&str, String> = BTreeMap::new();
-            params.insert("method", "track.scrobble".into());
-            params.insert("api_key", self.api_key.clone());
-            params.insert("sk", key);
-            params.insert("artist", song.artist.clone());
-            params.insert("track", song.title.clone());
-            params.insert("timestamp", (timestamp_ms / 1000).to_string());
-            params.insert("duration", song.duration.to_string());
-            if let Some(album) = &song.album {
-                params.insert("album", album.clone());
-            }
-            let sig = self.sign(&params);
-            params.insert("api_sig", sig);
-            params.insert("format", "json".into());
-            match self.post(params).await {
-                Ok(_) => Ok(()),
-                // 8: invalid session key; the user revoked access or
-                // Last.fm invalidated the key. Re-authorize in the
-                // background; the next scrobble uses the new key.
-                Err((8, _msg)) => {
-                    tracing::warn!(
-                        "lastfm: session key invalid; re-authorization started (check the terminal for the authorize URL)"
-                    );
-                    (self.reauth)(&self.api_key, &self.api_secret);
-                    Ok(())
-                }
-                Err((code, msg)) => {
-                    tracing::warn!("lastfm: scrobble error {code}: {msg}");
-                    Ok(())
-                }
-            }
-        })
+        Box::pin(async move { self.submit("track.scrobble", song, Some(timestamp_ms)).await })
+    }
+
+    fn now_playing<'a>(
+        &'a self,
+        song: &'a ScrobbleSong,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.submit("track.updateNowPlaying", song, None).await })
     }
 }
 
@@ -524,6 +623,52 @@ impl ListenBrainzReporter {
             http: reqwest::Client::new(),
         }
     }
+
+    // Listen metadata shared by completed and now-playing listens.
+    fn metadata(&self, song: &ScrobbleSong) -> Value {
+        let mut additional_info = serde_json::json!({
+            "media_player": "Subtidal",
+            "submission_client": "Subtidal",
+            "music_service": "tidal.com",
+        });
+        if song.duration > 0 {
+            additional_info["duration"] = serde_json::json!(song.duration);
+        }
+        additional_info["origin_url"] =
+            serde_json::json!(format!("https://listen.tidal.com/track/{}", song.track_id));
+
+        let mut metadata = serde_json::json!({
+            "artist_name": song.artist,
+            "track_name": song.title,
+            "additional_info": additional_info,
+        });
+        if let Some(album) = &song.album {
+            metadata["release_name"] = serde_json::json!(album);
+        }
+        metadata
+    }
+
+    // POST one listen; 2xx is success, the rest map to a message.
+    async fn submit_listen(&self, body: Value) -> Result<(), String> {
+        let resp = self
+            .http
+            .post(format!("{}/1/submit-listens", self.api_base))
+            .header("Authorization", format!("Token {}", self.token))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        match resp.status().as_u16() {
+            200..=299 => Ok(()),
+            401 => Err("unauthorized: check the ListenBrainz token".into()),
+            429 => Err("rate limited".into()),
+            status => {
+                let text = resp.text().await.unwrap_or_default();
+                Err(format!("HTTP {status}: {text}"))
+            }
+        }
+    }
 }
 
 impl PlayReporter for ListenBrainzReporter {
@@ -537,52 +682,29 @@ impl PlayReporter for ListenBrainzReporter {
         timestamp_ms: i64,
     ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let mut additional_info = serde_json::json!({
-                "media_player": "Subtidal",
-                "submission_client": "Subtidal",
-                "music_service": "tidal.com",
-            });
-            if song.duration > 0 {
-                additional_info["duration"] = serde_json::json!(song.duration);
-            }
-            additional_info["origin_url"] =
-                serde_json::json!(format!("https://listen.tidal.com/track/{}", song.track_id));
-
-            let mut metadata = serde_json::json!({
-                "artist_name": song.artist,
-                "track_name": song.title,
-                "additional_info": additional_info,
-            });
-            if let Some(album) = &song.album {
-                metadata["release_name"] = serde_json::json!(album);
-            }
-
             let body = serde_json::json!({
                 "listen_type": "single",
                 "payload": [{
                     "listened_at": timestamp_ms / 1000,
-                    "track_metadata": metadata,
+                    "track_metadata": self.metadata(song),
                 }],
             });
+            self.submit_listen(body).await
+        })
+    }
 
-            let resp = self
-                .http
-                .post(format!("{}/1/submit-listens", self.api_base))
-                .header("Authorization", format!("Token {}", self.token))
-                .header("Content-Type", "application/json")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| format!("request failed: {e}"))?;
-            match resp.status().as_u16() {
-                200..=299 => Ok(()),
-                401 => Err("unauthorized: check the ListenBrainz token".into()),
-                429 => Err("rate limited".into()),
-                status => {
-                    let text = resp.text().await.unwrap_or_default();
-                    Err(format!("HTTP {status}: {text}"))
-                }
-            }
+    fn now_playing<'a>(
+        &'a self,
+        song: &'a ScrobbleSong,
+    ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            let body = serde_json::json!({
+                "listen_type": "playing_now",
+                "payload": [{
+                    "track_metadata": self.metadata(song),
+                }],
+            });
+            self.submit_listen(body).await
         })
     }
 }
@@ -683,6 +805,7 @@ mod tests {
     // A recording reporter for fan-out tests.
     struct RecordingReporter {
         calls: Arc<Mutex<Vec<(u64, i64)>>>,
+        now_playing_calls: Arc<Mutex<Vec<u64>>>,
         fail: bool,
     }
 
@@ -708,6 +831,20 @@ mod tests {
                 }
             })
         }
+
+        fn now_playing<'a>(
+            &'a self,
+            song: &'a ScrobbleSong,
+        ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
+            Box::pin(async move {
+                self.now_playing_calls.lock().unwrap().push(song.track_id);
+                if self.fail {
+                    Err("boom".into())
+                } else {
+                    Ok(())
+                }
+            })
+        }
     }
 
     // The registry lock intentionally covers the report_song await: the
@@ -720,10 +857,12 @@ mod tests {
         *registry().lock().unwrap() = Arc::new(vec![
             Box::new(RecordingReporter {
                 calls: calls.clone(),
+                now_playing_calls: Arc::new(Mutex::new(Vec::new())),
                 fail: false,
             }),
             Box::new(RecordingReporter {
                 calls: calls.clone(),
+                now_playing_calls: Arc::new(Mutex::new(Vec::new())),
                 fail: true,
             }),
         ]);
@@ -744,6 +883,48 @@ mod tests {
         let _g = registry_lock();
         *registry().lock().unwrap() = Arc::new(Vec::new());
         report_song(&scrobble_song(), 0).await; // must not panic
+    }
+
+    #[test]
+    fn now_playing_dedup_depends_on_track_and_cooldown() {
+        assert!(np_due(1, 1000, &None));
+        let last = Some(LastNowPlaying {
+            track_id: 1,
+            at_ms: 1000,
+        });
+        // Same track inside the cooldown: suppressed.
+        assert!(!np_due(1, 1000 + NP_COOLDOWN_MS - 1, &last));
+        // Same track after the cooldown: due again (repeat play).
+        assert!(np_due(1, 1000 + NP_COOLDOWN_MS + 1, &last));
+        // A different track is always due.
+        assert!(np_due(2, 1001, &last));
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn report_now_playing_song_fans_out_to_all_reporters() {
+        let _g = registry_lock();
+        let nps = Arc::new(Mutex::new(Vec::new()));
+        *registry().lock().unwrap() = Arc::new(vec![
+            Box::new(RecordingReporter {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                now_playing_calls: nps.clone(),
+                fail: false,
+            }),
+            Box::new(RecordingReporter {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                now_playing_calls: nps.clone(),
+                fail: true,
+            }),
+        ]);
+        report_now_playing_song(&scrobble_song()).await;
+        let nps = nps.lock().unwrap();
+        assert_eq!(
+            nps.len(),
+            2,
+            "a failing reporter must not stop the now-playing fan-out"
+        );
+        assert!(nps.iter().all(|id| *id == 463900374));
     }
 
     // Spin up a local warp server on an ephemeral port. Every request is

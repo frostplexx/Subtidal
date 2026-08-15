@@ -27,11 +27,13 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
         );
     }
     if !submission {
-        // Now-playing notification: only the latest id feeds the slot.
+        // Now-playing notification: only the latest id feeds the slot;
+        // the backends are told in the background.
         if let Some(id) = q.id.0.last()
             && let Some(track_id) = ids::parse_track_id(id)
         {
             now_playing::report(track_id, q.u.clone().unwrap_or_default());
+            tokio::spawn(scrobble::report_now_playing(track_id));
         }
         return Ok(ok(PingResponse {}));
     }
