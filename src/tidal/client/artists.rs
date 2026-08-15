@@ -11,11 +11,14 @@ impl TidalClient {
         self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
     }
 
-    // One artist's albums. Backs getArtist. The page cap is far above any
-    // artist's catalog, so one call returns everything. Tidal's catalog
-    // carries the same release several times (regional and edition copies
-    // with distinct ids), so repeated titles collapse to the most popular
-    // copy (see dedup_albums).
+    // One artist's releases. Backs getArtist. The v1 endpoint defaults to
+    // full albums only; EPs and singles need a second call with
+    // filter=EPSANDSINGLES. Each page cap is far above any artist's
+    // catalog, so one call per list returns everything. Albums come
+    // first, then EPs and singles. Each list is deduplicated on its own
+    // (see dedup_albums): a single and an album with the same title must
+    // never collapse. A failure on the secondary list only logs and the
+    // albums still render.
     pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
         let mut albums = self
             .get_json_q(
@@ -26,6 +29,30 @@ impl TidalClient {
             .await?;
         if let Some(items) = albums["items"].as_array_mut() {
             dedup_albums(items);
+        }
+        let ep_singles = match self
+            .get_json_q(
+                &format!("/artists/{artist_id}/albums"),
+                &[
+                    ("limit", "1000"),
+                    ("offset", "0"),
+                    ("filter", "EPSANDSINGLES"),
+                ],
+                &self.meta_cache,
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("tidal artist ep/singles fetch failed: {e}");
+                return Ok(albums);
+            }
+        };
+        if let Some(items) = ep_singles["items"].as_array() {
+            let mut extra = items.clone();
+            if let Some(all) = albums["items"].as_array_mut() {
+                merge_album_sections(all, &mut extra);
+            }
         }
         Ok(albums)
     }
@@ -80,6 +107,14 @@ impl TidalClient {
     }
 }
 
+// Append EPs and singles to the album list. The EP/singles list is
+// deduplicated on its own: a single and an album with the same title
+// are different releases and must both stay.
+fn merge_album_sections(albums: &mut Vec<Value>, ep_singles: &mut Vec<Value>) {
+    dedup_albums(ep_singles);
+    albums.append(ep_singles);
+}
+
 // Within a title group, keep the copy Tidal ranks highest (the
 // `popularity` field). That matches the copy Tidal's own search surfaces,
 // verified against real artist data (15 of 16 titles). Ties keep the
@@ -116,7 +151,7 @@ fn dedup_albums(items: &mut Vec<Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::dedup_albums;
+    use super::{dedup_albums, merge_album_sections};
     use serde_json::{json, Value};
 
     #[test]
@@ -190,5 +225,18 @@ mod tests {
         dedup_albums(&mut items);
         assert_eq!(items.len(), 3);
         assert_eq!(items[1]["id"], 9);
+    }
+
+    #[test]
+    fn merge_keeps_same_title_album_and_single() {
+        // A single and an album with the same title are different
+        // releases: the merge must keep both, even when the single is
+        // more popular and would win a cross-list dedup.
+        let mut albums: Vec<Value> = vec![json!({ "id": 1, "title": "Lover", "popularity": 10 })];
+        let mut eps: Vec<Value> = vec![json!({ "id": 2, "title": "Lover", "popularity": 90 })];
+        merge_album_sections(&mut albums, &mut eps);
+        assert_eq!(albums.len(), 2);
+        assert_eq!(albums[0]["id"], 1);
+        assert_eq!(albums[1]["id"], 2);
     }
 }
