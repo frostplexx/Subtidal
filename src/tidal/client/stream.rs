@@ -58,9 +58,9 @@ pub struct StreamInfo {
 // THROTTLE_COOLDOWN after THROTTLE_TRIGGER consecutive such failures,
 // so the account throttle clears instead of being re-armed by the
 // steady drain.
-const STREAM_LIMIT: usize = 6;
+const STREAM_LIMIT: usize = 5;
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
-const STREAM_WINDOW_MAX: usize = 12;
+const STREAM_WINDOW_MAX: usize = 5;
 // Bounded wait for a slot. Large enough that a downloader's whole
 // queue passes (12 starts per 5 s drains ~140 tracks in a minute);
 // the bound trips only on absurd bursts.
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn window_allows_six_per_five_seconds() {
+    fn window_allows_five_per_five_seconds() {
         let mut recent = VecDeque::new();
         let t0 = Instant::now();
         for i in 0..STREAM_WINDOW_MAX as u64 {
