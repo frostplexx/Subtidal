@@ -52,6 +52,12 @@ pub struct StreamInfo {
 // at most STREAM_WINDOW_MAX start within STREAM_WINDOW; a start that
 // would exceed either waits up to STREAM_WAIT for a slot, then is
 // rejected with RateLimited.
+//
+// Tidal can also throttle the account for a while (non-JSON bodies,
+// 429, 5xx). The circuit breaker pauses all starts for
+// THROTTLE_COOLDOWN after THROTTLE_TRIGGER consecutive such failures,
+// so the account throttle clears instead of being re-armed by the
+// steady drain.
 const STREAM_LIMIT: usize = 6;
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
 const STREAM_WINDOW_MAX: usize = 12;
@@ -59,10 +65,29 @@ const STREAM_WINDOW_MAX: usize = 12;
 // queue passes (12 starts per 5 s drains ~140 tracks in a minute);
 // the bound trips only on absurd bursts.
 const STREAM_WAIT: Duration = Duration::from_secs(60);
+// Circuit breaker: trigger and pause lengths.
+const THROTTLE_TRIGGER: u32 = 5;
+const THROTTLE_COOLDOWN: Duration = Duration::from_secs(30);
+
+// Outcome of one playbackinfo fetch, fed back to the limiter.
+#[derive(Clone, Copy, PartialEq)]
+enum FetchOutcome {
+    Success,
+    // Non-JSON body, 429, or 5xx: the account-level throttle signature.
+    Throttled,
+    // Any other error (auth, 403, 404, parse): not throttle evidence.
+    Other,
+}
+
+struct LimiterState {
+    consecutive_failures: u32,
+    cooldown_until: Option<Instant>,
+}
 
 pub(crate) struct StreamLimiter {
     semaphore: Semaphore,
     recent: Mutex<VecDeque<Instant>>,
+    state: Mutex<LimiterState>,
 }
 
 impl StreamLimiter {
@@ -70,6 +95,10 @@ impl StreamLimiter {
         Self {
             semaphore: Semaphore::new(STREAM_LIMIT),
             recent: Mutex::new(VecDeque::new()),
+            state: Mutex::new(LimiterState {
+                consecutive_failures: 0,
+                cooldown_until: None,
+            }),
         }
     }
 
@@ -88,7 +117,23 @@ impl StreamLimiter {
             _ => return Err(Error::RateLimited),
         };
         loop {
-            // The guard must end before the sleep below; scope it.
+            // An active throttle pause holds every start; the guard
+            // must end before the sleep below, so scope it.
+            let wait = {
+                let state = self.state.lock().unwrap();
+                match state.cooldown_until {
+                    Some(until) => until.saturating_duration_since(Instant::now()),
+                    None => Duration::ZERO,
+                }
+            };
+            if wait > Duration::ZERO {
+                if Instant::now() + wait >= deadline {
+                    return Err(Error::RateLimited);
+                }
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            // The window is full; wait until the oldest start ages out.
             let wait = {
                 let mut recent = self.recent.lock().unwrap();
                 let now = Instant::now();
@@ -105,6 +150,34 @@ impl StreamLimiter {
                 return Err(Error::RateLimited);
             }
             tokio::time::sleep(wait.max(Duration::from_millis(50))).await;
+        }
+    }
+
+    // Record one fetch outcome. Throttle-signature failures count
+    // toward the trigger; at THROTTLE_TRIGGER the pause starts. An
+    // active pause swallows every result: nothing new goes out, so an
+    // in-flight leftover must neither extend nor clear the pause. An
+    // expired pause is a clean slate for the next cycle.
+    pub(crate) fn note(&self, outcome: FetchOutcome) {
+        let mut state = self.state.lock().unwrap();
+        if state.cooldown_until.is_some_and(|until| Instant::now() < until) {
+            return;
+        }
+        state.cooldown_until = None;
+        match outcome {
+            FetchOutcome::Success => state.consecutive_failures = 0,
+            FetchOutcome::Throttled => {
+                state.consecutive_failures += 1;
+                if state.consecutive_failures >= THROTTLE_TRIGGER {
+                    tracing::warn!(
+                        "tidal is throttling stream requests; pausing for {}s",
+                        THROTTLE_COOLDOWN.as_secs()
+                    );
+                    state.cooldown_until = Some(Instant::now() + THROTTLE_COOLDOWN);
+                    state.consecutive_failures = 0;
+                }
+            }
+            FetchOutcome::Other => {}
         }
     }
 }
@@ -142,19 +215,36 @@ impl TidalClient {
         if let Some(cc) = &cc {
             query.push(("countryCode", cc.as_str()));
         }
-        let resp = self
-            .http
-            .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
-            .bearer_auth(token)
-            .query(&query)
-            .send()
-            .await?;
-        let status = resp.status();
-        let body: Value = resp.json().await?;
-        if !status.is_success() {
-            return Err(Error::Tidal(status.as_u16(), body.to_string()));
+        let result = async {
+            let resp = self
+                .http
+                .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
+                .bearer_auth(token)
+                .query(&query)
+                .send()
+                .await?;
+            let status = resp.status();
+            let body: Value = resp.json().await?;
+            if !status.is_success() {
+                return Err(Error::Tidal(status.as_u16(), body.to_string()));
+            }
+            parse_stream(body)
         }
-        parse_stream(body)
+        .await;
+        // Feed the circuit breaker: non-JSON bodies, 429, and 5xx are
+        // the account-throttle signature. Everything else is neutral.
+        let outcome = match &result {
+            Ok(_) => FetchOutcome::Success,
+            Err(Error::Http(e)) if e.is_decode() => FetchOutcome::Throttled,
+            Err(Error::Tidal(status, _))
+                if *status == 429 || (500..600).contains(status) =>
+            {
+                FetchOutcome::Throttled
+            }
+            _ => FetchOutcome::Other,
+        };
+        self.stream_limiter.note(outcome);
+        result
     }
 }
 
@@ -372,5 +462,69 @@ mod tests {
         );
         drop(permits);
         assert!(limiter.semaphore.try_acquire().is_ok());
+    }
+
+    #[test]
+    fn cooldown_triggers_after_consecutive_throttle_failures() {
+        let limiter = StreamLimiter::new();
+        for _ in 0..THROTTLE_TRIGGER - 1 {
+            limiter.note(FetchOutcome::Throttled);
+            assert!(
+                limiter.state.lock().unwrap().cooldown_until.is_none(),
+                "below the trigger the pause must not start"
+            );
+        }
+        limiter.note(FetchOutcome::Throttled);
+        assert!(limiter.state.lock().unwrap().cooldown_until.is_some());
+        // A success during an active pause cannot clear it.
+        limiter.note(FetchOutcome::Success);
+        assert!(limiter.state.lock().unwrap().cooldown_until.is_some());
+        // An expired pause is a clean slate for the next cycle.
+        {
+            let mut state = limiter.state.lock().unwrap();
+            state.cooldown_until = Some(Instant::now() - Duration::from_millis(1));
+        }
+        limiter.note(FetchOutcome::Success);
+        let state = limiter.state.lock().unwrap();
+        assert!(state.cooldown_until.is_none());
+        assert_eq!(state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn unrelated_errors_do_not_count_toward_throttle() {
+        let limiter = StreamLimiter::new();
+        for _ in 0..THROTTLE_TRIGGER * 2 {
+            limiter.note(FetchOutcome::Other);
+        }
+        let state = limiter.state.lock().unwrap();
+        assert!(state.cooldown_until.is_none());
+        assert_eq!(state.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn in_flight_failures_do_not_extend_the_pause() {
+        let limiter = StreamLimiter::new();
+        for _ in 0..THROTTLE_TRIGGER {
+            limiter.note(FetchOutcome::Throttled);
+        }
+        let before = limiter.state.lock().unwrap().cooldown_until;
+        assert!(before.is_some());
+        // A failure recorded during the pause must not re-arm it.
+        limiter.note(FetchOutcome::Throttled);
+        let after = limiter.state.lock().unwrap().cooldown_until;
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn acquire_waits_out_an_active_pause() {
+        let limiter = StreamLimiter::new();
+        {
+            let mut state = limiter.state.lock().unwrap();
+            state.cooldown_until = Some(Instant::now() + Duration::from_millis(100));
+        }
+        let start = Instant::now();
+        let permit = limiter.acquire().await.expect("acquires after the pause");
+        assert!(start.elapsed() >= Duration::from_millis(80));
+        drop(permit);
     }
 }
