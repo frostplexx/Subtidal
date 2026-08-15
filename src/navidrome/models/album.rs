@@ -142,6 +142,13 @@ pub struct AlbumId3 {
     pub year: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    // OpenSubsonic extensions: releaseTypes carries Album/EP/Single, and
+    // isCompilation marks guest-appearance compilations. Both omit when
+    // unknown, matching the codebase's skip-when-none convention.
+    #[serde(rename = "isCompilation", skip_serializing_if = "Option::is_none")]
+    pub is_compilation: Option<bool>,
+    #[serde(rename = "releaseTypes", skip_serializing_if = "Option::is_none")]
+    pub release_types: Option<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -166,6 +173,8 @@ mod tests {
                     created: Some("2021-07-22T02:09:31+00:00".into()),
                     year: Some(2005),
                     genre: Some("Hip-Hop".into()),
+                    is_compilation: None,
+                    release_types: None,
                 }],
             },
         };
@@ -194,6 +203,8 @@ mod tests {
                     created: None,
                     year: Some(2020),
                     genre: None,
+                    is_compilation: None,
+                    release_types: None,
                 },
                 song: vec![Child {
                     id: "t9".into(),
@@ -245,6 +256,8 @@ mod tests {
             created: None,
             year: None,
             genre: None,
+            is_compilation: None,
+            release_types: None,
         };
         let json = serde_json::to_value(&album).unwrap();
         assert_eq!(json["coverArt"], "https://example.com/c.jpg");

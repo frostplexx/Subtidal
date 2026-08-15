@@ -12,13 +12,14 @@ impl TidalClient {
     }
 
     // One artist's releases. Backs getArtist. The v1 endpoint defaults to
-    // full albums only; EPs and singles need a second call with
-    // filter=EPSANDSINGLES. Each page cap is far above any artist's
-    // catalog, so one call per list returns everything. Albums come
-    // first, then EPs and singles. Each list is deduplicated on its own
-    // (see dedup_albums): a single and an album with the same title must
-    // never collapse. A failure on the secondary list only logs and the
-    // albums still render.
+    // full albums only; EPs and singles need filter=EPSANDSINGLES and
+    // guest-appearance compilations filter=COMPILATIONS. Each page cap is
+    // far above any artist's catalog, so one call per list returns
+    // everything. Albums come first, then EPs and singles, then
+    // compilations. Each list is deduplicated on its own (see
+    // dedup_albums): a single and an album with the same title must never
+    // collapse. A failure on a secondary list only logs and the albums
+    // still render.
     pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
         let mut albums = self
             .get_json_q(
@@ -30,13 +31,30 @@ impl TidalClient {
         if let Some(items) = albums["items"].as_array_mut() {
             dedup_albums(items);
         }
-        let ep_singles = match self
+        let ep_singles = self.release_items(artist_id, "EPSANDSINGLES").await;
+        let compilations = self.release_items(artist_id, "COMPILATIONS").await;
+        if let Some(all) = albums["items"].as_array_mut() {
+            if let Some(mut extra) = ep_singles {
+                merge_album_sections(all, &mut extra);
+            }
+            if let Some(mut extra) = compilations {
+                merge_compilations(all, &mut extra);
+            }
+        }
+        Ok(albums)
+    }
+
+    // Fetch one secondary release list (EPs/singles or compilations),
+    // deduplicated. None when the call fails; the caller keeps the
+    // albums list and only logs.
+    async fn release_items(&self, artist_id: u64, filter: &str) -> Option<Vec<Value>> {
+        let resp = match self
             .get_json_q(
                 &format!("/artists/{artist_id}/albums"),
                 &[
                     ("limit", "1000"),
                     ("offset", "0"),
-                    ("filter", "EPSANDSINGLES"),
+                    ("filter", filter),
                 ],
                 &self.meta_cache,
             )
@@ -44,17 +62,13 @@ impl TidalClient {
         {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("tidal artist ep/singles fetch failed: {e}");
-                return Ok(albums);
+                tracing::warn!("tidal artist {filter} fetch failed: {e}");
+                return None;
             }
         };
-        if let Some(items) = ep_singles["items"].as_array() {
-            let mut extra = items.clone();
-            if let Some(all) = albums["items"].as_array_mut() {
-                merge_album_sections(all, &mut extra);
-            }
-        }
-        Ok(albums)
+        let mut items = resp["items"].as_array().cloned().unwrap_or_default();
+        dedup_albums(&mut items);
+        Some(items)
     }
 
     // An artist's most popular tracks. Backs getTopSongs.
@@ -115,6 +129,16 @@ fn merge_album_sections(albums: &mut Vec<Value>, ep_singles: &mut Vec<Value>) {
     albums.append(ep_singles);
 }
 
+// Mark every item as a compilation and append the list. Tidal's own
+// item type cannot distinguish compilations from albums, so the artist
+// client stamps them for the mapper (see album_from_tidal).
+fn merge_compilations(albums: &mut Vec<Value>, compilations: &mut Vec<Value>) {
+    for item in compilations.iter_mut() {
+        item["isCompilation"] = serde_json::json!(true);
+    }
+    merge_album_sections(albums, compilations);
+}
+
 // Within a title group, keep the copy Tidal ranks highest (the
 // `popularity` field). That matches the copy Tidal's own search surfaces,
 // verified against real artist data (15 of 16 titles). Ties keep the
@@ -151,7 +175,7 @@ fn dedup_albums(items: &mut Vec<Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{dedup_albums, merge_album_sections};
+    use super::{dedup_albums, merge_album_sections, merge_compilations};
     use serde_json::{json, Value};
 
     #[test]
@@ -238,5 +262,18 @@ mod tests {
         assert_eq!(albums.len(), 2);
         assert_eq!(albums[0]["id"], 1);
         assert_eq!(albums[1]["id"], 2);
+    }
+
+    #[test]
+    fn merge_compilations_stamps_and_appends() {
+        let mut albums: Vec<Value> = vec![json!({ "id": 1, "title": "LP" })];
+        let mut comps: Vec<Value> = vec![
+            json!({ "id": 2, "title": "Best Of" }),
+            json!({ "id": 3, "title": "Best Of" }),
+        ];
+        merge_compilations(&mut albums, &mut comps);
+        assert_eq!(albums.len(), 2);
+        assert_eq!(albums[1]["isCompilation"], true);
+        assert!(albums[0].get("isCompilation").is_none());
     }
 }

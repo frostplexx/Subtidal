@@ -10,6 +10,20 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
     let id = v["id"].as_u64()?;
     let name = v["title"].as_str()?.to_string();
     let (artist_id, artist_name) = primary_artist(v);
+    // Compilations are stamped by the artist client (Tidal's own item
+    // type cannot distinguish them); everything else maps its release
+    // type from Tidal's `type` field.
+    let is_compilation = v["isCompilation"].as_bool().unwrap_or(false);
+    let release_types = if is_compilation {
+        vec!["Compilation".to_string()]
+    } else {
+        match v["type"].as_str() {
+            Some("ALBUM") => vec!["Album".to_string()],
+            Some("EP") => vec!["EP".to_string()],
+            Some("SINGLE") => vec!["Single".to_string()],
+            _ => Vec::new(),
+        }
+    };
     Some(AlbumId3 {
         id: ids::encode_album(id),
         album: name.clone(),
@@ -24,6 +38,8 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
         created: None,
         year: year_from(v["releaseDate"].as_str()),
         genre: v["genre"].as_str().map(String::from),
+        is_compilation: is_compilation.then_some(true),
+        release_types: (!release_types.is_empty()).then_some(release_types),
     })
 }
 
@@ -49,7 +65,8 @@ mod tests {
             "numberOfTracks": 10,
             "duration": 2200,
             "releaseDate": "2020-01-01",
-            "cover": "def-456"
+            "cover": "def-456",
+            "type": "ALBUM"
         });
         let a = album_from_tidal(&album).unwrap();
         assert_eq!(a.id, "al456");
@@ -60,6 +77,32 @@ mod tests {
         assert_eq!(a.title, "Album One");
         assert_eq!(a.play_count, 0);
         assert_eq!(a.created, None);
+        assert_eq!(a.release_types, Some(vec!["Album".to_string()]));
+        assert_eq!(a.is_compilation, None);
+    }
+
+    #[test]
+    fn album_maps_ep_single_and_compilation_types() {
+        let ep = album_from_tidal(&json!({"id": 1, "title": "E", "type": "EP"})).unwrap();
+        assert_eq!(ep.release_types, Some(vec!["EP".to_string()]));
+        assert_eq!(ep.is_compilation, None);
+        let single = album_from_tidal(&json!({"id": 2, "title": "S", "type": "SINGLE"})).unwrap();
+        assert_eq!(single.release_types, Some(vec!["Single".to_string()]));
+        // A compilation is stamped by the artist client; its own type
+        // field cannot distinguish it from an album.
+        let comp = album_from_tidal(&json!({
+            "id": 3,
+            "title": "C",
+            "type": "ALBUM",
+            "isCompilation": true
+        }))
+        .unwrap();
+        assert_eq!(comp.release_types, Some(vec!["Compilation".to_string()]));
+        assert_eq!(comp.is_compilation, Some(true));
+        // Missing type: no releaseTypes.
+        let bare = album_from_tidal(&json!({"id": 4, "title": "B"})).unwrap();
+        assert_eq!(bare.release_types, None);
+        assert_eq!(bare.is_compilation, None);
     }
 
     #[test]

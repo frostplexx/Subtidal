@@ -105,6 +105,8 @@ mod tests {
                         created: None,
                         year: None,
                         genre: None,
+                        is_compilation: None,
+                        release_types: None,
                     },
                 }],
                 song: vec![],
