@@ -36,6 +36,8 @@ pub use favorites::FavoriteKind;
 const AUTH_URL: &str = "https://auth.tidal.com/v1/oauth2";
 const API_URL: &str = "https://api.tidal.com/v1";
 const V2_URL: &str = "https://api.tidal.com/v2";
+// OpenAPI (JSON:API) host, distinct from the legacy V2_URL above.
+const OPENAPI_URL: &str = "https://openapi.tidal.com/v2";
 const CLIENT_VERSION: &str = "2025.11.3";
 const KEYRING_SERVICE: &str = "Subtidal";
 const KEYRING_USER: &str = "tidal";

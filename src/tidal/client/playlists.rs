@@ -108,43 +108,48 @@ impl TidalClient {
         Ok(body)
     }
 
-    // Update playlist metadata (title, description). Backs updatePlaylist
-    // and createPlaylist's rename mode. The v1 API edits via POST (PUT is
-    // not a registered method there; it answers 405). When only one of
-    // title/description is given, the other comes from the current
-    // playlist: the API wants both fields.
+    // Update playlist metadata (name, description). Backs updatePlaylist
+    // and createPlaylist's rename mode. Uses the OpenAPI JSON:API PATCH on
+    // openapi.tidal.com, as Sone does; the v1 API registers no PUT here
+    // (it answers 405). When only one field is given, the other comes from
+    // the current playlist: the body always carries both name and
+    // description. accessType is deliberately omitted: PATCH updates are
+    // partial, and the v1 source has no accessType (only publicPlaylist),
+    // so sending it would risk flipping a private playlist public.
     pub async fn update_playlist(
         &self,
         uuid: &str,
         title: Option<&str>,
         description: Option<&str>,
     ) -> Result<(), super::Error> {
+        if title.is_none() && description.is_none() {
+            return Ok(());
+        }
         let user_id = self.user_id().await?;
         let token = self.access_token().await?;
-        let (title, description) = match (title, description) {
-            (Some(t), Some(d)) => (t.to_string(), d.to_string()),
-            (Some(t), None) => {
-                let current = self.playlist(uuid).await?;
-                (t.to_string(), current["description"].as_str().unwrap_or("").to_string())
-            }
-            (None, Some(d)) => {
-                let current = self.playlist(uuid).await?;
-                (current["title"].as_str().unwrap_or("").to_string(), d.to_string())
-            }
-            (None, None) => return Ok(()),
-        };
-        let url = format!("{}/playlists/{uuid}", super::API_URL);
-        let mut req = self.http.post(&url).bearer_auth(token);
+        let current = self.playlist(uuid).await?;
+        let name = title.unwrap_or(current["title"].as_str().unwrap_or(""));
+        let description = description.unwrap_or(current["description"].as_str().unwrap_or(""));
+        let body = serde_json::json!({
+            "data": {
+                "id": uuid,
+                "type": "playlists",
+                "attributes": {
+                    "name": name,
+                    "description": description,
+                },
+            },
+        });
+        let url = format!("{}/playlists/{uuid}", super::OPENAPI_URL);
+        let mut req = self
+            .http
+            .patch(&url)
+            .bearer_auth(token)
+            .header("Content-Type", "application/vnd.api+json");
         if let Some(cc) = self.country_code().await? {
             req = req.query(&[("countryCode", cc)]);
         }
-        let resp = req
-            .form(&[
-                ("title", title.as_str()),
-                ("description", description.as_str()),
-            ])
-            .send()
-            .await?;
+        let resp = req.json(&body).send().await?;
         let status = resp.status();
         if status.is_success() {
             self.invalidate_playlist_caches(user_id, uuid);
