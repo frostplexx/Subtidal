@@ -2,6 +2,8 @@ name: build-image
 
 # Build and push an OCI image to GHCR when a tag like v0.2.0 is pushed.
 # workflow_dispatch builds current main as :latest for manual testing.
+# Each architecture builds natively on its own runner, in parallel: the
+# arm64 leg runs on GitHub's ARM runner instead of under QEMU.
 on:
   push:
     tags:
@@ -14,13 +16,18 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out
         uses: actions/checkout@v7
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -46,9 +53,11 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64, linux/arm64
+          # One platform per leg; each runner builds its own natively.
+          platforms: linux/${{ matrix.arch }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=subtidal
-          cache-to: type=gha,scope=subtidal,mode=max
+          # Per-arch scope: the two legs write their caches concurrently.
+          cache-from: type=gha,scope=subtidal-${{ matrix.arch }}
+          cache-to: type=gha,scope=subtidal-${{ matrix.arch }},mode=max
