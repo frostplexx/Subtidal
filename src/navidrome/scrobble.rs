@@ -40,6 +40,48 @@ const LASTFM_API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_AUTH_URL: &str = "https://www.last.fm/api/auth/";
 const LISTENBRAINZ_API_BASE: &str = "https://api.listenbrainz.org";
 
+// Where the fallback session key lives when the OS keyring is
+// unavailable (headless Linux without a Secret Service). Override with
+// SUBTIDAL_LASTFM_KEY_FILE; default is
+// $XDG_STATE_HOME/subtidal/lastfm-session-key.
+const LASTFM_KEY_FILE_ENV: &str = "SUBTIDAL_LASTFM_KEY_FILE";
+
+fn lastfm_key_file() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os(LASTFM_KEY_FILE_ENV) {
+        return Some(std::path::PathBuf::from(p));
+    }
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))
+        })?;
+    Some(base.join("subtidal").join(LASTFM_KEYRING_USER))
+}
+
+fn read_key_file_at(path: &std::path::Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(Some(s.trim().to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("key file read failed ({}): {e}", path.display())),
+    }
+}
+
+fn read_key_file() -> Result<Option<String>, String> {
+    match lastfm_key_file() {
+        Some(path) => read_key_file_at(&path),
+        None => Ok(None),
+    }
+}
+
+fn write_key_file(path: &std::path::Path, key: &str) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, key)?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+
 // The configured reporter list, swappable by tests. The Arc lets
 // report_song clone the list cheaply and release the lock before the
 // network calls.
@@ -288,21 +330,48 @@ fn trigger_reauthorization(api_key: &str, api_secret: &str) {
     });
 }
 
-// The Last.fm session key from the OS keychain, if present.
+// The Last.fm session key: OS keychain first, then the fallback file.
+// A keyring that errors (headless Linux has no Secret Service) falls
+// back to the file instead of failing.
 pub fn lastfm_session_key() -> Result<Option<String>, String> {
-    match keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.get_password()) {
+    match keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.get_password())
+    {
         Ok(sk) => Ok(Some(sk)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keyring get failed: {e}")),
+        Err(keyring::Error::NoEntry) => read_key_file(),
+        Err(e) => {
+            tracing::debug!("keyring unavailable ({e}); using the session-key file");
+            read_key_file()
+        }
+    }
+}
+
+// Store the Last.fm session key: OS keychain first, then the fallback
+// file. A keyring set that fails (headless Linux without a Secret
+// Service) writes the key file instead, so authorization still sticks.
+fn store_lastfm_session_key(key: &str) -> Result<(), String> {
+    let keyring =
+        keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.set_password(key));
+    match keyring {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let Some(path) = lastfm_key_file() else {
+                return Err(format!("keyring set failed: {e}"));
+            };
+            tracing::warn!(
+                "keyring unavailable ({e}); storing the Last.fm session key at {}",
+                path.display()
+            );
+            write_key_file(&path, key).map_err(|e| format!("key file write failed: {e}"))
+        }
     }
 }
 
 // Last.fm one-time auth, run automatically on startup when a [lastfm]
 // block exists without a session key (and on demand via --lastfm-auth):
 // getToken -> print the authorize URL -> poll getSession until the user
-// authorizes (or the timeout passes) -> store the session key in the
-// keychain. Never blocks forever: on timeout the caller continues
-// without Last.fm scrobbling.
+// authorizes (or the timeout passes) -> store the session key (keychain
+// or fallback file). Never blocks forever: on timeout the caller
+// continues without Last.fm scrobbling.
 pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), String> {
     const POLL_SECS: u64 = 3;
     const TIMEOUT_SECS: u64 = 180;
@@ -318,9 +387,7 @@ pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), Str
     loop {
         match lastfm_get_session(&http, api_key, api_secret, &token).await {
             Ok((key, name)) => {
-                keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER)
-                    .and_then(|e| e.set_password(&key))
-                    .map_err(|e| format!("keyring set failed: {e}"))?;
+                store_lastfm_session_key(&key)?;
                 println!("Last.fm authenticated as {name}.");
                 return Ok(());
             }
@@ -596,6 +663,21 @@ mod tests {
         assert_eq!(classify_session_error(13), SessionPoll::Pending);
         assert_eq!(classify_session_error(14), SessionPoll::Pending);
         assert_eq!(classify_session_error(16), SessionPoll::Pending);
+    }
+
+    #[test]
+    fn session_key_file_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("subtidal-key-test-{}", std::process::id()));
+        let path = dir.join("lastfm-session-key");
+        // A missing file reads as None.
+        assert_eq!(read_key_file_at(&path).unwrap(), None);
+        write_key_file(&path, "sk123").unwrap();
+        assert_eq!(read_key_file_at(&path).unwrap(), Some("sk123".to_string()));
+        // The file must be private to the user.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // A recording reporter for fan-out tests.
