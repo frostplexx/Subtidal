@@ -120,6 +120,14 @@ pub fn position_at(n: &NowPlaying, now: i64) -> u64 {
     }
 }
 
+// Serializes tests that mutate the process-wide slot, from this module
+// and from handler tests (annotate.rs scrobble gating).
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,8 +135,7 @@ mod tests {
     // The slot is a process-wide static; tests mutate it from parallel
     // threads, so each state test takes a lock that serializes them.
     fn lock() -> std::sync::MutexGuard<'static, ()> {
-        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        test_lock()
     }
 
     #[test]

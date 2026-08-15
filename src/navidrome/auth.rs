@@ -14,8 +14,9 @@ use crate::SETTINGS;
 use super::params::QueryParams;
 
 // hex string of an MD5 digest. digest 0.11 outputs a hybrid-array value,
-// which has no LowerHex impl, so encode the bytes manually.
-fn md5_hex(data: impl AsRef<[u8]>) -> String {
+// which has no LowerHex impl, so encode the bytes manually. Shared with
+// the scrobble module (Last.fm API signatures).
+pub(crate) fn md5_hex(data: impl AsRef<[u8]>) -> String {
     let digest = Md5::digest(data);
     digest.iter().map(|b| format!("{:02x}", b)).collect()
 }

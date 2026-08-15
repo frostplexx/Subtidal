@@ -59,13 +59,13 @@ async fn account_identity() -> (String, String) {
 }
 
 // The single user of this server. Role flags mirror what the bridge can
-// actually do; scrobblingEnabled flips on when the middleware lands.
-fn user_of(username: String, email: String) -> User {
+// actually do; scrobblingEnabled reflects the configured scrobble backends.
+fn user_of(username: String, email: String, scrobbling_enabled: bool) -> User {
     User {
         folder: vec![1],
         username,
         email,
-        scrobbling_enabled: "false",
+        scrobbling_enabled: if scrobbling_enabled { "true" } else { "false" },
         admin_role: "true",
         settings_role: "true",
         download_role: "true",
@@ -83,7 +83,7 @@ fn user_of(username: String, email: String) -> User {
 pub async fn get_user() -> Result<warp::reply::Json, warp::Rejection> {
     let (username, email) = account_identity().await;
     Ok(ok(GetUserResponse {
-        user: user_of(username, email),
+        user: user_of(username, email, crate::navidrome::scrobble::enabled()),
     }))
 }
 
@@ -93,7 +93,7 @@ pub async fn get_users() -> Result<warp::reply::Json, warp::Rejection> {
     let (username, email) = account_identity().await;
     Ok(ok(GetUsersResponse {
         users: Users {
-            user: vec![user_of(username, email)],
+            user: vec![user_of(username, email, crate::navidrome::scrobble::enabled())],
         },
     }))
 }
@@ -134,4 +134,17 @@ pub async fn start_scan(_q: QueryParams) -> Result<warp::reply::Json, warp::Reje
             count: 0,
         },
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_of_reflects_scrobbling_enabled() {
+        let on = user_of("u".into(), "e".into(), true);
+        assert_eq!(on.scrobbling_enabled, "true");
+        let off = user_of("u".into(), "e".into(), false);
+        assert_eq!(off.scrobbling_enabled, "false");
+    }
 }

@@ -28,6 +28,28 @@ pub struct Settings {
     // the proxy IP, so one attacker can lock out everyone.
     #[serde(default)]
     pub rate_limit: bool,
+    // Optional scrobble backends. Both are best-effort: a failing
+    // reporter only logs, never fails the client request. The Last.fm
+    // session key comes from the OS keychain (run --lastfm-auth once);
+    // the ListenBrainz token is the plain API token.
+    #[serde(default)]
+    pub lastfm: Option<LastFmConfig>,
+    #[serde(default)]
+    pub listenbrainz: Option<ListenBrainzConfig>,
+}
+
+// Last.fm scrobble credentials. The session key (sk) lives in the OS
+// keychain, not here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LastFmConfig {
+    pub api_key: String,
+    pub api_secret: String,
+}
+
+// ListenBrainz scrobble credentials: the plain API token.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListenBrainzConfig {
+    pub token: String,
 }
 
 fn default_tidal_quality() -> String {

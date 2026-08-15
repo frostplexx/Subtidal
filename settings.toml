@@ -24,3 +24,16 @@ rate_limit = false
 # Blend the Tidal mixes (Daily Mix, My Mix, Discovery) into getPlaylists
 # as read-only playlists.
 show_mixes = true
+
+# Optional scrobble backends. Both are best-effort: a failing reporter
+# only logs, never fails the client request. When either block is present,
+# getUser reports scrobblingEnabled=true.
+#
+# [lastfm]
+# api_key = "..."
+# api_secret = "..."
+# # Session key: run `subtidal --lastfm-auth` once; it is stored in the
+# # OS keychain, never in this file.
+#
+# [listenbrainz]
+# token = "..."

@@ -17,3 +17,8 @@ pub fn init(client: TidalClient) {
 pub fn client() -> &'static TidalClient {
     CLIENT.get().expect("tidal client not initialized")
 }
+
+// The client when initialized; None in tests and before login.
+pub fn client_opt() -> Option<&'static TidalClient> {
+    CLIENT.get()
+}

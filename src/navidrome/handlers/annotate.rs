@@ -1,34 +1,64 @@
-// Media annotation: scrobble and now-playing reports. Playback reports
-// are acknowledged and logged; there is no Last.fm/ListenBrainz backend
-// yet (TODO), so this is the future PlayReporter hook point.
+// Media annotation: scrobble and now-playing reports. The scrobble
+// endpoint fans out to the configured reporters (Last.fm, ListenBrainz)
+// via navidrome::scrobble; a failing backend only logs. Playback reports
+// also feed getNowPlaying; a real scrobble (submission=true) does not.
 use crate::navidrome::models::PingResponse;
 use crate::navidrome::now_playing;
+use crate::navidrome::scrobble;
 use super::{fail, ok};
 use crate::navidrome::ids;
 use crate::navidrome::params::QueryParams;
 
 // scrobble: accept one or more playback reports. submission=false is a
-// now-playing notification, submission=true a real scrobble. Missing id
-// is a client error (code 10). Any id counts; Tidal tracks are not
-// looked up here. The latest report also feeds getNowPlaying; the entry
-// expires after ten minutes.
+// now-playing notification, submission=true (the default) a real
+// scrobble. Missing id is a client error (code 10). Any id counts;
+// Tidal tracks are fetched only for real scrobbles. The latest
+// now-playing report feeds getNowPlaying; the entry expires after ten
+// minutes. Reporter failures never fail the request.
 pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     if q.id.0.is_empty() {
         return Ok(fail(10, "Required parameter missing"));
     }
+    let submission = q.submission.unwrap_or(true);
     for id in &q.id.0 {
         tracing::info!(
-            "scrobble id={id} submission={} time={:?}",
-            q.submission.unwrap_or(true),
+            "scrobble id={id} submission={submission} time={:?}",
             q.time
         );
     }
-    if let Some(id) = q.id.0.last()
-        && let Some(track_id) = ids::parse_track_id(id)
-    {
-        // TODO: real scrobbles (submission=true) must not feed the
-        // now-playing slot; gate this on q.submission == Some(false).
-        now_playing::report(track_id, q.u.clone().unwrap_or_default());
+    if !submission {
+        // Now-playing notification: only the latest id feeds the slot.
+        if let Some(id) = q.id.0.last()
+            && let Some(track_id) = ids::parse_track_id(id)
+        {
+            now_playing::report(track_id, q.u.clone().unwrap_or_default());
+        }
+        return Ok(ok(PingResponse {}));
+    }
+    // Real scrobble: report every id. Track metadata is fetched through
+    // the Tidal client; when it is unavailable (or a track is unknown),
+    // that scrobble is skipped and logged, never a client error.
+    let time_ms = q.time.unwrap_or_else(now_playing::now_ms);
+    for id in &q.id.0 {
+        let Some(track_id) = ids::parse_track_id(id) else {
+            continue;
+        };
+        let Some(client) = crate::tidal::client_opt() else {
+            tracing::warn!("scrobble id={id}: tidal client unavailable; skipped");
+            continue;
+        };
+        let detail = match client.track(track_id).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("scrobble id={id}: track fetch failed: {e}");
+                continue;
+            }
+        };
+        let Some(song) = scrobble::scrobble_song_from_track(&detail) else {
+            tracing::warn!("scrobble id={id}: track metadata incomplete; skipped");
+            continue;
+        };
+        scrobble::report_song(&song, time_ms).await;
     }
     Ok(ok(PingResponse {}))
 }
@@ -102,6 +132,49 @@ mod tests {
         let sr = &body["subsonic-response"];
         assert_eq!(sr["status"], "ok");
         assert!(sr.get("error").is_none());
+    }
+
+    // The lock intentionally covers the request await: the handler reads
+    // and writes the shared now-playing slot.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn submission_false_feeds_now_playing() {
+        let _g = crate::navidrome::now_playing::test_lock();
+        // The Tidal client is unset in tests, so a real scrobble is
+        // skipped; only the now-playing feed (submission=false) works.
+        let reply = warp::test::request()
+            .path("/rest/scrobble?id=t463900374&submission=false")
+            .reply(&scrobble_route())
+            .await;
+        let body: serde_json::Value = serde_json::from_slice(reply.body()).unwrap();
+        assert_eq!(body["subsonic-response"]["status"], "ok");
+        let np = crate::navidrome::now_playing::current().unwrap();
+        assert_eq!(np.track_id, 463900374);
+        // Clear the slot before the next assertion.
+        crate::navidrome::now_playing::report_playback(
+            np.track_id,
+            np.username.clone(),
+            "stopped",
+            0,
+            1.0,
+        );
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn submission_true_does_not_feed_now_playing() {
+        let _g = crate::navidrome::now_playing::test_lock();
+        crate::navidrome::now_playing::report_playback(999, "admin".into(), "stopped", 0, 1.0);
+        let reply = warp::test::request()
+            .path("/rest/scrobble?id=t463900374&submission=true")
+            .reply(&scrobble_route())
+            .await;
+        let body: serde_json::Value = serde_json::from_slice(reply.body()).unwrap();
+        assert_eq!(body["subsonic-response"]["status"], "ok");
+        assert!(
+            crate::navidrome::now_playing::current().is_none(),
+            "a real scrobble must not set the now-playing slot"
+        );
     }
 
     #[tokio::test]
