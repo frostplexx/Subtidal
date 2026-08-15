@@ -51,7 +51,7 @@ pub struct StreamInfo {
 // at once, and at most STREAM_WINDOW_MAX start within STREAM_WINDOW.
 const STREAM_LIMIT: usize = 6;
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
-const STREAM_WINDOW_MAX: usize = 6;
+const STREAM_WINDOW_MAX: usize = 12;
 
 pub(crate) struct StreamLimiter {
     semaphore: Semaphore,
