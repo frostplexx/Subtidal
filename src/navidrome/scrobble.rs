@@ -3,6 +3,7 @@
 // logs; it never fails the client request. The reporter registry is built
 // once at startup from settings.
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
@@ -55,18 +56,17 @@ fn registry() -> &'static ReporterRegistry {
 pub fn init(settings: &Settings) {
     let mut reporters: Vec<Box<dyn PlayReporter>> = Vec::new();
     if let Some(cfg) = &settings.lastfm {
-        match lastfm_session_key() {
-            Ok(Some(sk)) => reporters.push(Box::new(LastFmReporter::new(
-                cfg.api_key.clone(),
-                cfg.api_secret.clone(),
-                sk,
-                LASTFM_API_URL,
-            ))),
-            Ok(None) => tracing::warn!(
-                "lastfm: not authorized; scrobbling disabled (startup authorization failed or timed out)"
-            ),
-            Err(e) => tracing::warn!("lastfm: session key unavailable: {e}"),
+        // The reporter is always added: a missing session key only skips
+        // individual scrobbles, and a background re-authorization stores
+        // a new key without rebuilding the registry.
+        if lastfm_session_key().ok().flatten().is_none() {
+            tracing::warn!("lastfm: not authorized; scrobbles are skipped until authorized");
         }
+        reporters.push(Box::new(LastFmReporter::new(
+            cfg.api_key.clone(),
+            cfg.api_secret.clone(),
+            LASTFM_API_URL,
+        )));
     }
     if let Some(cfg) = &settings.listenbrainz {
         reporters.push(Box::new(ListenBrainzReporter::new(
@@ -128,19 +128,44 @@ pub fn scrobble_song_from_track(v: &Value) -> Option<ScrobbleSong> {
 pub struct LastFmReporter {
     api_key: String,
     api_secret: String,
-    session_key: String,
     api_url: String,
     http: reqwest::Client,
+    // Session key provider: the OS keychain in production, so a
+    // background re-authorization is picked up on the next report.
+    // Tests inject a fake.
+    session_key: Box<dyn Fn() -> Result<Option<String>, String> + Send + Sync>,
+    // Re-authorization trigger: spawns the interactive flow in
+    // production. Tests inject a recorder.
+    reauth: Box<dyn Fn(&str, &str) + Send + Sync>,
 }
 
 impl LastFmReporter {
-    pub fn new(api_key: String, api_secret: String, session_key: String, api_url: &str) -> Self {
+    pub fn new(api_key: String, api_secret: String, api_url: &str) -> Self {
         Self {
             api_key,
             api_secret,
-            session_key,
             api_url: api_url.to_string(),
             http: reqwest::Client::new(),
+            session_key: Box::new(lastfm_session_key),
+            reauth: Box::new(trigger_reauthorization),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_fakes(
+        api_key: String,
+        api_secret: String,
+        api_url: &str,
+        session_key: Box<dyn Fn() -> Result<Option<String>, String> + Send + Sync>,
+        reauth: Box<dyn Fn(&str, &str) + Send + Sync>,
+    ) -> Self {
+        Self {
+            api_key,
+            api_secret,
+            api_url: api_url.to_string(),
+            http: reqwest::Client::new(),
+            session_key,
+            reauth,
         }
     }
 
@@ -159,24 +184,27 @@ impl LastFmReporter {
         md5_hex(sig_input)
     }
 
-    async fn post(&self, params: BTreeMap<&str, String>) -> Result<Value, String> {
+    // Last.fm API POST. Errors carry (code, message); a transport or
+    // parse failure has code 0.
+    async fn post(&self, params: BTreeMap<&str, String>) -> Result<Value, (u32, String)> {
         let body = self
             .http
             .post(&self.api_url)
             .form(&params)
             .send()
             .await
-            .map_err(|e| format!("request failed: {e}"))?;
+            .map_err(|e| (0, format!("request failed: {e}")))?;
         let json: Value = body
             .json()
             .await
-            .map_err(|e| format!("response parse failed: {e}"))?;
+            .map_err(|e| (0, format!("response parse failed: {e}")))?;
         if let Some(code) = json.get("error").and_then(|e| e.as_u64()) {
             let msg = json
                 .get("message")
                 .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
-            return Err(format!("error {code}: {msg}"));
+                .unwrap_or("unknown error")
+                .to_string();
+            return Err((code as u32, msg));
         }
         Ok(json)
     }
@@ -193,10 +221,23 @@ impl PlayReporter for LastFmReporter {
         timestamp_ms: i64,
     ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
         Box::pin(async move {
+            // Read the session key fresh: a background re-authorization
+            // stores a new key without rebuilding the reporters.
+            let key = match (self.session_key)() {
+                Ok(Some(k)) => k,
+                Ok(None) => {
+                    tracing::warn!("lastfm: not authorized; scrobble skipped");
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!("lastfm: session key unavailable: {e}");
+                    return Ok(());
+                }
+            };
             let mut params: BTreeMap<&str, String> = BTreeMap::new();
             params.insert("method", "track.scrobble".into());
             params.insert("api_key", self.api_key.clone());
-            params.insert("sk", self.session_key.clone());
+            params.insert("sk", key);
             params.insert("artist", song.artist.clone());
             params.insert("track", song.title.clone());
             params.insert("timestamp", (timestamp_ms / 1000).to_string());
@@ -209,13 +250,42 @@ impl PlayReporter for LastFmReporter {
             params.insert("format", "json".into());
             match self.post(params).await {
                 Ok(_) => Ok(()),
-                Err(e) => {
-                    tracing::warn!("lastfm: scrobble error: {e}");
+                // 8: invalid session key; the user revoked access or
+                // Last.fm invalidated the key. Re-authorize in the
+                // background; the next scrobble uses the new key.
+                Err((8, _msg)) => {
+                    tracing::warn!(
+                        "lastfm: session key invalid; re-authorization started (check the terminal for the authorize URL)"
+                    );
+                    (self.reauth)(&self.api_key, &self.api_secret);
+                    Ok(())
+                }
+                Err((code, msg)) => {
+                    tracing::warn!("lastfm: scrobble error {code}: {msg}");
                     Ok(())
                 }
             }
         })
     }
+}
+
+// One re-authorization flow at a time. Spawns the interactive flow
+// (prints the authorize URL, polls up to three minutes), which stores
+// the new session key in the keychain on success.
+fn trigger_reauthorization(api_key: &str, api_secret: &str) {
+    static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    if IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return; // a flow is already running
+    }
+    let api_key = api_key.to_string();
+    let api_secret = api_secret.to_string();
+    tokio::spawn(async move {
+        match lastfm_auth_flow(&api_key, &api_secret).await {
+            Ok(()) => tracing::info!("lastfm: re-authorized; new session key stored"),
+            Err(e) => tracing::warn!("lastfm: re-authorization failed: {e}"),
+        }
+        IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
 }
 
 // The Last.fm session key from the OS keychain, if present.
@@ -362,8 +432,9 @@ enum SessionPoll {
 
 fn classify_session_error(code: u32) -> SessionPoll {
     match code {
-        // 2: invalid service, 10: invalid API key, 26: suspended.
-        2 | 10 | 26 => SessionPoll::Fatal,
+        // 1: invalid service, 2: invalid method, 9: invalid API key,
+        // 26: suspended API key. All are configuration errors.
+        1 | 2 | 9 | 26 => SessionPoll::Fatal,
         _ => SessionPoll::Pending,
     }
 }
@@ -502,11 +573,12 @@ mod tests {
         params.insert("artist", "Taylor Swift".into());
         params.insert("method", "track.scrobble".into());
         params.insert("format", "json".into());
-        let reporter = LastFmReporter::new(
+        let reporter = LastFmReporter::new_with_fakes(
             "key123".into(),
             "secret".into(),
-            "sk".into(),
             LASTFM_API_URL,
+            Box::new(|| Ok(None)),
+            Box::new(|_, _| ()),
         );
         let input = "api_keykey123artistTaylor Swiftmethodtrack.scrobble".to_string() + "secret";
         assert_eq!(reporter.sign(&params), md5_hex(&input));
@@ -514,11 +586,15 @@ mod tests {
 
     #[test]
     fn session_errors_fatal_only_for_config_problems() {
+        assert_eq!(classify_session_error(1), SessionPoll::Fatal);
         assert_eq!(classify_session_error(2), SessionPoll::Fatal);
-        assert_eq!(classify_session_error(10), SessionPoll::Fatal);
+        assert_eq!(classify_session_error(9), SessionPoll::Fatal);
         assert_eq!(classify_session_error(26), SessionPoll::Fatal);
-        // Not-yet-authorized and temporary errors keep polling.
+        // Not-yet-authorized, temporary, and service errors keep polling.
         assert_eq!(classify_session_error(4), SessionPoll::Pending);
+        assert_eq!(classify_session_error(10), SessionPoll::Pending);
+        assert_eq!(classify_session_error(13), SessionPoll::Pending);
+        assert_eq!(classify_session_error(14), SessionPoll::Pending);
         assert_eq!(classify_session_error(16), SessionPoll::Pending);
     }
 
@@ -591,13 +667,19 @@ mod tests {
     // Spin up a local warp server on an ephemeral port. Every request is
     // captured (raw body) and answered 200 with "ok".
     async fn mock_server() -> (String, Arc<Mutex<Vec<String>>>) {
+        mock_server_json(serde_json::json!("ok")).await
+    }
+
+    // Like mock_server, but answers every request with the given JSON.
+    async fn mock_server_json(body: Value) -> (String, Arc<Mutex<Vec<String>>>) {
         let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let cap = captured.clone();
-        let route = warp::body::bytes().map(move |body: bytes::Bytes| {
+        let route = warp::body::bytes().map(move |bytes: bytes::Bytes| {
             cap.lock()
                 .unwrap()
-                .push(String::from_utf8_lossy(&body).to_string());
-            warp::reply::with_status("ok".to_string(), warp::http::StatusCode::OK)
+                .push(String::from_utf8_lossy(&bytes).to_string());
+            let reply = body.clone();
+            warp::reply::with_status(warp::reply::json(&reply), warp::http::StatusCode::OK)
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -613,11 +695,12 @@ mod tests {
     #[tokio::test]
     async fn lastfm_report_posts_signed_scrobble() {
         let (base, captured) = mock_server().await;
-        let reporter = LastFmReporter::new(
+        let reporter = LastFmReporter::new_with_fakes(
             "key".into(),
             "secret".into(),
-            "sk123".into(),
             &format!("{base}/2.0/"),
+            Box::new(|| Ok(Some("sk123".into()))),
+            Box::new(|_, _| ()),
         );
         reporter
             .report(&scrobble_song(), 1_786_116_785_370)
@@ -640,13 +723,38 @@ mod tests {
         let (base, _captured) = mock_server().await;
         // The mock answers "ok" for any path; that is not JSON, so the
         // reporter logs the parse failure and still returns Ok.
-        let reporter = LastFmReporter::new(
+        let reporter = LastFmReporter::new_with_fakes(
             "key".into(),
             "secret".into(),
-            "sk".into(),
             &format!("{base}/nope"),
+            Box::new(|| Ok(Some("sk".into()))),
+            Box::new(|_, _| ()),
         );
         assert!(reporter.report(&scrobble_song(), 0).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn lastfm_report_reauths_on_invalid_session_key() {
+        let (base, _captured) = mock_server_json(serde_json::json!({
+            "error": 8,
+            "message": "Invalid session key - Please re-authenticate"
+        }))
+        .await;
+        let reauths: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let reauths2 = reauths.clone();
+        let reporter = LastFmReporter::new_with_fakes(
+            "key".into(),
+            "secret".into(),
+            &format!("{base}/2.0/"),
+            Box::new(|| Ok(Some("sk".into()))),
+            Box::new(move |k, s| {
+                reauths2.lock().unwrap().push((k.to_string(), s.to_string()))
+            }),
+        );
+        assert!(reporter.report(&scrobble_song(), 0).await.is_ok());
+        let reauths = reauths.lock().unwrap();
+        assert_eq!(reauths.len(), 1);
+        assert_eq!(reauths[0], ("key".to_string(), "secret".to_string()));
     }
 
     #[tokio::test]
