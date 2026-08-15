@@ -32,8 +32,9 @@ show_mixes = true
 # [lastfm]
 # api_key = "..."
 # api_secret = "..."
-# # Session key: run `subtidal --lastfm-auth` once; it is stored in the
-# # OS keychain, never in this file.
+# # Authorization happens automatically on startup: the server prints a
+# # URL, you authorize, and the session key is stored in the OS keychain.
+# # Re-authorize later with `subtidal --lastfm-auth`.
 #
 # [listenbrainz]
 # token = "..."

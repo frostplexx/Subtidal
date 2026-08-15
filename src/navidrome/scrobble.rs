@@ -63,7 +63,7 @@ pub fn init(settings: &Settings) {
                 LASTFM_API_URL,
             ))),
             Ok(None) => tracing::warn!(
-                "lastfm: no session key in keychain; run `subtidal --lastfm-auth` once"
+                "lastfm: not authorized; scrobbling disabled (startup authorization failed or timed out)"
             ),
             Err(e) => tracing::warn!("lastfm: session key unavailable: {e}"),
         }
@@ -227,87 +227,145 @@ pub fn lastfm_session_key() -> Result<Option<String>, String> {
     }
 }
 
-// One-time Last.fm auth, used by `subtidal --lastfm-auth`:
-// getToken -> print the authorize URL -> wait for the user -> getSession
-// -> store the session key in the keychain.
+// Last.fm one-time auth, run automatically on startup when a [lastfm]
+// block exists without a session key (and on demand via --lastfm-auth):
+// getToken -> print the authorize URL -> poll getSession until the user
+// authorizes (or the timeout passes) -> store the session key in the
+// keychain. Never blocks forever: on timeout the caller continues
+// without Last.fm scrobbling.
 pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), String> {
+    const POLL_SECS: u64 = 3;
+    const TIMEOUT_SECS: u64 = 180;
+    const REMINDER_EVERY: u32 = 5; // polls
+
     let http = reqwest::Client::new();
+    let token = lastfm_get_token(&http, api_key, api_secret).await?;
+    println!("Open this URL to authorize Subtidal on Last.fm:");
+    println!("{LASTFM_AUTH_URL}?api_key={api_key}&token={token}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+    let mut polls: u32 = 0;
+    loop {
+        match lastfm_get_session(&http, api_key, api_secret, &token).await {
+            Ok((key, name)) => {
+                keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER)
+                    .and_then(|e| e.set_password(&key))
+                    .map_err(|e| format!("keyring set failed: {e}"))?;
+                println!("Last.fm authenticated as {name}.");
+                return Ok(());
+            }
+            Err((code, msg)) => {
+                if classify_session_error(code) == SessionPoll::Fatal {
+                    return Err(format!("error {code}: {msg}"));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err("timed out waiting for authorization".into());
+                }
+                polls += 1;
+                if polls % REMINDER_EVERY == 0 {
+                    println!("Still waiting for Last.fm authorization (Ctrl-C to cancel)...");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;
+            }
+        }
+    }
+}
+
+// Signed form POST to the Last.fm API. The api_sig covers every param
+// except format; format is appended after signing.
+async fn lastfm_post(
+    http: &reqwest::Client,
+    params: &mut BTreeMap<&str, String>,
+    api_secret: &str,
+) -> Result<Value, String> {
+    let mut sig_input = String::new();
+    for (k, v) in params.iter() {
+        if *k == "format" {
+            continue;
+        }
+        sig_input.push_str(k);
+        sig_input.push_str(v);
+    }
+    sig_input.push_str(api_secret);
+    params.insert("api_sig", md5_hex(sig_input));
+    params.insert("format", "json".into());
+    http.post(LASTFM_API_URL)
+        .form(params)
+        .send()
+        .await
+        .map_err(|e| format!("request failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("response parse failed: {e}"))
+}
+
+async fn lastfm_get_token(
+    http: &reqwest::Client,
+    api_key: &str,
+    api_secret: &str,
+) -> Result<String, String> {
     let mut params: BTreeMap<&str, String> = BTreeMap::new();
     params.insert("method", "auth.getToken".into());
     params.insert("api_key", api_key.into());
-    let sig = {
-        let mut sig_input = String::new();
-        for (k, v) in &params {
-            sig_input.push_str(k);
-            sig_input.push_str(v);
-        }
-        sig_input.push_str(api_secret);
-        md5_hex(sig_input)
-    };
-    params.insert("api_sig", sig);
-    params.insert("format", "json".into());
-    let body: Value = http
-        .post(LASTFM_API_URL)
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| format!("auth.getToken request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("auth.getToken parse failed: {e}"))?;
-    let token = body
-        .get("token")
+    let body = lastfm_post(http, &mut params, api_secret).await?;
+    body.get("token")
         .and_then(|t| t.as_str())
-        .ok_or_else(|| "auth.getToken: missing token".to_string())?;
+        .map(String::from)
+        .ok_or_else(|| "auth.getToken: missing token".to_string())
+}
 
-    println!("Open this URL, authorize the app, then press Enter:");
-    println!("{LASTFM_AUTH_URL}?api_key={api_key}&token={token}");
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| format!("stdin read failed: {e}"))?;
-
+// auth.getSession: Ok((session key, username)) once the user authorized
+// the token; Err((code, message)) carries Last.fm's error code.
+async fn lastfm_get_session(
+    http: &reqwest::Client,
+    api_key: &str,
+    api_secret: &str,
+    token: &str,
+) -> Result<(String, String), (u32, String)> {
     let mut params: BTreeMap<&str, String> = BTreeMap::new();
     params.insert("method", "auth.getSession".into());
     params.insert("api_key", api_key.into());
     params.insert("token", token.into());
-    let sig = {
-        let mut sig_input = String::new();
-        for (k, v) in &params {
-            sig_input.push_str(k);
-            sig_input.push_str(v);
-        }
-        sig_input.push_str(api_secret);
-        md5_hex(sig_input)
+    let body = match lastfm_post(http, &mut params, api_secret).await {
+        Ok(b) => b,
+        Err(e) => return Err((0, e)),
     };
-    params.insert("api_sig", sig);
-    params.insert("format", "json".into());
-    let body: Value = http
-        .post(LASTFM_API_URL)
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| format!("auth.getSession request failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("auth.getSession parse failed: {e}"))?;
+    if let Some(code) = body.get("error").and_then(|e| e.as_u64()) {
+        let msg = body
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err((code as u32, msg));
+    }
     let session = body
         .get("session")
-        .ok_or_else(|| "auth.getSession: missing session".to_string())?;
+        .ok_or_else(|| (0, "auth.getSession: missing session".to_string()))?;
     let key = session
         .get("key")
         .and_then(|k| k.as_str())
-        .ok_or_else(|| "auth.getSession: missing key".to_string())?;
+        .ok_or_else(|| (0, "auth.getSession: missing key".to_string()))?;
     let name = session
         .get("name")
         .and_then(|n| n.as_str())
-        .ok_or_else(|| "auth.getSession: missing name".to_string())?;
+        .ok_or_else(|| (0, "auth.getSession: missing name".to_string()))?;
+    Ok((key.to_string(), name.to_string()))
+}
 
-    keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER)
-        .and_then(|e| e.set_password(key))
-        .map_err(|e| format!("keyring set failed: {e}"))?;
-    println!("Last.fm authenticated as {name}; session key stored in the keychain.");
-    Ok(())
+// Poll outcome: config problems are fatal; anything else (the user has
+// not authorized yet) keeps polling.
+#[derive(Debug, PartialEq)]
+enum SessionPoll {
+    Pending,
+    Fatal,
+}
+
+fn classify_session_error(code: u32) -> SessionPoll {
+    match code {
+        // 2: invalid service, 10: invalid API key, 26: suspended.
+        2 | 10 | 26 => SessionPoll::Fatal,
+        _ => SessionPoll::Pending,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,6 +510,16 @@ mod tests {
         );
         let input = "api_keykey123artistTaylor Swiftmethodtrack.scrobble".to_string() + "secret";
         assert_eq!(reporter.sign(&params), md5_hex(&input));
+    }
+
+    #[test]
+    fn session_errors_fatal_only_for_config_problems() {
+        assert_eq!(classify_session_error(2), SessionPoll::Fatal);
+        assert_eq!(classify_session_error(10), SessionPoll::Fatal);
+        assert_eq!(classify_session_error(26), SessionPoll::Fatal);
+        // Not-yet-authorized and temporary errors keep polling.
+        assert_eq!(classify_session_error(4), SessionPoll::Pending);
+        assert_eq!(classify_session_error(16), SessionPoll::Pending);
     }
 
     // A recording reporter for fan-out tests.

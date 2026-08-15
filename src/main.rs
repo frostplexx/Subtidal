@@ -38,6 +38,18 @@ async fn main() {
             }
         }
     }
+    // Automatic first-time authorization: a [lastfm] block without a
+    // session key starts the flow on startup. On failure the server
+    // still starts without Last.fm scrobbling.
+    if let Some(cfg) = &settings.lastfm
+        && navidrome::scrobble::lastfm_session_key().ok().flatten().is_none()
+    {
+        println!("Last.fm is configured but not authorized; starting authorization.");
+        if let Err(e) = navidrome::scrobble::lastfm_auth_flow(&cfg.api_key, &cfg.api_secret).await {
+            eprintln!("lastfm authorization failed: {e}");
+            eprintln!("continuing without Last.fm scrobbling; run `subtidal --lastfm-auth` to retry");
+        }
+    }
     let client = TidalClient::new(&settings);
     if client.needs_login() {
         println!("Tidal login required:");
