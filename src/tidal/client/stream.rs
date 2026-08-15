@@ -49,9 +49,9 @@ pub struct StreamInfo {
 // is rejected here instead of spamming the Tidal API, which fails with
 // decode errors under parallel load. At most STREAM_LIMIT fetches run
 // at once, and at most STREAM_WINDOW_MAX start within STREAM_WINDOW.
-const STREAM_LIMIT: usize = 5;
+const STREAM_LIMIT: usize = 6;
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
-const STREAM_WINDOW_MAX: usize = 5;
+const STREAM_WINDOW_MAX: usize = 6;
 
 pub(crate) struct StreamLimiter {
     semaphore: Semaphore,
@@ -308,16 +308,16 @@ mod tests {
     }
 
     #[test]
-    fn window_allows_five_per_five_seconds() {
+    fn window_allows_six_per_five_seconds() {
         let mut recent = VecDeque::new();
         let t0 = Instant::now();
-        for i in 0..5u64 {
+        for i in 0..STREAM_WINDOW_MAX as u64 {
             assert!(
                 window_allows(&mut recent, t0 + Duration::from_millis(i)),
                 "start {i} must pass"
             );
         }
-        // A sixth start inside the window is rejected.
+        // One more start inside the window is rejected.
         assert!(!window_allows(&mut recent, t0 + Duration::from_secs(4)));
         // Once the first start is older than the window, a new one passes.
         assert!(window_allows(
@@ -327,14 +327,15 @@ mod tests {
     }
 
     #[test]
-    fn limiter_caps_concurrency_at_five() {
+    fn limiter_caps_concurrency_at_limit() {
         let limiter = StreamLimiter::new();
         let permits: Vec<_> = (0..STREAM_LIMIT)
             .map(|_| limiter.semaphore.try_acquire().expect("slot free"))
             .collect();
         assert!(
             limiter.semaphore.try_acquire().is_err(),
-            "a 6th concurrent fetch must be rejected"
+            "a {}th concurrent fetch must be rejected",
+            STREAM_LIMIT + 1
         );
         drop(permits);
         assert!(limiter.semaphore.try_acquire().is_ok());
