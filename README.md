@@ -36,7 +36,7 @@ If no image is published yet, clone the repo and run `docker compose up -d --bui
 
 ## Local development
 
-Prerequisites: a recent Rust toolchain (edition 2024). The Nix flake provides one: `nix develop`.
+Prerequisites: a recent Rust nightly toolchain (edition 2024). The Nix flake provides one via rustup, pinned in `rust-toolchain.toml`: `nix develop`.
 
 1. Run `just dev` or `cargo run`.
 2. Complete the device-code login on first start.
