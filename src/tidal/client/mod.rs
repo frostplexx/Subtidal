@@ -90,6 +90,7 @@ pub struct TidalClient {
     meta_cache: Cache<String, Value>,
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
+    playlist_cache: Cache<String, Value>,
     // Hard cap on parallel playbackinfo fetches and on stream starts
     // per window; see stream.rs. Excess stream requests are rejected.
     stream_limiter: StreamLimiter,
@@ -124,6 +125,14 @@ impl TidalClient {
             mix_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(300))
                 .max_capacity(1_000)
+                .build(),
+            // Playlists can change from other clients, so their list and
+            // pages live in a short cache, not the 6h meta_cache. Subtidal's
+            // own mutations invalidate it immediately.
+            playlist_cache: Cache::builder()
+                .time_to_live(Duration::from_secs(300))
+                .max_capacity(10_000)
+                .support_invalidation_closures()
                 .build(),
             stream_limiter: StreamLimiter::new(),
         }

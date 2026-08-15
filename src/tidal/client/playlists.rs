@@ -20,7 +20,7 @@ impl TidalClient {
                 ("order", "DATE"),
                 ("orderDirection", "DESC"),
             ],
-            &self.meta_cache,
+            &self.playlist_cache,
         )
         .await
     }
@@ -57,7 +57,7 @@ impl TidalClient {
 
     // One playlist by UUID. Backs getCoverArt for playlist covers.
     pub async fn playlist(&self, uuid: &str) -> Result<Value, super::Error> {
-        self.get_json(&format!("/playlists/{uuid}"), &self.meta_cache)
+        self.get_json(&format!("/playlists/{uuid}"), &self.playlist_cache)
             .await
     }
 
@@ -69,7 +69,7 @@ impl TidalClient {
         self.get_json_q(
             &path,
             &[("limit", limit.as_str()), ("offset", offset.as_str())],
-            &self.meta_cache,
+            &self.playlist_cache,
         )
         .await
     }
@@ -79,7 +79,7 @@ impl TidalClient {
     fn invalidate_playlist_caches(&self, user_id: u64, uuid: &str) {
         let user_prefix = format!("/users/{user_id}/playlists");
         let pl_prefix = format!("/playlists/{uuid}");
-        let _ = self.meta_cache.invalidate_entries_if(move |k, _| {
+        let _ = self.playlist_cache.invalidate_entries_if(move |k, _| {
             k.starts_with(&user_prefix) || k.starts_with(&pl_prefix)
         });
     }
