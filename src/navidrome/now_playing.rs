@@ -121,11 +121,16 @@ pub fn position_at(n: &NowPlaying, now: i64) -> u64 {
 }
 
 // Serializes tests that mutate the process-wide slot, from this module
-// and from handler tests (annotate.rs scrobble gating).
+// and from handler tests (annotate.rs scrobble gating). A panicked test
+// poisons the mutex; recover instead of cascading the failure into
+// every other state test.
 #[cfg(test)]
 pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

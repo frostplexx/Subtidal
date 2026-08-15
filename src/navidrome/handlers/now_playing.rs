@@ -162,8 +162,12 @@ mod tests {
         assert_eq!(code_of(&reply), 70);
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn valid_report_returns_ok() {
+        // The handler writes the shared now-playing slot; take the
+        // state-test lock so it cannot race the locked assertions.
+        let _g = crate::navidrome::now_playing::test_lock();
         let reply = warp::test::request()
             .path("/rest/reportPlayback?mediaId=t42&mediaType=song&positionMs=120000&state=playing&playbackRate=1.0&ignoreScrobble=false")
             .reply(&report_route())
