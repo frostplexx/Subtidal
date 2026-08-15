@@ -2,7 +2,7 @@
 use serde_json::Value;
 
 use crate::navidrome::ids;
-use crate::navidrome::models::Child;
+use crate::navidrome::models::{Child, ReplayGain};
 
 use super::{cover_url, primary_artist, year_from};
 
@@ -45,6 +45,10 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         path: String::new(),
         created: String::new(),
         starred: None,
+        replay_gain: ReplayGain {
+            track_gain: v["replayGain"].as_f64(),
+            track_peak: v["peak"].as_f64(),
+        },
     })
 }
 
@@ -98,6 +102,38 @@ mod tests {
         assert_eq!(container(Some("HIGH")), ("audio/mp4", "m4a"));
         assert_eq!(container(Some("LOW")), ("audio/mp4", "m4a"));
         assert_eq!(container(None), ("audio/mp4", "m4a"));
+    }
+
+    #[test]
+    fn song_maps_replay_gain() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "replayGain": -6.2,
+            "peak": 0.85
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.replay_gain.track_gain, Some(-6.2));
+        assert_eq!(song.replay_gain.track_peak, Some(0.85));
+    }
+
+    #[test]
+    fn song_omits_replay_gain_when_absent() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.replay_gain.track_gain, None);
+        assert_eq!(song.replay_gain.track_peak, None);
     }
 
     #[test]

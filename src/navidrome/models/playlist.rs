@@ -92,6 +92,7 @@ mod tests {
                 path: String::new(),
                 created: String::new(),
                 starred: None,
+                replay_gain: crate::navidrome::models::ReplayGain::default(),
             }],
         };
         let json = serde_json::to_string(&p).unwrap();

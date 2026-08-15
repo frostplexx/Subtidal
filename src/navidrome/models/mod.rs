@@ -37,8 +37,8 @@ pub use search::{SearchResult2, SearchResult2Response, SearchResult3, SearchResu
 pub use song::{
     Child, GetSongResponse, LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse,
     NowPlaying, NowPlayingEntry, NowPlayingResponse, RandomSongs, RandomSongsResponse,
-    SimilarSongs, SimilarSongs2, SimilarSongs2Response, SimilarSongsResponse, SongsByGenre,
-    SongsByGenreResponse, StructuredLyrics, TopSongs, TopSongsResponse,
+    ReplayGain, SimilarSongs, SimilarSongs2, SimilarSongs2Response, SimilarSongsResponse,
+    SongsByGenre, SongsByGenreResponse, StructuredLyrics, TopSongs, TopSongsResponse,
 };
 pub use system::{
     GetOpenSubsonicExtensionsResponse, GetUserResponse, GetUsersResponse, Genres, GenresResponse,

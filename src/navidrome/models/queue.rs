@@ -92,6 +92,7 @@ mod tests {
             path: "/track.flac".into(),
             created: "2023-01-01T00:00:00Z".into(),
             starred: None,
+            replay_gain: crate::navidrome::models::ReplayGain::default(),
         }
     }
 

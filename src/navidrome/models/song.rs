@@ -44,6 +44,21 @@ pub struct Child {
     // Favorite time; present only in getStarred/getStarred2 songs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starred: Option<String>,
+    // OpenSubsonic ReplayGain; always present, inner fields omitted when
+    // unknown (Navidrome convention).
+    #[serde(rename = "replayGain")]
+    pub replay_gain: ReplayGain,
+}
+
+// OpenSubsonic ReplayGain: track gain in dB, track peak a positive
+// amplitude. Tidal supplies both on the track object; album gain lives on
+// playbackinfo only, so it is not sent. Empty fields are omitted.
+#[derive(Serialize, Default)]
+pub struct ReplayGain {
+    #[serde(rename = "trackGain", skip_serializing_if = "Option::is_none")]
+    pub track_gain: Option<f64>,
+    #[serde(rename = "trackPeak", skip_serializing_if = "Option::is_none")]
+    pub track_peak: Option<f64>,
 }
 
 // getSong data: { song: Child }
@@ -204,6 +219,40 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r##"{"topSongs":{"song":[]}}"##);
+    }
+
+    #[test]
+    fn child_always_emits_replay_gain_object() {
+        let song = crate::tidal::mapping::song_from_track(&json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["replayGain"], json!({}));
+    }
+
+    #[test]
+    fn child_replay_gain_carries_values() {
+        let song = crate::tidal::mapping::song_from_track(&json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "replayGain": -8.5,
+            "peak": 0.999
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["replayGain"]["trackGain"], json!(-8.5));
+        assert_eq!(json["replayGain"]["trackPeak"], json!(0.999));
+        assert!(json["replayGain"].get("albumGain").is_none());
     }
 
     #[test]
