@@ -1,4 +1,7 @@
 // Artist endpoints.
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+
 use serde_json::Value;
 
 use super::TidalClient;
@@ -9,14 +12,22 @@ impl TidalClient {
     }
 
     // One artist's albums. Backs getArtist. The page cap is far above any
-    // artist's catalog, so one call returns everything.
+    // artist's catalog, so one call returns everything. Tidal's catalog
+    // carries the same release several times (regional and edition copies
+    // with distinct ids), so repeated titles collapse to the most popular
+    // copy (see dedup_albums).
     pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
-        self.get_json_q(
-            &format!("/artists/{artist_id}/albums"),
-            &[("limit", "1000"), ("offset", "0")],
-            &self.meta_cache,
-        )
-        .await
+        let mut albums = self
+            .get_json_q(
+                &format!("/artists/{artist_id}/albums"),
+                &[("limit", "1000"), ("offset", "0")],
+                &self.meta_cache,
+            )
+            .await?;
+        if let Some(items) = albums["items"].as_array_mut() {
+            dedup_albums(items);
+        }
+        Ok(albums)
     }
 
     // An artist's most popular tracks. Backs getTopSongs.
@@ -66,5 +77,118 @@ impl TidalClient {
             &self.meta_cache,
         )
         .await
+    }
+}
+
+// Within a title group, keep the copy Tidal ranks highest (the
+// `popularity` field). That matches the copy Tidal's own search surfaces,
+// verified against real artist data (15 of 16 titles). Ties keep the
+// first occurrence; the list keeps each title's first-occurrence position.
+// Titles compare case-insensitively, with the curly apostrophe normalized:
+// Tidal mixes both spellings ("Taylor's" / "Taylor\u{2019}s"). A missing
+// title falls back to the album id, so a repeated id still collapses.
+fn dedup_albums(items: &mut Vec<Value>) {
+    // normalized title -> (index of the best copy, its popularity)
+    let mut best: HashMap<String, (usize, u64)> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for (i, v) in items.iter().enumerate() {
+        let key = match v["title"].as_str() {
+            Some(title) => title.trim().to_lowercase().replace('\u{2019}', "'"),
+            None => v["id"].to_string(),
+        };
+        let pop = v["popularity"].as_u64().unwrap_or(0);
+        match best.entry(key.clone()) {
+            Entry::Vacant(e) => {
+                order.push(key);
+                e.insert((i, pop));
+            }
+            Entry::Occupied(mut e) if e.get().1 < pop => {
+                e.insert((i, pop));
+            }
+            Entry::Occupied(_) => {}
+        }
+    }
+    *items = order
+        .iter()
+        .map(|k| items[best[k].0].clone())
+        .collect();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dedup_albums;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn dedup_albums_keeps_most_popular_per_title() {
+        let mut items: Vec<Value> = vec![
+            json!({ "id": 1, "title": "Midnights", "popularity": 26 }),
+            json!({ "id": 2, "title": "Midnights", "popularity": 75 }),
+            json!({ "id": 3, "title": "Midnights", "popularity": 20 }),
+            json!({ "id": 4, "title": "evermore", "popularity": 68 }),
+            json!({ "id": 5, "title": "evermore", "popularity": 36 }),
+        ];
+        dedup_albums(&mut items);
+        let ids: Vec<u64> = items.iter().map(|v| v["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids, vec![2, 4]);
+    }
+
+    #[test]
+    fn dedup_albums_keeps_first_on_popularity_tie() {
+        let mut items: Vec<Value> = vec![
+            json!({ "id": 1, "title": "Lover", "popularity": 54 }),
+            json!({ "id": 2, "title": "Lover", "popularity": 54 }),
+        ];
+        dedup_albums(&mut items);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], 1);
+    }
+
+    #[test]
+    fn dedup_albums_missing_popularity_keeps_first() {
+        let mut items: Vec<Value> = vec![
+            json!({ "id": 1, "title": "The Life of a Showgirl" }),
+            json!({ "id": 2, "title": "The Life of a Showgirl" }),
+            json!({ "id": 3, "title": "The Life of a Showgirl" }),
+            json!({ "id": 4, "title": "The Life of a Showgirl (Deluxe)" }),
+        ];
+        dedup_albums(&mut items);
+        let ids: Vec<u64> = items.iter().map(|v| v["id"].as_u64().unwrap()).collect();
+        assert_eq!(ids, vec![1, 4]);
+    }
+
+    #[test]
+    fn dedup_albums_normalizes_curly_apostrophe() {
+        let mut items: Vec<Value> = vec![
+            json!({ "id": 1, "title": "Red (Taylor's Version)" }),
+            json!({ "id": 2, "title": "Red (Taylor\u{2019}s Version)" }),
+        ];
+        dedup_albums(&mut items);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], 1);
+    }
+
+    #[test]
+    fn dedup_albums_keeps_distinct_titles() {
+        let mut items: Vec<Value> = vec![
+            json!({ "id": 1, "title": "Midnights" }),
+            json!({ "id": 2, "title": "Midnights (3am Edition)" }),
+            json!({ "id": 3, "title": "evermore" }),
+        ];
+        dedup_albums(&mut items);
+        assert_eq!(items.len(), 3);
+    }
+
+    #[test]
+    fn dedup_albums_falls_back_to_id_when_title_missing() {
+        let mut items: Vec<Value> = vec![
+            json!({ "id": 1, "title": "A" }),
+            json!({ "id": 9 }),
+            json!({ "id": 9 }),
+            json!({ "id": 10 }),
+        ];
+        dedup_albums(&mut items);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[1]["id"], 9);
     }
 }
