@@ -23,6 +23,7 @@ mod playlists;
 mod search;
 mod stream;
 pub use stream::DashInfo;
+use stream::StreamLimiter;
 // Test fixtures construct Segment values directly.
 #[cfg(test)]
 pub(crate) use stream::Segment;
@@ -46,6 +47,7 @@ pub enum Error {
     Tidal(u16, String),
     Json(serde_json::Error),
     Auth(String),
+    RateLimited,
     NotLoggedIn,
 }
 
@@ -56,6 +58,7 @@ impl std::fmt::Display for Error {
             Error::Tidal(code, body) => write!(f, "tidal api error {code}: {body}"),
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Auth(msg) => write!(f, "auth error: {msg}"),
+            Error::RateLimited => write!(f, "stream limit exceeded"),
             Error::NotLoggedIn => {
                 write!(f, "not logged in. run `subtidal login` first")
             }
@@ -85,6 +88,9 @@ pub struct TidalClient {
     meta_cache: Cache<String, Value>,
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
+    // Hard cap on parallel playbackinfo fetches and on stream starts
+    // per window; see stream.rs. Excess stream requests are rejected.
+    stream_limiter: StreamLimiter,
 }
 
 impl TidalClient {
@@ -117,6 +123,7 @@ impl TidalClient {
                 .time_to_live(Duration::from_secs(300))
                 .max_capacity(1_000)
                 .build(),
+            stream_limiter: StreamLimiter::new(),
         }
     }
 

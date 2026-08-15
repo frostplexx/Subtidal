@@ -1,12 +1,15 @@
 // Stream metadata: playbackinfo manifest decoding. Backs the stream
 // endpoint, which 302-redirects to a single-file Tidal CDN URL, or, for
 // hi-res FLAC, rewrites the segmented DASH manifest into an HLS playlist.
+use std::collections::VecDeque;
 use std::str::FromStr;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use regex::Regex;
 use serde_json::Value;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 use super::{Error, TidalClient, API_URL};
 
@@ -42,10 +45,60 @@ pub struct StreamInfo {
     pub dash: Option<DashInfo>,
 }
 
+// Hard cap on playbackinfo fetches. A Subsonic client bursting streams
+// is rejected here instead of spamming the Tidal API, which fails with
+// decode errors under parallel load. At most STREAM_LIMIT fetches run
+// at once, and at most STREAM_WINDOW_MAX start within STREAM_WINDOW.
+const STREAM_LIMIT: usize = 5;
+const STREAM_WINDOW: Duration = Duration::from_secs(5);
+const STREAM_WINDOW_MAX: usize = 5;
+
+pub(crate) struct StreamLimiter {
+    semaphore: Semaphore,
+    recent: Mutex<VecDeque<Instant>>,
+}
+
+impl StreamLimiter {
+    pub(crate) fn new() -> Self {
+        Self {
+            semaphore: Semaphore::new(STREAM_LIMIT),
+            recent: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    // The permit when this stream start may proceed, else None. The
+    // concurrency permit outlives this call, so the caller holds it
+    // across the fetch. A window rejection drops the permit again.
+    pub(crate) fn try_acquire(&self) -> Option<SemaphorePermit<'_>> {
+        let permit = self.semaphore.try_acquire().ok()?;
+        let mut recent = self.recent.lock().unwrap();
+        window_allows(&mut recent, Instant::now()).then_some(permit)
+    }
+}
+
+// True when a new stream start fits the sliding window: fewer than
+// STREAM_WINDOW_MAX starts within the last STREAM_WINDOW. Expired
+// starts are pruned first; a passed start is recorded.
+fn window_allows(recent: &mut VecDeque<Instant>, now: Instant) -> bool {
+    let cutoff = now - STREAM_WINDOW;
+    while recent.front().is_some_and(|t| *t < cutoff) {
+        recent.pop_front();
+    }
+    if recent.len() >= STREAM_WINDOW_MAX {
+        false
+    } else {
+        recent.push_back(now);
+        true
+    }
+}
+
 impl TidalClient {
     // Fetch playbackinfo for one track at the given quality tier.
     // Never cached: the CDN URLs carry short-lived signed tokens.
     pub async fn stream_info(&self, track_id: u64, quality: &str) -> Result<StreamInfo, Error> {
+        // Reject when 5 fetches run in parallel or 5 started within the
+        // last 5 seconds. The permit stays held across the HTTP call.
+        let _permit = self.stream_limiter.try_acquire().ok_or(Error::RateLimited)?;
         let token = self.access_token().await?;
         let cc = self.country_code().await?;
         let mut query = vec![
@@ -252,5 +305,38 @@ mod tests {
         let info = parse_stream(body).unwrap();
         assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
         assert!(info.dash.is_none());
+    }
+
+    #[test]
+    fn window_allows_five_per_five_seconds() {
+        let mut recent = VecDeque::new();
+        let t0 = Instant::now();
+        for i in 0..5u64 {
+            assert!(
+                window_allows(&mut recent, t0 + Duration::from_millis(i)),
+                "start {i} must pass"
+            );
+        }
+        // A sixth start inside the window is rejected.
+        assert!(!window_allows(&mut recent, t0 + Duration::from_secs(4)));
+        // Once the first start is older than the window, a new one passes.
+        assert!(window_allows(
+            &mut recent,
+            t0 + Duration::from_secs(5) + Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn limiter_caps_concurrency_at_five() {
+        let limiter = StreamLimiter::new();
+        let permits: Vec<_> = (0..STREAM_LIMIT)
+            .map(|_| limiter.semaphore.try_acquire().expect("slot free"))
+            .collect();
+        assert!(
+            limiter.semaphore.try_acquire().is_err(),
+            "a 6th concurrent fetch must be rejected"
+        );
+        drop(permits);
+        assert!(limiter.semaphore.try_acquire().is_ok());
     }
 }

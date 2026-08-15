@@ -9,6 +9,7 @@ use crate::navidrome::models::{
 use crate::navidrome::params::QueryParams;
 use rand::seq::SliceRandom;
 use super::{fail, ok, redirect};
+use crate::tidal::client::Error;
 use crate::tidal::mapping::{song_from_track, year_from};
 use warp::Reply;
 
@@ -258,7 +259,11 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
                 tier = "HIGH";
             }
             Err(e) => {
-                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                if matches!(e, Error::RateLimited) {
+                    tracing::warn!("tidal stream limit hit for track {track_id}");
+                } else {
+                    tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                }
                 break;
             }
         }
@@ -301,7 +306,11 @@ pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rej
                 tier = "HIGH";
             }
             Err(e) => {
-                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                if matches!(e, Error::RateLimited) {
+                    tracing::warn!("tidal stream limit hit for track {track_id}");
+                } else {
+                    tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                }
                 break;
             }
         }
