@@ -45,13 +45,20 @@ pub struct StreamInfo {
     pub dash: Option<DashInfo>,
 }
 
-// Hard cap on playbackinfo fetches. A Subsonic client bursting streams
-// is rejected here instead of spamming the Tidal API, which fails with
-// decode errors under parallel load. At most STREAM_LIMIT fetches run
-// at once, and at most STREAM_WINDOW_MAX start within STREAM_WINDOW.
+// Caps on playbackinfo fetches. A client bursting stream URLs (a
+// downloader fetches the whole queue at once) is throttled here
+// instead of spamming the Tidal API, which fails with decode errors
+// under parallel load. At most STREAM_LIMIT fetches run at once, and
+// at most STREAM_WINDOW_MAX start within STREAM_WINDOW; a start that
+// would exceed either waits up to STREAM_WAIT for a slot, then is
+// rejected with RateLimited.
 const STREAM_LIMIT: usize = 6;
 const STREAM_WINDOW: Duration = Duration::from_secs(5);
 const STREAM_WINDOW_MAX: usize = 12;
+// Bounded wait for a slot. Large enough that a downloader's whole
+// queue passes (12 starts per 5 s drains ~140 tracks in a minute);
+// the bound trips only on absurd bursts.
+const STREAM_WAIT: Duration = Duration::from_secs(60);
 
 pub(crate) struct StreamLimiter {
     semaphore: Semaphore,
@@ -66,13 +73,39 @@ impl StreamLimiter {
         }
     }
 
-    // The permit when this stream start may proceed, else None. The
-    // concurrency permit outlives this call, so the caller holds it
-    // across the fetch. A window rejection drops the permit again.
-    pub(crate) fn try_acquire(&self) -> Option<SemaphorePermit<'_>> {
-        let permit = self.semaphore.try_acquire().ok()?;
-        let mut recent = self.recent.lock().unwrap();
-        window_allows(&mut recent, Instant::now()).then_some(permit)
+    // Wait for the concurrency permit and a window slot, bounded by
+    // STREAM_WAIT. The caller holds the permit across the fetch. A
+    // start that waited too long is rejected with RateLimited.
+    pub(crate) async fn acquire(&self) -> Result<SemaphorePermit<'_>, Error> {
+        let deadline = Instant::now() + STREAM_WAIT;
+        let permit = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.semaphore.acquire(),
+        )
+        .await
+        {
+            Ok(Ok(p)) => p,
+            _ => return Err(Error::RateLimited),
+        };
+        loop {
+            // The guard must end before the sleep below; scope it.
+            let wait = {
+                let mut recent = self.recent.lock().unwrap();
+                let now = Instant::now();
+                if window_allows(&mut recent, now) {
+                    return Ok(permit);
+                }
+                // The window is full; wait until the oldest start ages out.
+                recent
+                    .front()
+                    .map(|t| (*t + STREAM_WINDOW).saturating_duration_since(now))
+                    .unwrap_or_default()
+            };
+            if Instant::now() + wait >= deadline {
+                return Err(Error::RateLimited);
+            }
+            tokio::time::sleep(wait.max(Duration::from_millis(50))).await;
+        }
     }
 }
 
@@ -96,9 +129,9 @@ impl TidalClient {
     // Fetch playbackinfo for one track at the given quality tier.
     // Never cached: the CDN URLs carry short-lived signed tokens.
     pub async fn stream_info(&self, track_id: u64, quality: &str) -> Result<StreamInfo, Error> {
-        // Reject when 5 fetches run in parallel or 5 started within the
-        // last 5 seconds. The permit stays held across the HTTP call.
-        let _permit = self.stream_limiter.try_acquire().ok_or(Error::RateLimited)?;
+        // Throttle: wait (bounded) for a concurrency and window slot.
+        // The permit stays held across the HTTP call.
+        let _permit = self.stream_limiter.acquire().await?;
         let token = self.access_token().await?;
         let cc = self.country_code().await?;
         let mut query = vec![
