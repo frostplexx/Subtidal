@@ -109,7 +109,10 @@ impl TidalClient {
     }
 
     // Update playlist metadata (title, description). Backs updatePlaylist
-    // and createPlaylist's rename mode. No-op when both params are absent.
+    // and createPlaylist's rename mode. The v1 API edits via POST (PUT is
+    // not a registered method there; it answers 405). When only one of
+    // title/description is given, the other comes from the current
+    // playlist: the API wants both fields.
     pub async fn update_playlist(
         &self,
         uuid: &str,
@@ -118,22 +121,30 @@ impl TidalClient {
     ) -> Result<(), super::Error> {
         let user_id = self.user_id().await?;
         let token = self.access_token().await?;
-        let mut params: Vec<(&str, &str)> = Vec::new();
-        if let Some(t) = title {
-            params.push(("title", t));
-        }
-        if let Some(d) = description {
-            params.push(("description", d));
-        }
-        if params.is_empty() {
-            return Ok(());
-        }
+        let (title, description) = match (title, description) {
+            (Some(t), Some(d)) => (t.to_string(), d.to_string()),
+            (Some(t), None) => {
+                let current = self.playlist(uuid).await?;
+                (t.to_string(), current["description"].as_str().unwrap_or("").to_string())
+            }
+            (None, Some(d)) => {
+                let current = self.playlist(uuid).await?;
+                (current["title"].as_str().unwrap_or("").to_string(), d.to_string())
+            }
+            (None, None) => return Ok(()),
+        };
         let url = format!("{}/playlists/{uuid}", super::API_URL);
-        let mut req = self.http.put(&url).bearer_auth(token);
+        let mut req = self.http.post(&url).bearer_auth(token);
         if let Some(cc) = self.country_code().await? {
             req = req.query(&[("countryCode", cc)]);
         }
-        let resp = req.form(&params).send().await?;
+        let resp = req
+            .form(&[
+                ("title", title.as_str()),
+                ("description", description.as_str()),
+            ])
+            .send()
+            .await?;
         let status = resp.status();
         if status.is_success() {
             self.invalidate_playlist_caches(user_id, uuid);
@@ -147,22 +158,37 @@ impl TidalClient {
     }
 
     // Append tracks to a playlist. Backs updatePlaylist's songIdToAdd and
-    // createPlaylist's songId. itemIds travel comma-joined, per the Tidal
-    // v1 contract. The onDupes param is left to the server default.
+    // createPlaylist's songId. The v1 items endpoint wants bare track ids
+    // (trackIds, no "track:" prefix) via POST, plus an If-None-Match
+    // precondition from a fresh GET. onDupes=SKIP and
+    // onArtifactNotFound=SKIP keep one duplicate or missing id from
+    // failing the whole batch.
     pub async fn playlist_add_tracks(&self, uuid: &str, track_ids: &[u64]) -> Result<(), super::Error> {
         if track_ids.is_empty() {
             return Ok(());
         }
         let user_id = self.user_id().await?;
         let token = self.access_token().await?;
-        let item_ids: Vec<String> = track_ids.iter().map(|id| format!("track:{id}")).collect();
-        let joined = item_ids.join(",");
+        let etag = self.playlist_etag(uuid).await?;
+        let track_ids: Vec<String> = track_ids.iter().map(|id| id.to_string()).collect();
+        let joined = track_ids.join(",");
         let url = format!("{}/playlists/{uuid}/items", super::API_URL);
-        let mut req = self.http.put(&url).bearer_auth(token);
+        let mut req = self
+            .http
+            .post(&url)
+            .bearer_auth(token)
+            .header("If-None-Match", etag);
         if let Some(cc) = self.country_code().await? {
             req = req.query(&[("countryCode", cc)]);
         }
-        let resp = req.form(&[("itemIds", joined.as_str())]).send().await?;
+        let resp = req
+            .form(&[
+                ("trackIds", joined.as_str()),
+                ("onDupes", "SKIP"),
+                ("onArtifactNotFound", "SKIP"),
+            ])
+            .send()
+            .await?;
         let status = resp.status();
         if status.is_success() {
             self.invalidate_playlist_caches(user_id, uuid);
@@ -175,27 +201,76 @@ impl TidalClient {
         }
     }
 
-    // Remove one item from a playlist. itemId is the Tidal "track:<id>"
-    // form returned by playlist_item_id_at. Backs songIndexToRemove.
-    pub async fn playlist_remove_item(&self, uuid: &str, item_id: &str) -> Result<(), super::Error> {
+    // Remove items at raw positions (0-based indices in the items array,
+    // tracks and videos alike). Backs songIndexToRemove and replace_songs.
+    // The v1 endpoint deletes by index; comma-joined indices travel in one
+    // request (chunked at 100 to keep URLs short). Every chunk needs a
+    // fresh If-None-Match precondition, so the etag is fetched per chunk.
+    pub async fn playlist_remove_indices(
+        &self,
+        uuid: &str,
+        indices: &[u32],
+    ) -> Result<(), super::Error> {
+        if indices.is_empty() {
+            return Ok(());
+        }
         let user_id = self.user_id().await?;
+        let mut sorted: Vec<u32> = indices.to_vec();
+        sorted.sort_unstable();
+        for chunk in sorted.chunks(100) {
+            let token = self.access_token().await?;
+            let etag = self.playlist_etag(uuid).await?;
+            let joined: Vec<String> = chunk.iter().map(|i| i.to_string()).collect();
+            let url = format!(
+                "{}/playlists/{uuid}/items/{}",
+                super::API_URL,
+                joined.join(",")
+            );
+            let mut req = self
+                .http
+                .delete(&url)
+                .bearer_auth(token)
+                .header("If-None-Match", etag);
+            if let Some(cc) = self.country_code().await? {
+                req = req.query(&[("countryCode", cc)]);
+            }
+            let resp = req.send().await?;
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(super::Error::Tidal(
+                    status.as_u16(),
+                    resp.text().await.unwrap_or_default(),
+                ));
+            }
+            self.invalidate_playlist_caches(user_id, uuid);
+        }
+        Ok(())
+    }
+
+    // A fresh etag for a playlist, from the playlist GET. Tidal's item
+    // mutations require the If-None-Match precondition; "*" is the
+    // fallback when the header is absent.
+    async fn playlist_etag(&self, uuid: &str) -> Result<String, super::Error> {
         let token = self.access_token().await?;
-        let url = format!("{}/playlists/{uuid}/items/{item_id}", super::API_URL);
-        let mut req = self.http.delete(&url).bearer_auth(token);
+        let url = format!("{}/playlists/{uuid}", super::API_URL);
+        let mut req = self.http.get(&url).bearer_auth(token);
         if let Some(cc) = self.country_code().await? {
             req = req.query(&[("countryCode", cc)]);
         }
         let resp = req.send().await?;
         let status = resp.status();
-        if status.is_success() {
-            self.invalidate_playlist_caches(user_id, uuid);
-            Ok(())
-        } else {
-            Err(super::Error::Tidal(
+        if !status.is_success() {
+            return Err(super::Error::Tidal(
                 status.as_u16(),
                 resp.text().await.unwrap_or_default(),
-            ))
+            ));
         }
+        Ok(resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+            .unwrap_or_else(|| "*".to_string()))
     }
 
     // Delete a playlist. Backs deletePlaylist.

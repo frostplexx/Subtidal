@@ -259,24 +259,22 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
             return Ok(mutation_error(e, "Playlist update failed"));
         }
     }
-    // Descending order, so earlier removals do not shift later positions.
+    // Subsonic positions of the tracks to drop, ascending and deduped.
     let mut indices: Vec<u32> = q
         .song_index_to_remove
         .0
         .iter()
         .filter_map(|s| s.parse().ok())
         .collect();
-    indices.sort_unstable_by(|a, b| b.cmp(a));
+    indices.sort_unstable();
     indices.dedup();
-    for index in indices {
-        let item_id = match playlist_item_id_at(client, pid, index).await {
+    if !indices.is_empty() {
+        let raw = match playlist_raw_indices(client, pid, &indices).await {
             Ok(v) => v,
             Err(e) => return Ok(mutation_error(e, "Playlist update failed")),
         };
-        if let Some(item_id) = item_id {
-            if let Err(e) = client.playlist_remove_item(pid, &item_id).await {
-                return Ok(mutation_error(e, "Playlist update failed"));
-            }
+        if let Err(e) = client.playlist_remove_indices(pid, &raw).await {
+            return Ok(mutation_error(e, "Playlist update failed"));
         }
     }
     let adds = match parse_song_ids(&q.song_id_to_add) {
@@ -336,18 +334,56 @@ async fn playlist_response(
     }))
 }
 
-// Replace a playlist's tracks with the given ones: clear, then add. All
-// item ids are collected before any delete, so page offsets stay valid.
+// Replace a playlist's tracks with the given ones: clear, then add.
+// Tidal deletes by raw item position (tracks and videos alike), so the
+// clear collects every current index and drops them in one request.
 async fn replace_songs(client: &TidalClient, uuid: &str, track_ids: &[u64]) -> Result<(), Error> {
-    let mut item_ids: Vec<String> = Vec::new();
+    let mut raw: Vec<u32> = Vec::new();
     let mut offset = 0u32;
     loop {
         let page = client.playlist_items(uuid, offset, 100).await?;
         let batch: Vec<Value> = page["items"].as_array().cloned().unwrap_or_default();
-        for e in &batch {
+        for i in 0..batch.len() {
+            raw.push(offset + i as u32);
+        }
+        offset += 100;
+        if batch.is_empty() || batch.len() < 100 {
+            break;
+        }
+    }
+    client.playlist_remove_indices(uuid, &raw).await?;
+    if !track_ids.is_empty() {
+        client.playlist_add_tracks(uuid, track_ids).await?;
+    }
+    Ok(())
+}
+
+// Raw item positions (indices into Tidal's items array, tracks and
+// videos) of the given Subsonic track positions. Subsonic entries count
+// only tracks; Tidal deletes by raw position, so the mapping walks the
+// items and counts tracks. Out-of-range positions are dropped.
+async fn playlist_raw_indices(
+    client: &TidalClient,
+    uuid: &str,
+    track_positions: &[u32],
+) -> Result<Vec<u32>, Error> {
+    let Some(&max) = track_positions.iter().max() else {
+        return Ok(Vec::new());
+    };
+    let mut raw: Vec<u32> = Vec::new();
+    let mut tracks_seen = 0u32;
+    let mut offset = 0u32;
+    'outer: loop {
+        let page = client.playlist_items(uuid, offset, 100).await?;
+        let batch: Vec<Value> = page["items"].as_array().cloned().unwrap_or_default();
+        for (i, e) in batch.iter().enumerate() {
             if e["type"].as_str() == Some("track") {
-                if let Some(id) = e["item"]["id"].as_u64() {
-                    item_ids.push(format!("track:{id}"));
+                if track_positions.contains(&tracks_seen) {
+                    raw.push(offset + i as u32);
+                }
+                tracks_seen += 1;
+                if tracks_seen > max {
+                    break 'outer;
                 }
             }
         }
@@ -356,33 +392,7 @@ async fn replace_songs(client: &TidalClient, uuid: &str, track_ids: &[u64]) -> R
             break;
         }
     }
-    for item_id in &item_ids {
-        client.playlist_remove_item(uuid, item_id).await?;
-    }
-    if !track_ids.is_empty() {
-        client.playlist_add_tracks(uuid, track_ids).await?;
-    }
-    Ok(())
-}
-
-// The Tidal item id (track:<id>) at a 0-based position, for removal.
-// Returns None when the position is out of range or holds a non-track.
-async fn playlist_item_id_at(
-    client: &TidalClient,
-    uuid: &str,
-    index: u32,
-) -> Result<Option<String>, Error> {
-    let page = index / 100;
-    let offset = page * 100;
-    let result = client.playlist_items(uuid, offset, 100).await?;
-    let entry = result["items"].get((index - offset) as usize);
-    Ok(entry.and_then(|e| {
-        if e["type"].as_str() == Some("track") {
-            e["item"]["id"].as_u64().map(|id| format!("track:{id}"))
-        } else {
-            None
-        }
-    }))
+    Ok(raw)
 }
 
 // Map a Tidal mutation error: 404 and 403 (missing or foreign playlist)
