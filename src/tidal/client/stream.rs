@@ -169,7 +169,7 @@ impl StreamLimiter {
     // active pause swallows every result: nothing new goes out, so an
     // in-flight leftover must neither extend nor clear the pause. An
     // expired pause is a clean slate for the next cycle.
-    pub(crate) fn note(&self, outcome: FetchOutcome) {
+    fn note(&self, outcome: FetchOutcome) {
         let mut state = self.state.lock().unwrap();
         if state.cooldown_until.is_some_and(|until| Instant::now() < until) {
             return;
