@@ -212,26 +212,23 @@ pub async fn create_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
             let Some(uuid) = result["uuid"].as_str().map(String::from) else {
                 return Ok(fail(0, "Playlist creation failed"));
             };
-            if !song_ids.is_empty() {
-                if let Err(e) = client.playlist_add_tracks(&uuid, &song_ids).await {
+            if !song_ids.is_empty()
+                && let Err(e) = client.playlist_add_tracks(&uuid, &song_ids).await {
                     tracing::error!("tidal playlist fill failed: {e}");
                     return Ok(fail(0, "Playlist creation failed"));
                 }
-            }
             playlist_response(client, &uuid).await
         }
         // Update mode: rename, then replace the contents.
         Some(pid) => {
-            if let Some(name) = q.name.as_deref().filter(|s| !s.is_empty()) {
-                if let Err(e) = client.update_playlist(pid, Some(name), None).await {
+            if let Some(name) = q.name.as_deref().filter(|s| !s.is_empty())
+                && let Err(e) = client.update_playlist(pid, Some(name), None).await {
                     return Ok(mutation_error(e, "Playlist update failed"));
                 }
-            }
-            if !song_ids.is_empty() {
-                if let Err(e) = replace_songs(client, pid, &song_ids).await {
+            if !song_ids.is_empty()
+                && let Err(e) = replace_songs(client, pid, &song_ids).await {
                     return Ok(mutation_error(e, "Playlist update failed"));
                 }
-            }
             playlist_response(client, pid).await
         }
     }
@@ -254,11 +251,10 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
     }
     let name = q.name.as_deref().filter(|s| !s.is_empty());
     let comment = q.comment.as_deref().filter(|s| !s.is_empty());
-    if name.is_some() || comment.is_some() {
-        if let Err(e) = client.update_playlist(pid, name, comment).await {
+    if (name.is_some() || comment.is_some())
+        && let Err(e) = client.update_playlist(pid, name, comment).await {
             return Ok(mutation_error(e, "Playlist update failed"));
         }
-    }
     // Subsonic positions of the tracks to drop, ascending and deduped.
     let mut indices: Vec<u32> = q
         .song_index_to_remove
@@ -281,11 +277,10 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
         Ok(v) => v,
         Err(msg) => return Ok(fail(70, msg)),
     };
-    if !adds.is_empty() {
-        if let Err(e) = client.playlist_add_tracks(pid, &adds).await {
+    if !adds.is_empty()
+        && let Err(e) = client.playlist_add_tracks(pid, &adds).await {
             return Ok(mutation_error(e, "Playlist update failed"));
         }
-    }
     Ok(ok(PingResponse {}))
 }
 

@@ -60,11 +60,10 @@ async fn favorite_artists() -> Result<Vec<IndexArtist>, ()> {
 // groups and the newest favorite time (the lastModified stamp).
 async fn index_core(q: &QueryParams) -> Result<(Vec<IndexGroup>, i64), &'static str> {
     // Only folder 1 exists; any other id yields an empty index.
-    if let Some(folder) = q.music_folder_id {
-        if folder != 1 {
+    if let Some(folder) = q.music_folder_id
+        && folder != 1 {
             return Ok((Vec::new(), 0));
         }
-    }
     let artists = match favorite_artists().await {
         Ok(v) => v,
         Err(()) => return Err("Artist index unavailable"),

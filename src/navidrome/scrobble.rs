@@ -247,6 +247,10 @@ pub fn scrobble_song_from_track(v: &Value) -> Option<ScrobbleSong> {
 // Last.fm
 // ---------------------------------------------------------------------------
 
+// Re-authorization trigger: spawns the interactive flow in
+// production. Tests inject a recorder.
+type ReauthFn = Box<dyn Fn(&str, &str) + Send + Sync>;
+
 pub struct LastFmReporter {
     api_key: String,
     api_secret: String,
@@ -258,7 +262,7 @@ pub struct LastFmReporter {
     session_key: Box<dyn Fn() -> Result<Option<String>, String> + Send + Sync>,
     // Re-authorization trigger: spawns the interactive flow in
     // production. Tests inject a recorder.
-    reauth: Box<dyn Fn(&str, &str) + Send + Sync>,
+    reauth: ReauthFn,
 }
 
 impl LastFmReporter {
@@ -279,7 +283,7 @@ impl LastFmReporter {
         api_secret: String,
         api_url: &str,
         session_key: Box<dyn Fn() -> Result<Option<String>, String> + Send + Sync>,
-        reauth: Box<dyn Fn(&str, &str) + Send + Sync>,
+        reauth: ReauthFn,
     ) -> Self {
         Self {
             api_key,
@@ -498,7 +502,7 @@ pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), Str
                     return Err("timed out waiting for authorization".into());
                 }
                 polls += 1;
-                if polls % REMINDER_EVERY == 0 {
+                if polls.is_multiple_of(REMINDER_EVERY) {
                     println!("Still waiting for Last.fm authorization (Ctrl-C to cancel)...");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(POLL_SECS)).await;

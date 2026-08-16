@@ -104,7 +104,7 @@ impl TidalClient {
         if !status.is_success() {
             return Err(super::Error::Tidal(status.as_u16(), body.to_string()));
         }
-        self.invalidate_playlist_caches(user_id, &body["uuid"].as_str().unwrap_or(""));
+        self.invalidate_playlist_caches(user_id, body["uuid"].as_str().unwrap_or(""));
         Ok(body)
     }
 

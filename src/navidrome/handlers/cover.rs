@@ -44,7 +44,7 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
     // when the host is Tidal-owned; anything else is an attempted open
     // redirect.
     if id.starts_with("http") {
-        if tidal_image_url(&id) {
+        if tidal_image_url(id) {
             return Ok(redirect(id.clone()));
         }
         return Ok(fail(70, "Cover art not found").into_response());
