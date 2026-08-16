@@ -98,8 +98,15 @@ pub struct TidalClient {
 
 impl TidalClient {
     pub fn new(settings: &Settings) -> Self {
+        // Present as a native media client, not a script. Tidal's edge
+        // classifies requests by client shape and grants its own app a far
+        // larger rate budget; the UA below is what the official iOS app
+        // sends on every stream request (captured in a HAR of an in-app
+        // download).
         let http = reqwest::Client::builder()
-            .user_agent("Subtidal/0.1")
+            .user_agent(
+                "AppleCoreMedia/1.0.0.24A5408d (iPhone; U; CPU OS 27_0 like Mac OS X; en_us)",
+            )
             .build()
             .expect("failed to build reqwest client");
         let (client_id, client_secret) = match &settings.tidal_client_id {
@@ -163,13 +170,14 @@ impl TidalClient {
         if let Some(v) = cache.get(&full).await {
             return Ok(v);
         }
-        let mut req = self.http.get(format!("{base}{full}")).bearer_auth(token);
-        if base.contains("/v2") {
-            // The v2 API rejects requests without x-tidal-client-version
-            // (400 subStatus 1002). V2_URL has no trailing slash, so check
-            // for the "/v2" marker, not "/v2/".
-            req = req.header("x-tidal-client-version", CLIENT_VERSION);
-        }
+        // The official client sends x-tidal-client-version on every API
+        // call. The v2 API rejects requests without it (400 subStatus
+        // 1002); v1 tolerates it and the stream fetches expect it.
+        let req = self
+            .http
+            .get(format!("{base}{full}"))
+            .bearer_auth(token)
+            .header("x-tidal-client-version", CLIENT_VERSION);
         let resp = req.send().await?;
         let status = resp.status();
         let body: Value = resp.json().await?;

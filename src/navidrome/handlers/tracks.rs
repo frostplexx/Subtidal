@@ -236,7 +236,7 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
     };
     let mut tier: &str = tier;
     loop {
-        match client.stream_info(track_id, tier).await {
+        match client.stream_info(track_id, tier, "STREAM").await {
             Ok(info) => {
                 if let Some(url) = info.direct_url {
                     tracing::debug!("stream {track_id} tier={tier} -> redirect");
@@ -275,7 +275,9 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
 // Subsonic allows several ids (a zip archive); the server builds no zip,
 // so a multi-id request fails. Only direct single-file streams (BTS)
 // serve as downloads; segmented hi-res DASH has no single URL and
-// cascades a tier down to HIGH.
+// cascades a tier down to HIGH. The manifest is requested in offline
+// mode, like the official app's downloader; a mode rejection falls back
+// to the streaming mode.
 pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
     let ids = &q.id.0;
     if ids.is_empty() {
@@ -295,7 +297,7 @@ pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rej
     };
     let mut tier: &str = tier;
     loop {
-        match client.stream_info(track_id, tier).await {
+        match client.download_info(track_id, tier).await {
             Ok(info) => {
                 if let Some(url) = info.direct_url {
                     return Ok(redirect(url));

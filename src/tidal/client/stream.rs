@@ -79,6 +79,17 @@ enum FetchOutcome {
     Other,
 }
 
+// True for the account-throttle signature: a non-JSON body (decode
+// error), 429, or 5xx. Shared by the outcome classifier and the
+// download-mode fallback, which must not retry during a throttle.
+fn throttle_signature(e: &Error) -> bool {
+    match e {
+        Error::Http(e) => e.is_decode(),
+        Error::Tidal(status, _) => *status == 429 || (500..600).contains(status),
+        _ => false,
+    }
+}
+
 struct LimiterState {
     consecutive_failures: u32,
     cooldown_until: Option<Instant>,
@@ -198,18 +209,37 @@ fn window_allows(recent: &mut VecDeque<Instant>, now: Instant) -> bool {
     }
 }
 
+// One UUID v4 per stream fetch. Tidal's edge expects a playback-session
+// header on stream requests; the official app sends one per download.
+fn new_session_id() -> String {
+    let mut b: [u8; 16] = rand::random();
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+    let mut out = String::with_capacity(36);
+    for (i, byte) in b.iter().enumerate() {
+        if i == 4 || i == 6 || i == 8 || i == 10 {
+            out.push('-');
+        }
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 impl TidalClient {
     // Fetch playbackinfo for one track at the given quality tier.
     // Never cached: the CDN URLs carry short-lived signed tokens.
-    pub async fn stream_info(&self, track_id: u64, quality: &str) -> Result<StreamInfo, Error> {
+    pub async fn stream_info(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
         // Throttle: wait (bounded) for a concurrency and window slot.
         // The permit stays held across the HTTP call.
         let _permit = self.stream_limiter.acquire().await?;
         let token = self.access_token().await?;
         let cc = self.country_code().await?;
+        // One playback session per fetch, like the official app, which
+        // sends X-Playback-Session-Id on every request of a download.
+        let session_id = new_session_id();
         let mut query = vec![
             ("audioquality", quality),
-            ("playbackmode", "STREAM"),
+            ("playbackmode", mode),
             ("assetpresentation", "FULL"),
         ];
         if let Some(cc) = &cc {
@@ -220,6 +250,8 @@ impl TidalClient {
                 .http
                 .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
                 .bearer_auth(token)
+                .header("x-tidal-client-version", super::CLIENT_VERSION)
+                .header("X-Playback-Session-Id", session_id)
                 .query(&query)
                 .send()
                 .await?;
@@ -235,16 +267,33 @@ impl TidalClient {
         // the account-throttle signature. Everything else is neutral.
         let outcome = match &result {
             Ok(_) => FetchOutcome::Success,
-            Err(Error::Http(e)) if e.is_decode() => FetchOutcome::Throttled,
-            Err(Error::Tidal(status, _))
-                if *status == 429 || (500..600).contains(status) =>
-            {
-                FetchOutcome::Throttled
-            }
+            Err(e) if throttle_signature(e) => FetchOutcome::Throttled,
             _ => FetchOutcome::Other,
         };
         self.stream_limiter.note(outcome);
         result
+    }
+
+    // A download asks for the offline manifest first, like the official
+    // app (its CDN URLs carry an info=DOWNLOAD tag). A mode rejection,
+    // for example no offline entitlement, falls back to the streaming
+    // mode; a throttle-signature failure does not, because retrying the
+    // same token under an active throttle only re-arms it.
+    pub(crate) async fn download_info(
+        &self,
+        track_id: u64,
+        quality: &str,
+    ) -> Result<StreamInfo, Error> {
+        match self.stream_info(track_id, quality, "OFFLINE").await {
+            Ok(info) => Ok(info),
+            Err(e) if throttle_signature(&e) => Err(e),
+            Err(e) => {
+                tracing::debug!(
+                    "offline mode unavailable for track {track_id} ({e}); retrying STREAM"
+                );
+                self.stream_info(track_id, quality, "STREAM").await
+            }
+        }
     }
 }
 
@@ -389,6 +438,33 @@ mod tests {
 
     // Real shape of a hi-res MPD (captured live), URLs shortened.
     const MPD: &str = r#"<?xml version='1.0' encoding='UTF-8'?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT3M30.373S"><Period><AdaptationSet contentType="audio" mimeType="audio/mp4"><Representation id="FLAC_HIRES,44100,24" codecs="flac" bandwidth="1616237" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T" startNumber="1"><SegmentTimeline><S d="176128" r="51"/><S d="118808"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
+
+    #[test]
+    fn throttle_signature_matches_only_throttle_errors() {
+        assert!(throttle_signature(&Error::Tidal(429, String::new())));
+        assert!(throttle_signature(&Error::Tidal(503, String::new())));
+        assert!(!throttle_signature(&Error::Tidal(400, String::new())));
+        assert!(!throttle_signature(&Error::Tidal(404, String::new())));
+        assert!(!throttle_signature(&Error::Auth("x".into())));
+        assert!(!throttle_signature(&Error::RateLimited));
+        assert!(!throttle_signature(&Error::NotLoggedIn));
+    }
+
+    #[test]
+    fn session_id_is_a_uuid_v4() {
+        let id = new_session_id();
+        assert_eq!(id.len(), 36);
+        let bytes = id.as_bytes();
+        for (i, c) in bytes.iter().enumerate() {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                assert_eq!(*c, b'-');
+            } else {
+                assert!(c.is_ascii_hexdigit());
+            }
+        }
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(id.as_bytes()[19], b'8' | b'9' | b'a' | b'b'));
+    }
 
     #[test]
     fn parses_hires_dash() {

@@ -279,7 +279,7 @@ Response: array of credit groups:
 ### GET `/v1/tracks/{trackId}/playbackinfopostpaywall`
 Stream info for a track.
 
-- Query: `countryCode`, `audioquality` (e.g. `LOSSLESS`, `HI_RES`), `playbackmode=STREAM`,
+- Query: `countryCode`, `audioquality` (e.g. `LOSSLESS`, `HI_RES`), `playbackmode` (`STREAM` for playback, `OFFLINE` for downloads),
   `assetpresentation=FULL`
 
 Response (`manifest` is base64-encoded):
