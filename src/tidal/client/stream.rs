@@ -85,6 +85,7 @@ enum FetchOutcome {
 fn throttle_signature(e: &Error) -> bool {
     match e {
         Error::Http(e) => e.is_decode(),
+        Error::HttpDecode(_, _) => true,
         Error::Tidal(status, _) => *status == 429 || (500..600).contains(status),
         _ => false,
     }
@@ -256,7 +257,14 @@ impl TidalClient {
                 .send()
                 .await?;
             let status = resp.status();
-            let body: Value = resp.json().await?;
+            // Read the raw body first. resp.json() would discard the
+            // text on a decode failure, but a throttled response is
+            // HTML or empty, and that text is the diagnostic.
+            let text = resp.text().await?;
+            let body: Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => return Err(Error::HttpDecode(status.as_u16(), text)),
+            };
             if !status.is_success() {
                 return Err(Error::Tidal(status.as_u16(), body.to_string()));
             }
@@ -453,7 +461,17 @@ mod tests {
     }
 
     #[test]
+    fn decode_error_display_keeps_status_and_body() {
+        let empty = Error::HttpDecode(200, String::new());
+        assert_eq!(empty.to_string(), "tidal answered 200 with an empty body");
+        let html = Error::HttpDecode(403, "<html>blocked</html>".into());
+        assert!(html.to_string().contains("403"));
+        assert!(html.to_string().contains("<html>blocked</html>"));
+    }
+
+    #[test]
     fn throttle_signature_matches_only_throttle_errors() {
+        assert!(throttle_signature(&Error::HttpDecode(200, "<html>".into())));
         assert!(throttle_signature(&Error::Tidal(429, String::new())));
         assert!(throttle_signature(&Error::Tidal(503, String::new())));
         assert!(!throttle_signature(&Error::Tidal(400, String::new())));

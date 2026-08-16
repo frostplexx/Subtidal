@@ -46,6 +46,9 @@ const SCOPE: &str = "r_usr w_usr w_sub";
 #[derive(Debug)]
 pub enum Error {
     Http(reqwest::Error),
+    // Non-JSON API response: status plus the raw body, so a throttled
+    // or misbehaving response stays diagnosable.
+    HttpDecode(u16, String),
     Tidal(u16, String),
     Json(serde_json::Error),
     Auth(String),
@@ -57,6 +60,15 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Http(e) => write!(f, "http error: {e}"),
+            Error::HttpDecode(status, body) => {
+                if body.trim().is_empty() {
+                    write!(f, "tidal answered {status} with an empty body")
+                } else {
+                    // A short preview keeps the log line readable.
+                    let preview: String = body.chars().take(300).collect();
+                    write!(f, "tidal answered {status} with a non-JSON body: {preview}")
+                }
+            }
             Error::Tidal(code, body) => write!(f, "tidal api error {code}: {body}"),
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Auth(msg) => write!(f, "auth error: {msg}"),
