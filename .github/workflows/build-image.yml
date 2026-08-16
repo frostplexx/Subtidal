@@ -51,11 +51,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Image name, lowercased for GHCR
+        id: img
+        # GitHub preserves repository-name case; Docker image names must
+        # be lowercase. bash lowercases the owner/repo.
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ lower(github.repository) }}
+          images: ${{ steps.img.outputs.image }}
           # Labels only. The merge job owns the real tags.
           tags: |
             type=raw,value=latest-${{ matrix.arch }}
@@ -67,7 +73,7 @@ jobs:
           # One platform per leg; each runner builds its own natively.
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ghcr.io/${{ lower(github.repository) }}:latest-${{ matrix.arch }}
+          tags: ${{ steps.img.outputs.image }}:latest-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
@@ -89,11 +95,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Image name, lowercased for GHCR
+        id: img
+        # GitHub preserves repository-name case; Docker image names must
+        # be lowercase. bash lowercases the owner/repo.
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ lower(github.repository) }}
+          images: ${{ steps.img.outputs.image }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -102,7 +114,7 @@ jobs:
       - name: Merge per-arch images into one index
         run: |
           set -euo pipefail
-          image="ghcr.io/${{ lower(github.repository) }}"
+          image="${{ steps.img.outputs.image }}"
           args=()
           while IFS= read -r t; do
             [ -n "$t" ] && args+=("-t" "$t")
