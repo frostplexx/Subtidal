@@ -55,7 +55,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ lower(github.repository) }}
           # Labels only. The merge job owns the real tags.
           tags: |
             type=raw,value=latest-${{ matrix.arch }}
@@ -67,7 +67,7 @@ jobs:
           # One platform per leg; each runner builds its own natively.
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ghcr.io/${{ github.repository }}:latest-${{ matrix.arch }}
+          tags: ghcr.io/${{ lower(github.repository) }}:latest-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: false
           sbom: false
@@ -93,7 +93,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/${{ lower(github.repository) }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -102,7 +102,7 @@ jobs:
       - name: Merge per-arch images into one index
         run: |
           set -euo pipefail
-          image="ghcr.io/${{ github.repository }}"
+          image="ghcr.io/${{ lower(github.repository) }}"
           args=()
           while IFS= read -r t; do
             [ -n "$t" ] && args+=("-t" "$t")
