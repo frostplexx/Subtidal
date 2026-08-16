@@ -70,6 +70,21 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl Error {
+    // True when Tidal refuses the track itself: subStatus 4005 ("Asset
+    // is not ready for playback"). The asset is not playable for this
+    // account; no retry can change that, and it is not throttle evidence.
+    pub fn is_unavailable_asset(&self) -> bool {
+        match self {
+            Error::Tidal(_, body) => serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| v.get("subStatus").and_then(|s| s.as_u64()))
+                == Some(4005),
+            _ => false,
+        }
+    }
+}
+
 impl From<reqwest::Error> for Error {
     fn from(e: reqwest::Error) -> Self {
         Error::Http(e)

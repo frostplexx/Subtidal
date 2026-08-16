@@ -261,9 +261,13 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
             Err(e) => {
                 if matches!(e, Error::RateLimited) {
                     tracing::warn!("tidal stream limit hit for track {track_id}");
-                } else {
-                    tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                    break;
                 }
+                if e.is_unavailable_asset() {
+                    tracing::warn!("track {track_id} not playable on tidal: {e}");
+                    return Ok(fail(70, "Song not found").into_response());
+                }
+                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
                 break;
             }
         }
@@ -310,9 +314,13 @@ pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rej
             Err(e) => {
                 if matches!(e, Error::RateLimited) {
                     tracing::warn!("tidal stream limit hit for track {track_id}");
-                } else {
-                    tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
+                    break;
                 }
+                if e.is_unavailable_asset() {
+                    tracing::warn!("track {track_id} not playable on tidal: {e}");
+                    return Ok(fail(70, "Song not found").into_response());
+                }
+                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
                 break;
             }
         }

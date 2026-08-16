@@ -440,6 +440,19 @@ mod tests {
     const MPD: &str = r#"<?xml version='1.0' encoding='UTF-8'?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT3M30.373S"><Period><AdaptationSet contentType="audio" mimeType="audio/mp4"><Representation id="FLAC_HIRES,44100,24" codecs="flac" bandwidth="1616237" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T" startNumber="1"><SegmentTimeline><S d="176128" r="51"/><S d="118808"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
 
     #[test]
+    fn unavailable_asset_is_definitive_and_not_throttle() {
+        let err = Error::Tidal(
+            401,
+            r#"{"status":401,"subStatus":4005,"userMessage":"Asset is not ready for playback"}"#
+                .into(),
+        );
+        assert!(err.is_unavailable_asset());
+        assert!(!throttle_signature(&err));
+        assert!(!Error::Tidal(401, r#"{"status":401,"subStatus":1002}"#.into()).is_unavailable_asset());
+        assert!(!Error::Tidal(404, "not found".into()).is_unavailable_asset());
+    }
+
+    #[test]
     fn throttle_signature_matches_only_throttle_errors() {
         assert!(throttle_signature(&Error::Tidal(429, String::new())));
         assert!(throttle_signature(&Error::Tidal(503, String::new())));
