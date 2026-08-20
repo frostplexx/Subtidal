@@ -1,10 +1,15 @@
 // Structured lyrics: getLyricsBySongId and the legacy getLyrics. Tidal
 // returns plain text plus an LRC subtitle track for the same song; the
-// synced one wins when both exist. Only the version 1 shape is served:
-// no kind field unless enhanced=true was requested, no cueLine data.
+// synced one wins when both exist. Version 1 serves the line-level shape.
+// Version 2 (enhanced=true) adds a kind field, and, when an aligner is
+// configured, word-level cueLine timing and agent attribution.
+use std::collections::BTreeMap;
+
+use crate::aligner;
 use crate::navidrome::ids;
 use crate::navidrome::models::{
-    LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse, StructuredLyrics,
+    char_range_to_byte_range, Cue, CueLine, LyricAgent, LyricLine, Lyrics, LyricsList,
+    LyricsListResponse, LyricsResponse, StructuredLyrics,
 };
 use crate::navidrome::params::QueryParams;
 use super::{fail, ok};
@@ -58,32 +63,182 @@ pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, 
         Some(true) => Some("main"),
         _ => None,
     };
-    let entry = if !synced.is_empty() {
-        StructuredLyrics {
-            display_artist,
-            display_title,
-            lang: "und".into(),
-            offset: 0,
-            synced: true,
-            kind,
-            line: synced,
+    // The base line-level shape. Version 2 adds word timing on top.
+    let (line, synced) = if !synced.is_empty() {
+        (synced, true)
+    } else {
+        (unsynced, false)
+    };
+    let entry = StructuredLyrics {
+        display_artist: display_artist.clone(),
+        display_title: display_title.clone(),
+        lang: "und".into(),
+        offset: 0,
+        synced,
+        kind,
+        agents: None,
+        cue_line: None,
+        line: line.clone(),
+    };
+    // Version 2: try to add word-level timing when requested and an
+    // aligner is available. Any failure falls back to the v1 shape.
+    let entry = if q.enhanced == Some(true) && aligner::get().is_some() {
+        match enhanced_cue_lines(&client, track_id).await {
+            Some((agents, cue_lines)) => StructuredLyrics {
+                agents: Some(agents),
+                cue_line: Some(cue_lines),
+                ..entry
+            },
+            None => entry,
         }
     } else {
-        StructuredLyrics {
-            display_artist,
-            display_title,
-            lang: "und".into(),
-            offset: 0,
-            synced: false,
-            kind,
-            line: unsynced,
-        }
+        entry
     };
     Ok(ok(LyricsListResponse {
         lyrics_list: LyricsList {
             structured_lyrics: vec![entry],
         },
     }))
+}
+
+// Build version-2 word-level cueLine data for a track: fetch the FLAC
+// stream URL, POST it with the lyric lines to the aligner, and map the
+// returned words to UTF-8 byte offsets. Returns None on any failure so
+// the caller falls back to the version-1 reply.
+async fn enhanced_cue_lines(
+    client: &crate::tidal::client::TidalClient,
+    track_id: u64,
+) -> Option<(Vec<LyricAgent>, Vec<CueLine>)> {
+    let info = match client.stream_info(track_id, "LOSSLESS", "STREAM").await {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!("aligner: stream_info failed for track {track_id}: {e}");
+            return None;
+        }
+    };
+    let Some(audio_url) = info.direct_url else {
+        tracing::warn!("aligner: no direct FLAC URL for track {track_id}");
+        return None;
+    };
+
+    // Reuse the same lyric text the handler already fetched. We refetch
+    // here because the caller keeps only the parsed lines.
+    let lyrics = match client.track_lyrics(track_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("aligner: lyrics refetch failed for track {track_id}: {e}");
+            return None;
+        }
+    };
+    let lines: Vec<String> = {
+        let lrc = lyrics["subtitles"].as_str().map(parse_lrc_raw).unwrap_or_default();
+        if !lrc.is_empty() {
+            lrc
+        } else {
+            lyrics["lyrics"]
+                .as_str()
+                .map(parse_plain_raw)
+                .unwrap_or_default()
+        }
+    };
+    if lines.is_empty() {
+        tracing::warn!("aligner: no lyric lines for track {track_id}");
+        return None;
+    }
+    let language = detect_language(&lines);
+    let Some(aligner) = aligner::get() else {
+        tracing::warn!("aligner: aligner_url not configured");
+        return None;
+    };
+    let aligned = match aligner
+        .align(track_id, &audio_url, &language, &lines)
+        .await
+    {
+        Some(a) => a,
+        None => {
+            tracing::warn!("aligner: sidecar call failed or empty for track {track_id}");
+            return None;
+        }
+    };
+
+    // Map aligned lines (by index) into cueLine entries. Bytes offsets
+    // come from the aligner's char offsets via UTF-8 conversion.
+    let mut by_index: BTreeMap<usize, &crate::aligner::AlignedLine> =
+        aligned.iter().map(|l| (l.index, l)).collect();
+    let mut cue_lines = Vec::new();
+    let mut any = false;
+    for (idx, value) in lines.iter().enumerate() {
+        let Some(al) = by_index.remove(&idx) else {
+            continue;
+        };
+        let mut cue = Vec::new();
+        for w in &al.words {
+            let Some((byte_start, byte_end)) =
+                char_range_to_byte_range(&al.value, w.char_start, w.char_end)
+            else {
+                continue;
+            };
+            cue.push(Cue {
+                byte_start,
+                byte_end,
+                value: w.text.clone(),
+            });
+        }
+        if cue.is_empty() {
+            continue;
+        }
+        any = true;
+        cue_lines.push(CueLine {
+            start: first_start(&al.words).unwrap_or(0),
+            value: value.clone(),
+            agent_id: Some(1),
+            cue,
+        });
+    }
+    if !any {
+        return None;
+    }
+    let agents = vec![LyricAgent {
+        id: 1,
+        name: display_guess(),
+        role: "main".into(),
+        cues: None,
+    }];
+    Some((agents, cue_lines))
+}
+
+// Earliest start time (ms) across a line's words.
+fn first_start(words: &[crate::aligner::AlignedWord]) -> Option<u32> {
+    words
+        .iter()
+        .map(|w| (w.start_time * 1000.0) as u32)
+        .min()
+}
+
+// The aligner requires a language from its 11 supported languages. A
+// cheap heuristic on the lyrics text picks between CJK/others; Qwen's
+// supported set is Chinese, English, Cantonese, French, German, Italian,
+// Japanese, Korean, Portuguese, Russian, Spanish.
+fn detect_language(lines: &[String]) -> &'static str {
+    let joined = lines.join(" ");
+    if joined.chars().any(|c| matches!(c, '\u{4e00}'..='\u{9fff}')) {
+        "Chinese"
+    } else if joined.chars().any(|c| matches!(c, '\u{3040}'..='\u{30ff}')) {
+        "Japanese"
+    } else if joined.chars().any(|c| matches!(c, '\u{ac00}'..='\u{d7af}')) {
+        "Korean"
+    } else {
+        "English"
+    }
+}
+
+// A generic display name for the single main agent. The real performer
+// name is not reliably available here without another API call.
+fn display_guess() -> String {
+    crate::SETTINGS
+        .get()
+        .map(|s| s.username.clone())
+        .unwrap_or_else(|| "Main vocalist".into())
 }
 
 // getLyrics (legacy): lookup by artist + title, then serve the plain
@@ -175,6 +330,29 @@ fn parse_plain(text: &str) -> Vec<LyricLine> {
             start: None,
             value: value.into(),
         })
+        .collect()
+}
+
+// Raw (string-only) variants for the aligner path, which sends the
+// lines verbatim and needs no timing.
+fn parse_lrc_raw(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|raw| {
+            let line = raw.trim();
+            let rest = line.strip_prefix('[')?;
+            let end = rest.find(']')?;
+            timestamp_ms(&rest[..end])?;
+            let value = rest[end + 1..].trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
+        .collect()
+}
+
+fn parse_plain_raw(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
         .collect()
 }
 

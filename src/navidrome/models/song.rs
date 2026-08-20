@@ -198,11 +198,67 @@ pub struct StructuredLyrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
     pub line: Vec<LyricLine>,
+    // Version 2 cueLine data: word/syllable-level timing with UTF-8
+    // byte offsets into each cueLine.value. Emitted only when present.
+    #[serde(rename = "agents", skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<LyricAgent>>,
+    #[serde(rename = "cueLine", skip_serializing_if = "Option::is_none")]
+    pub cue_line: Option<Vec<CueLine>>,
 }
 
+// Version 2 agent attribution metadata, stored once and referenced by
+// cueLine.agentId. The current implementation always emits the main
+// agent; there is no singer separation.
 #[derive(Serialize)]
-pub struct LyricLine {
-    #[serde(skip_serializing_if = "Option::is_none")]
+pub struct LyricAgent {
+    pub id: u32,
+    pub name: String,
+    // Exactly one role: "main". Kept flexible for future layers.
+    pub role: String,
+    #[serde(rename = "cues", skip_serializing_if = "Option::is_none")]
+    pub cues: Option<Vec<Cue>>,
+}
+
+// Version 2 timed word/syllable layer. value is the renderable text of
+// one agent/layer for the parent line index. Byte offsets in each cue
+// index into value's UTF-8 encoding.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CueLine {
+    pub start: u32,
+    pub value: String,
+    pub agent_id: Option<u32>,
+    pub cue: Vec<Cue>,
+}
+
+// One word/syllable timestamp. byteStart/byteEnd are 0-based inclusive
+// offsets into the UTF-8 bytes of the owning cueLine.value.
+#[derive(Serialize)]
+pub struct Cue {
+    #[serde(rename = "byteStart")]
+    pub byte_start: u32,
+    #[serde(rename = "byteEnd")]
+    pub byte_end: u32,
+    pub value: String,
+}
+
+// Convert char offsets (from the aligner, on the Unicode chars of a
+// line) into 0-based inclusive UTF-8 byte offsets. Returns None when
+// the start index is out of range.
+pub fn char_range_to_byte_range(value: &str, char_start: usize, char_end: usize) -> Option<(u32, u32)> {
+    let chars: Vec<char> = value.chars().collect();
+    let last = chars.len().checked_sub(1)?;
+    if char_start > last {
+        return None;
+    }
+    let end = char_end.min(last);
+    let start_byte: usize = chars[..char_start].iter().map(|c| c.len_utf8()).sum();
+    let end_byte = start_byte + chars[char_start..=end].iter().map(|c| c.len_utf8()).sum::<usize>();
+    Some((start_byte as u32, (end_byte - 1) as u32))
+}
+
+#[derive(Serialize, Clone)]
+pub struct LyricLine {    #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<u32>,
     pub value: String,
 }
@@ -309,6 +365,8 @@ mod tests {
             offset: 0,
             synced: true,
             kind: None,
+            agents: None,
+            cue_line: None,
             line: vec![LyricLine {
                 start: Some(0),
                 value: "It's bugging me".into(),
@@ -316,7 +374,57 @@ mod tests {
         })
         .unwrap();
         assert!(json.get("kind").is_none());
+        assert!(json.get("agents").is_none());
+        assert!(json.get("cueLine").is_none());
         assert_eq!(json["line"][0]["start"], 0);
         assert_eq!(json["line"][0]["value"], "It's bugging me");
+    }
+
+    #[test]
+    fn cue_line_emits_byte_offsets_and_agent() {
+        let json = serde_json::to_value(&StructuredLyrics {
+            display_artist: "Muse".into(),
+            display_title: "Hysteria".into(),
+            lang: "eng".into(),
+            offset: 0,
+            synced: true,
+            kind: Some("main"),
+            agents: Some(vec![LyricAgent {
+                id: 1,
+                name: "Muse".into(),
+                role: "main".into(),
+                cues: None,
+            }]),
+            cue_line: Some(vec![CueLine {
+                start: 0,
+                value: "It's bugging me".into(),
+                agent_id: Some(1),
+                cue: vec![Cue {
+                    byte_start: 0,
+                    byte_end: 2,
+                    value: "It'".into(),
+                }],
+            }]),
+            line: vec![],
+        })
+        .unwrap();
+        assert_eq!(json["agents"][0]["id"], 1);
+        assert_eq!(json["agents"][0]["role"], "main");
+        assert_eq!(json["cueLine"][0]["value"], "It's bugging me");
+        assert_eq!(json["cueLine"][0]["agentId"], 1);
+        assert_eq!(json["cueLine"][0]["cue"][0]["byteStart"], 0);
+        assert_eq!(json["cueLine"][0]["cue"][0]["byteEnd"], 2);
+    }
+
+    #[test]
+    fn char_range_maps_to_utf8_bytes() {
+        // Each CJK rune is 3 UTF-8 bytes: 你(0) 好(3) ' '(6) w(7) o(8) r(9) l(10) d(11).
+        let s = "你好 world";
+        assert_eq!(char_range_to_byte_range(s, 0, 0), Some((0, 2)));
+        assert_eq!(char_range_to_byte_range(s, 1, 1), Some((3, 5)));
+        assert_eq!(char_range_to_byte_range(s, 3, 3), Some((7, 7))); // 'w'
+        assert_eq!(char_range_to_byte_range(s, 6, 6), Some((10, 10))); // 'l'
+        assert_eq!(char_range_to_byte_range(s, 7, 7), Some((11, 11))); // 'd'
+        assert_eq!(char_range_to_byte_range(s, 8, 8), None); // out of range
     }
 }

@@ -36,6 +36,16 @@ pub struct Settings {
     pub lastfm: Option<LastFmConfig>,
     #[serde(default)]
     pub listenbrainz: Option<ListenBrainzConfig>,
+    // Optional word-level forced aligner sidecar. When set and
+    // enhanced=true is requested on getLyricsBySongId, word timestamps
+    // (v2 cueLine) are filled by POSTing the track audio to this URL.
+    // Without it, v2 serves kind only, exactly like today.
+    #[serde(default)]
+    pub aligner_url: Option<String>,
+    // Cache TTL for alignment results, in seconds. Alignment is slow;
+    // the cache keeps repeat lyric fetches fast.
+    #[serde(default = "default_aligner_ttl")]
+    pub aligner_ttl: u64,
 }
 
 // Last.fm scrobble credentials. The session key (sk) lives in the OS
@@ -58,6 +68,10 @@ fn default_tidal_quality() -> String {
 
 fn default_show_mixes() -> bool {
     true
+}
+
+fn default_aligner_ttl() -> u64 {
+    6 * 3600
 }
 
 // The settings file, in order of preference:

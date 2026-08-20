@@ -48,6 +48,7 @@ Source layout:
 src/
 ├── main.rs            # startup, settings, login, server bind
 ├── settings.rs        # settings file discovery + APP_* env overrides
+├── aligner.rs         # forced-alignment sidecar client (v2 lyrics)
 ├── navidrome/         # Subsonic protocol layer
 │   ├── routes.rs      # /rest/* routes
 │   ├── auth.rs        # credential checks, body cap, rate limiting
@@ -59,3 +60,21 @@ src/
     ├── mapping/       # Tidal JSON -> Subsonic DTOs
     └── embedded.rs    # Tidal app credentials
 ```
+
+## Word-level lyrics (proof of concept)
+
+`getLyricsBySongId?enhanced=true` returns word-level timing when an
+optional aligner sidecar is configured. The sidecar wraps
+`Qwen3ForcedAligner` and is a separate Python service:
+
+```
+cd aligner
+uv sync   # create .venv and install deps (needs a GPU for speed)
+uv run uvicorn aligner_service:app --host 0.0.0.0 --port 8765
+```
+
+Then set `aligner_url` in `settings.toml` to that address
+(`http://localhost:8765/align`, or `http://aligner:8765/align` inside
+docker-compose) and restart. Alignment results cache for `aligner_ttl`
+seconds. Without the sidecar, `enhanced=true` still returns the `kind`
+field, exactly as before.

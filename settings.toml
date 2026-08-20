@@ -38,3 +38,11 @@ show_mixes = true
 #
 # [listenbrainz]
 # token = "..."
+
+# Optional forced-alignment sidecar for word-level (karaoke) lyrics.
+# When set, getLyricsBySongId with enhanced=true adds v2 cueLine word
+# timestamps. Manage the sidecar with uv from the aligner/ directory:
+#   uv sync && uv run uvicorn aligner_service:app --port 8765
+# Without it, v2 still serves the kind field.
+aligner_url = "http://localhost:8765/align"
+# aligner_ttl = 21600  # seconds to cache alignment results per track

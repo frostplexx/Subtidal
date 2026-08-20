@@ -35,10 +35,11 @@ pub use playlist::{GetPlaylistResponse, Playlist, Playlists, PlaylistsResponse, 
 pub use queue::{Bookmark, Bookmarks, BookmarksResponse, PlayQueue, PlayQueueByIndex, PlayQueueByIndexResponse, PlayQueueResponse};
 pub use search::{SearchResult2, SearchResult2Response, SearchResult3, SearchResult3Response};
 pub use song::{
-    Child, GetSongResponse, LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse,
-    NowPlaying, NowPlayingEntry, NowPlayingResponse, RandomSongs, RandomSongsResponse,
-    ReplayGain, SimilarSongs, SimilarSongs2, SimilarSongs2Response, SimilarSongsResponse,
-    SongsByGenre, SongsByGenreResponse, StructuredLyrics, TopSongs, TopSongsResponse,
+    char_range_to_byte_range, Child, Cue, CueLine, GetSongResponse, LyricAgent, LyricLine, Lyrics,
+    LyricsList, LyricsListResponse, LyricsResponse, NowPlaying, NowPlayingEntry,
+    NowPlayingResponse, RandomSongs, RandomSongsResponse, ReplayGain, SimilarSongs, SimilarSongs2,
+    SimilarSongs2Response, SimilarSongsResponse, SongsByGenre, SongsByGenreResponse,
+    StructuredLyrics, TopSongs, TopSongsResponse,
 };
 pub use system::{
     GetOpenSubsonicExtensionsResponse, GetUserResponse, GetUsersResponse, Genres, GenresResponse,

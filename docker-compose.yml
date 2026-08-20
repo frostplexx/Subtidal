@@ -30,6 +30,22 @@ services:
       - ./settings.toml:/config/subtidal/settings.toml:ro
       - subtidal-data:/data
     restart: unless-stopped
+
+  # Optional forced-alignment sidecar for v2 word-level lyrics. Enable by
+  # setting aligner_url in settings.toml to http://aligner:8765/align.
+  # Requires a GPU for practical latency.
+  aligner:
+    build:
+      context: ./aligner
+    container_name: subtidal-aligner
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:$${APP_PORT:-8000}/rest/ping > /dev/null || exit 1"]
       interval: 30s

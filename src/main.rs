@@ -1,3 +1,4 @@
+mod aligner;
 mod navidrome;
 mod settings;
 mod tidal;

@@ -1,0 +1,21 @@
+[project]
+name = "subtidal-aligner"
+version = "0.1.0"
+description = "Qwen3ForcedAligner sidecar for Subtidal v2 word-level lyrics"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "qwen-asr",
+    "torchaudio",
+    "requests",
+]
+
+[dependency-groups]
+# Optional speedup for the forced aligner on CUDA.
+#   uv sync --group flash-attn
+flash-attn = ["flash-attn"]
+
+[tool.uv]
+# The service runs from source; do not build a package.
+package = false

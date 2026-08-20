@@ -64,8 +64,8 @@ pub struct QueryParams {
     // getRandomSongs: genre filter; year window reuses fromYear/toYear
     pub genre: Option<String>,
     // getLyricsBySongId: enhanced=true asks for the v2 shape (kind,
-    // cueLine). We serve only v1, so the flag is accepted and ignored
-    // beyond the shape of the reply.
+    // cueLine). Kind is always served; cueLine word timing appears when
+    // an aligner is configured.
     pub enhanced: Option<bool>,
     // reportPlayback: playback timeline events.
     pub media_id: Option<String>,
