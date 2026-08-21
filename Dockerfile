@@ -1,7 +1,7 @@
 # Build stage: full Rust toolchain plus the C toolchain that
 # aws-lc-sys needs (clang, cmake, perl for ring, nasm for the
 # x86_64 assembly).
-FROM rust:1.97-bookworm AS builder
+FROM rust:1.98-bookworm AS builder
 WORKDIR /build
 
 RUN apt-get update \
