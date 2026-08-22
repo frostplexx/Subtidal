@@ -21,16 +21,8 @@ pub(crate) fn favorites_albums(result: &serde_json::Value) -> Vec<crate::navidro
         .unwrap_or_default()
 }
 
-// Map a favorites track list to Child, without the favorite time.
+// Map a favorites track list to Child, carrying the Tidal favorite time on both `created` and `starred`.
 pub(crate) fn favorite_track_songs(result: &serde_json::Value) -> Vec<Child> {
-    result["items"]
-        .as_array()
-        .map(|items| items.iter().filter_map(|entry| song_from_track(&entry["item"])).collect())
-        .unwrap_or_default()
-}
-
-// Map a favorites track list to Child, carrying the favorite time.
-fn favorites_songs(result: &serde_json::Value) -> Vec<Child> {
     result["items"]
         .as_array()
         .map(|items| {
@@ -38,6 +30,7 @@ fn favorites_songs(result: &serde_json::Value) -> Vec<Child> {
                 .iter()
                 .filter_map(|entry| {
                     let mut song = song_from_track(&entry["item"])?;
+                    song.created = entry["created"].as_str().unwrap_or("").to_string();
                     song.starred = entry["created"].as_str().map(String::from);
                     Some(song)
                 })
@@ -83,7 +76,7 @@ pub async fn get_starred() -> Result<warp::reply::Json, warp::Rejection> {
         starred: Starred {
             artist,
             album,
-            song: favorites_songs(&tracks),
+            song: favorite_track_songs(&tracks),
         },
     }))
 }
@@ -120,7 +113,7 @@ pub async fn get_starred2() -> Result<warp::reply::Json, warp::Rejection> {
         starred2: Starred2 {
             artist,
             album,
-            song: favorites_songs(&tracks),
+            song: favorite_track_songs(&tracks),
         },
     }))
 }
@@ -235,6 +228,31 @@ mod tests {
         let q = params("");
         let (tracks, albums, artists) = partition_ids(&q).unwrap();
         assert!(tracks.is_empty() && albums.is_empty() && artists.is_empty());
+    }
+
+    #[test]
+    fn favorite_tracks_carry_the_favorite_time() {
+        let result = serde_json::json!({
+            "items": [{
+                "type": "track",
+                "created": "2023-01-15T10:00:00.000Z",
+                "item": {
+                    "id": 123,
+                    "title": "Song One",
+                    "duration": 220,
+                    "trackNumber": 3,
+                    "artists": [{"id": 9, "name": "Artist A"}],
+                    "album": {"id": 456, "title": "Album One"}
+                }
+            }]
+        });
+        let songs = favorite_track_songs(&result);
+        assert_eq!(songs.len(), 1);
+        assert_eq!(songs[0].created, "2023-01-15T10:00:00.000Z");
+        assert_eq!(
+            songs[0].starred.as_deref(),
+            Some("2023-01-15T10:00:00.000Z")
+        );
     }
 }
 
