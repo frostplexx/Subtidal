@@ -149,6 +149,12 @@ pub struct AlbumId3 {
     pub is_compilation: Option<bool>,
     #[serde(rename = "releaseTypes", skip_serializing_if = "Option::is_none")]
     pub release_types: Option<Vec<String>>,
+    // Favorite time (OpenSubsonic 1.16.5 renamed the deprecated `starred`
+    // to `starredAt`); present only on albums from favorites lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starred: Option<String>,
+    #[serde(rename = "starredAt", skip_serializing_if = "Option::is_none")]
+    pub starred_at: Option<String>,
 }
 
 #[cfg(test)]
@@ -175,6 +181,8 @@ mod tests {
                     genre: Some("Hip-Hop".into()),
                     is_compilation: None,
                     release_types: None,
+                    starred: None,
+                    starred_at: None,
                 }],
             },
         };
@@ -205,6 +213,8 @@ mod tests {
                     genre: None,
                     is_compilation: None,
                     release_types: None,
+                    starred: None,
+                    starred_at: None,
                 },
                 song: vec![Child {
                     id: "t9".into(),
@@ -229,6 +239,7 @@ mod tests {
                     path: String::new(),
                     created: String::new(),
                     starred: None,
+                    starred_at: None,
                     replay_gain: crate::navidrome::models::ReplayGain::default(),
                 }],
             },
@@ -258,6 +269,8 @@ mod tests {
             genre: None,
             is_compilation: None,
             release_types: None,
+            starred: None,
+            starred_at: None,
         };
         let json = serde_json::to_value(&album).unwrap();
         assert_eq!(json["coverArt"], "https://example.com/c.jpg");

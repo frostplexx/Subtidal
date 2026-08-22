@@ -21,7 +21,7 @@ pub(crate) fn favorites_albums(result: &serde_json::Value) -> Vec<crate::navidro
         .unwrap_or_default()
 }
 
-// Map a favorites track list to Child, carrying the Tidal favorite time on both `created` and `starred`.
+// Map a favorites track list to Child, carrying the Tidal favorite time on `created`, `starred`, and `starredAt`.
 pub(crate) fn favorite_track_songs(result: &serde_json::Value) -> Vec<Child> {
     result["items"]
         .as_array()
@@ -32,6 +32,7 @@ pub(crate) fn favorite_track_songs(result: &serde_json::Value) -> Vec<Child> {
                     let mut song = song_from_track(&entry["item"])?;
                     song.created = entry["created"].as_str().unwrap_or("").to_string();
                     song.starred = entry["created"].as_str().map(String::from);
+                    song.starred_at = entry["created"].as_str().map(String::from);
                     Some(song)
                 })
                 .collect()
@@ -99,7 +100,9 @@ pub async fn get_starred2() -> Result<warp::reply::Json, warp::Rejection> {
             items
                 .iter()
                 .filter_map(|entry| {
-                    let artist = artist_from_tidal(&entry["item"])?;
+                    let mut artist = artist_from_tidal(&entry["item"])?;
+                    artist.starred = entry["created"].as_str().map(String::from);
+                    artist.starred_at = entry["created"].as_str().map(String::from);
                     Some(Starred2Artist {
                         artist_image_url: artist.cover_art.clone(),
                         starred: entry["created"].as_str().map(String::from),
@@ -251,6 +254,10 @@ mod tests {
         assert_eq!(songs[0].created, "2023-01-15T10:00:00.000Z");
         assert_eq!(
             songs[0].starred.as_deref(),
+            Some("2023-01-15T10:00:00.000Z")
+        );
+        assert_eq!(
+            songs[0].starred_at.as_deref(),
             Some("2023-01-15T10:00:00.000Z")
         );
     }

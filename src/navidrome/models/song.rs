@@ -41,9 +41,13 @@ pub struct Child {
     pub size: u64,
     pub path: String,
     pub created: String,
-    // Favorite time; present only in getStarred/getStarred2 songs.
+    // Favorite time; present only on favorites-derived song lists. The
+    // legacy `starred` is deprecated in OpenSubsonic 1.16.5, which adds
+    // `starredAt`; clients read one field or the other.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub starred: Option<String>,
+    #[serde(rename = "starredAt", skip_serializing_if = "Option::is_none")]
+    pub starred_at: Option<String>,
     // OpenSubsonic ReplayGain; always present, inner fields omitted when
     // unknown (Navidrome convention).
     #[serde(rename = "replayGain")]

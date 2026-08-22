@@ -45,6 +45,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         path: String::new(),
         created: String::new(),
         starred: None,
+        starred_at: None,
         replay_gain: ReplayGain {
             track_gain: v["replayGain"].as_f64(),
             track_peak: v["peak"].as_f64(),
