@@ -40,14 +40,18 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
         genre: v["genre"].as_str().map(String::from),
         is_compilation: is_compilation.then_some(true),
         release_types: (!release_types.is_empty()).then_some(release_types),
+        starred: None,
+        starred_at: None,
     })
 }
 
 // Favorites wrap each album in { item, created }; the created date is the
-// favorite time, which maps to AlbumID3.created.
+// favorite time, which maps to AlbumID3.created, starred, and starredAt.
 pub fn favorite_album_from_tidal(entry: &Value) -> Option<AlbumId3> {
     let mut album = album_from_tidal(&entry["item"])?;
     album.created = entry["created"].as_str().map(String::from);
+    album.starred = entry["created"].as_str().map(String::from);
+    album.starred_at = entry["created"].as_str().map(String::from);
     Some(album)
 }
 
@@ -113,5 +117,7 @@ mod tests {
         });
         let a = favorite_album_from_tidal(&entry).unwrap();
         assert_eq!(a.created.as_deref(), Some("2023-01-15T10:00:00.000Z"));
+        assert_eq!(a.starred.as_deref(), Some("2023-01-15T10:00:00.000Z"));
+        assert_eq!(a.starred_at.as_deref(), Some("2023-01-15T10:00:00.000Z"));
     }
 }

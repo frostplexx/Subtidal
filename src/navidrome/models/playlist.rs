@@ -92,6 +92,7 @@ mod tests {
                 path: String::new(),
                 created: String::new(),
                 starred: None,
+                starred_at: None,
                 replay_gain: crate::navidrome::models::ReplayGain::default(),
             }],
         };
