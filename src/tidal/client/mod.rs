@@ -256,7 +256,7 @@ impl TidalClient {
 }
 
 // Minimal percent-encoding for query strings. No new dependency needed.
-fn percent_encode(s: &str) -> String {
+pub(crate) fn percent_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
