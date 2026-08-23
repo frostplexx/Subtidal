@@ -12,12 +12,19 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
         // public() is the whitelist: only these endpoints run without
         // authentication. Keep its names out of dispatch()'s match, since
         // public wins by or-order and a duplicate arm would be dead code.
+        //
+        // Box the two branches: warp's or/unify/recover chain nests the
+        // composed filter type and otherwise trips the compile-time
+        // recursion limit. Boxing truncates the type to a flat trait object
+        // at the cost of one allocation per request.
         public()
+            .boxed()
             .or(auth::require_auth()
                 .and(private())
                 .and_then(|q: QueryParams, raw: String, body: Bytes, name: String| {
                     dispatch(q, raw, name, body)
-                }))
+                })
+                .boxed())
             .unify()
             .recover(handlers::recover)
             .or(fallback()),
