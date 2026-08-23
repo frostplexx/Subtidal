@@ -48,6 +48,12 @@ pub struct ArtistId3 {
     pub cover_art: Option<String>,
     #[serde(rename = "albumCount", skip_serializing_if = "Option::is_none")]
     pub album_count: Option<u32>,
+    // Favorite time (OpenSubsonic 1.16.5 renamed the deprecated `starred`
+    // to `starredAt`); present only on artists from favorites lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub starred: Option<String>,
+    #[serde(rename = "starredAt", skip_serializing_if = "Option::is_none")]
+    pub starred_at: Option<String>,
 }
 
 // getArtistInfo data: { artistInfo: ArtistInfoID3 }. Same payload as

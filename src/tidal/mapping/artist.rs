@@ -14,6 +14,8 @@ pub fn artist_from_tidal(v: &Value) -> Option<ArtistId3> {
         name,
         cover_art: v["picture"].as_str().map(|p| artist_pic_url(p, 480)),
         album_count: v["albumCount"].as_u64().map(|n| n as u32),
+        starred: None,
+        starred_at: None,
     })
 }
 
