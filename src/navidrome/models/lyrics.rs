@@ -24,6 +24,8 @@ pub struct Fetched {
     pub weight: u32,
     pub mode: LyricsMode,
     pub line: Vec<LyricLine>,
+    // Raw plain text captured for diagnostics/future use; not yet read.
+    #[allow(dead_code)]
     pub plain: String,
     // Word/syllable timing emitted only when enhanced=true is requested.
     pub cue_line: Vec<CueLine>,

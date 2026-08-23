@@ -333,7 +333,7 @@ fn lrcmux_cues(words: &[LrcmuxWord]) -> Option<(String, Vec<Cue>)> {
     let mut cursor = 0usize;
     let mut cues = Vec::with_capacity(words.len());
     for w in words {
-        let len = w.text.as_bytes().len();
+        let len = w.text.len();
         if len == 0 {
             continue;
         }
@@ -365,8 +365,8 @@ fn token_cues(tokens: &[&LyricsPlusToken]) -> (String, Vec<Cue>) {
     let mut cues = Vec::with_capacity(tokens.len());
     for t in tokens {
         let cs = cursor.max(start_bound);
-        let ce = (cursor + t.text.as_bytes().len()).min(end_bound);
-        cursor += t.text.as_bytes().len();
+        let ce = (cursor + t.text.len()).min(end_bound);
+        cursor += t.text.len();
         if ce <= cs {
             continue;
         }
@@ -668,7 +668,7 @@ mod tests {
             cue_line: vec![],
         };
         // Both score 0; the earlier list entry survives the stable sort.
-        let mut ranked = vec![b, a];
+        let mut ranked = Vec::from([b, a]);
         ranked.sort_by_key(|f| std::cmp::Reverse((mode_rank(f.mode), final_score(f))));
         let sources: Vec<LyricsSourceNames> = ranked.iter().map(|f| f.source).collect();
         assert_eq!(
@@ -704,7 +704,7 @@ mod tests {
             cue_line: vec![],
         };
         // The lightest synced source beats the heaviest plain one.
-        let mut ranked = vec![plain, line, word];
+        let mut ranked = Vec::from([plain, line, word]);
         ranked.sort_by_key(|f| std::cmp::Reverse((mode_rank(f.mode), final_score(f))));
         let sources: Vec<LyricsSourceNames> = ranked.iter().map(|f| f.source).collect();
         assert_eq!(
@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn lyricsplus_syllable_offsets_match_multibyte_utf8() {
         // "눈을 뜬 순간" reproduced from the spec example.
-        let tokens = vec![
+        let tokens = [
             LyricsPlusToken {
                 time: 2747,
                 duration: 271,
@@ -888,5 +888,158 @@ mod tests {
         assert_eq!(fetched.cue_line[0].value, "They want that life");
         assert_eq!(fetched.cue_line[0].start, Some(6062));
         assert_eq!(fetched.line[0].start, Some(6062));
+    }
+}
+
+// Live integration tests that call the real upstream lyric providers
+// (LRCLIB, LRCMUX, LyricsPlus) and run the parsing pipeline over their
+// responses. They need network access, so they are ignored by default
+// and run with `cargo test -- --ignored`.
+#[cfg(test)]
+mod live {
+    use super::{LYRICS_SOURCES, fetch_source, final_score, mode_rank};
+    use crate::navidrome::models::lyrics::{Fetched, SongInfo};
+    use crate::navidrome::models::song::{CueLine, LyricsMode, LyricsSourceNames};
+
+    // Popular evergreen tracks, present in every provider. Timed data
+    // varies by provider; the assertions validate the parser's
+    // invariants against whatever comes back, not exact strings.
+    fn known_songs() -> Vec<SongInfo> {
+        vec![
+            SongInfo {
+                artist: "Queen".into(),
+                title: "Bohemian Rhapsody".into(),
+                album: "A Night at the Opera".into(),
+                duration: 354,
+            },
+            SongInfo {
+                artist: "Ed Sheeran".into(),
+                title: "Shape of You".into(),
+                album: "Divide".into(),
+                duration: 235,
+            },
+            SongInfo {
+                artist: "The Beatles".into(),
+                title: "Yesterday".into(),
+                album: "Help!".into(),
+                duration: 126,
+            },
+        ]
+    }
+
+    // Fetch and parse every streamable provider for one song, skipping
+    // whatever returns nothing. Tidal is excluded: its source needs a
+    // logged-in Tidal client, not just a URL.
+    async fn probe(song: &SongInfo) -> Vec<Fetched> {
+        let mut out = Vec::new();
+        for src in LYRICS_SOURCES {
+            if src.name == LyricsSourceNames::Tidal {
+                continue;
+            }
+            if let Some(f) = fetch_source(src, 0, song).await.ok().flatten() {
+                out.push(f);
+            }
+        }
+        out
+    }
+
+    // Every cue must point inside its parent line's value, measured in
+    // UTF-8 bytes, and the cue texts must tile that value exactly. This
+    // is the spec guarantee both parsers reproduce, for LRCMUX words and
+    // LyricsPlus syllables alike.
+    fn assert_cues_consistent(cue_line: &[CueLine]) {
+        for cl in cue_line {
+            let bytes = cl.value.len();
+            for c in &cl.cue {
+                assert!(
+                    (c.byte_end as usize) < bytes,
+                    "byteEnd {} out of range for value {:?} ({} bytes)",
+                    c.byte_end,
+                    cl.value,
+                    bytes
+                );
+                assert!(
+                    c.byte_start <= c.byte_end,
+                    "byteStart {} > byteEnd {}",
+                    c.byte_start,
+                    c.byte_end
+                );
+                assert!(
+                    c.start <= c.end.unwrap_or(c.start),
+                    "cue start {} > end {:?}",
+                    c.start,
+                    c.end
+                );
+            }
+            let tiled: String = cl
+                .cue
+                .iter()
+                .map(|c| c.value.clone())
+                .collect::<Vec<_>>()
+                .concat();
+            assert_eq!(
+                tiled, cl.value,
+                "cue texts must reproduce the cueLine value"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn live_sources_parse_into_consistent_candidates() {
+        for song in known_songs() {
+            let fetched = probe(&song).await;
+            assert!(
+                !fetched.is_empty(),
+                "no provider returned lyrics for {} - {}",
+                song.artist, song.title
+            );
+            for f in &fetched {
+                assert!(
+                    !f.line.is_empty(),
+                    "{:?} produced no lines",
+                    f.source
+                );
+                assert_cues_consistent(&f.cue_line);
+            }
+        }
+    }
+
+    // The pipeline must surface at least one word-level (LRCMUX) or
+    // syllable-level (LyricsPlus) candidate across the probe songs, and
+    // the handler's ranking must always put timed lyrics ahead of plain
+    // text for these well-known tracks.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn live_pipeline_prefers_word_timed_lyrics() {
+        let mut any_word_or_syllable = false;
+        for song in known_songs() {
+            let fetched = probe(&song).await;
+            if fetched.iter().any(|f| {
+                matches!(
+                    f.mode,
+                    LyricsMode::WordSynced | LyricsMode::SyllableSynced
+                )
+            }) {
+                any_word_or_syllable = true;
+            }
+            // The handler's sort is (mode_rank desc, final_score desc);
+            // max_by_key over the same token sequence picks the same
+            // winner without needing Fetched: Clone.
+            if let Some(winner) = fetched
+                .iter()
+                .max_by_key(|f| (mode_rank(f.mode), final_score(f)))
+            {
+                assert!(
+                    winner.mode != LyricsMode::Plain,
+                    "winner for {} - {} must be timed",
+                    song.artist, song.title
+                );
+            }
+        }
+        assert!(
+            any_word_or_syllable,
+            "no probe song exposed word/syllable timing from LRCMUX or LyricsPlus"
+        );
     }
 }

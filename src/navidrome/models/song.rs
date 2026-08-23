@@ -202,6 +202,8 @@ pub enum LyricsMode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+// LRCLIB and LRCMUX are provider brand names; keep their acronym casing.
+#[allow(clippy::upper_case_acronyms)]
 pub enum LyricsSourceNames {
     Tidal,
     LRCLIB,
@@ -270,8 +272,11 @@ pub struct Cue {
 }
 
 // The semantic vocal layer of an agent: lead/default vocals, an
-// explicit individual voice part, background vocals, or chorus.
+// explicit individual voice part, background vocals, or chorus. Agent
+// emission is not wired up yet, so the role variants are intentionally
+// unused for now.
 #[derive(Serialize)]
+#[allow(dead_code)]
 pub enum AgentRole {
     #[serde(rename = "main")]
     Main,
