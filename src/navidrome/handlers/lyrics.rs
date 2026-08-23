@@ -234,7 +234,7 @@ fn normalize(source: &LyricsSource, text: &str) -> Option<Fetched> {
                         end: Some(l.end),
                         value,
                         agent_id: None,
-                        cues,
+                        cue: cues,
                     });
                 }
             }
@@ -310,7 +310,7 @@ fn flush_lyrics_plus(
                 end,
                 value,
                 agent_id: None,
-                cues,
+                cue: cues,
             });
         }
         plain.push_str(&line.last().unwrap().value);
@@ -797,7 +797,7 @@ mod tests {
         assert_eq!(fetched.cue_line.len(), 1);
         assert_eq!(fetched.cue_line[0].index, 0);
         assert_eq!(fetched.cue_line[0].value, "They want that yacht life");
-        assert_eq!(fetched.cue_line[0].cues.len(), 5);
+        assert_eq!(fetched.cue_line[0].cue.len(), 5);
     }
 
     #[test]

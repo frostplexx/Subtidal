@@ -251,7 +251,7 @@ pub struct CueLine {
     pub value: String,
     #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
-    pub cues: Vec<Cue>,
+    pub cue: Vec<Cue>,
 }
 
 // One timed word or syllable. start/end are milliseconds; byteStart and
@@ -430,7 +430,7 @@ mod tests {
                 end: Some(900),
                 value: "It's".into(),
                 agent_id: Some("lead".into()),
-                cues: vec![Cue {
+                cue: vec![Cue {
                     start: 0,
                     end: Some(400),
                     value: "It's".into(),
@@ -449,11 +449,11 @@ mod tests {
         assert_eq!(json["cueLine"][0]["index"], 0);
         assert_eq!(json["cueLine"][0]["start"], 0);
         assert_eq!(json["cueLine"][0]["end"], 900);
-        assert_eq!(json["cueLine"][0]["cues"][0]["start"], 0);
-        assert_eq!(json["cueLine"][0]["cues"][0]["end"], 400);
-        assert_eq!(json["cueLine"][0]["cues"][0]["value"], "It's");
-        assert_eq!(json["cueLine"][0]["cues"][0]["byteStart"], 0);
-        assert_eq!(json["cueLine"][0]["cues"][0]["byteEnd"], 3);
+        assert_eq!(json["cueLine"][0]["cue"][0]["start"], 0);
+        assert_eq!(json["cueLine"][0]["cue"][0]["end"], 400);
+        assert_eq!(json["cueLine"][0]["cue"][0]["value"], "It's");
+        assert_eq!(json["cueLine"][0]["cue"][0]["byteStart"], 0);
+        assert_eq!(json["cueLine"][0]["cue"][0]["byteEnd"], 3);
         assert_eq!(json["cueLine"][0]["value"], "It's");
         assert_eq!(json["cueLine"][0]["agentId"], "lead");
         assert_eq!(json["agents"][0]["id"], "lead");
