@@ -1,0 +1,39 @@
+name: test
+
+# Run the (offline) test suite on every push. Live-network tests in the
+# source tree are marked `#[ignore]`, so `cargo test` skips them; this
+# workflow does not run them on CI.
+#
+# The toolchain channel, components, and edition come from
+# rust-toolchain.toml. rustup reads it on first `cargo` invocation, so we
+# only need checkout plus a rustup default.
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Install nightly toolchain
+        # rust-toolchain.toml pins the channel and components; rustup
+        # installs exactly what it declares.
+        run: rustup toolchain install --profile minimal nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run the full test suite
+        run: cargo test --locked
