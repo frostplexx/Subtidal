@@ -19,14 +19,14 @@ const LYRICS_SOURCES: &[LyricsSource] = &[
     LyricsSource {
         name: LyricsSourceNames::Tidal,
         endpoint: None,
-        weight: 90,
+        weight: 70,
     },
     LyricsSource {
         name: LyricsSourceNames::LRCLIB,
         endpoint: Some(
             "https://lrclib.net/api/get?artist_name={artist}&track_name={track}&album_name={album}&duration={duration}",
         ),
-        weight: 100,
+        weight: 80,
     },
     LyricsSource {
         name: LyricsSourceNames::LyricsPlus,
@@ -40,7 +40,7 @@ const LYRICS_SOURCES: &[LyricsSource] = &[
         endpoint: Some(
             "https://api.lrcmux.dev/get?artist={artist}&title={track}&album={album}&duration={duration}",
         ),
-        weight: 90,
+        weight: 100,
     },
 ];
 
