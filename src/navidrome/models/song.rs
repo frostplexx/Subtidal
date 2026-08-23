@@ -193,10 +193,11 @@ pub struct LyricsSource {
     pub weight: u32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LyricsMode {
     Plain,
     LineSynced,
+    WordSynced,
     SyllableSynced,
 }
 
@@ -236,43 +237,61 @@ pub struct LyricLine {
 }
 
 // OpenSubsonic songLyrics v2: word/syllable timings for one parent
-// line. agentId references an entry in structuredLyrics.agents; line is
-// the index of the parent entry in structuredLyrics.line. byteStart and
-// byteEnd are 0-based inclusive offsets into the UTF-8 encoding of
-// value. Simple unattributed lyrics omit agentId and agents entirely.
+// line. index points at the parent entry in structuredLyrics.line.
+// agentId references an entry in structuredLyrics.agents; simple
+// unattributed lyrics omit it. byteStart and byteEnd are 0-based
+// inclusive offsets into the UTF-8 encoding of value.
 #[derive(Serialize)]
 pub struct CueLine {
-    #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<u32>,
-    pub line: u32,
-    pub cues: Vec<Cue>,
-    // Required by the spec whenever cues is non-empty.
+    pub index: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub start: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<u32>,
+    pub value: String,
+    #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub cues: Vec<Cue>,
 }
 
-// One timed word or syllable. start is milliseconds; byteStart and
-// byteEnd are 0-based inclusive UTF-8 offsets into cueLine.value.
+// One timed word or syllable. start/end are milliseconds; byteStart and
+// byteEnd are 0-based inclusive UTF-8 offsets into cueLine.value. end
+// is present on every cue or none, per the contract.
 #[derive(Serialize)]
 pub struct Cue {
     pub start: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<u32>,
+    pub value: String,
     #[serde(rename = "byteStart")]
     pub byte_start: u32,
     #[serde(rename = "byteEnd")]
     pub byte_end: u32,
 }
 
-// A reusable agent. agentType is one of vocalist, actor, translator,
-// phonetician, unknown. Entries that use agents must mark exactly one
-// agent as the "main" role.
+// The semantic vocal layer of an agent: lead/default vocals, an
+// explicit individual voice part, background vocals, or chorus.
+#[derive(Serialize)]
+pub enum AgentRole {
+    #[serde(rename = "main")]
+    Main,
+    #[serde(rename = "voice")]
+    Voice,
+    #[serde(rename = "bg")]
+    Bg,
+    #[serde(rename = "group")]
+    Group,
+}
+
+// A reusable vocal agent within one structuredLyrics entry. id is only
+// meaningful inside that entry. An attributed entry must mark exactly
+// one agent as Main.
 #[derive(Serialize)]
 pub struct Agent {
-    #[serde(rename = "agentId")]
-    pub agent_id: u32,
-    #[serde(rename = "agentType", skip_serializing_if = "Option::is_none")]
-    pub agent_type: Option<&'static str>,
-    #[serde(rename = "agentName", skip_serializing_if = "Option::is_none")]
-    pub agent_name: Option<String>,
+    pub id: String,
+    pub role: AgentRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[cfg(test)]
@@ -406,31 +425,39 @@ mod tests {
                 value: "It's bugging me".into(),
             }],
             cue_line: Some(vec![CueLine {
-                agent_id: Some(2),
-                line: 0,
+                index: 0,
+                start: Some(0),
+                end: Some(900),
+                value: "It's".into(),
+                agent_id: Some("lead".into()),
                 cues: vec![Cue {
                     start: 0,
+                    end: Some(400),
+                    value: "It's".into(),
                     byte_start: 0,
                     byte_end: 3,
                 }],
-                value: Some("It's".into()),
             }]),
             agents: Some(vec![Agent {
-                agent_id: 2,
-                agent_type: Some("vocalist"),
-                agent_name: Some("Matthew Bellamy".into()),
+                id: "lead".into(),
+                role: AgentRole::Main,
+                name: Some("Matthew Bellamy".into()),
             }]),
         })
         .unwrap();
         assert_eq!(json["kind"], "main");
-        assert_eq!(json["cueLine"][0]["agentId"], 2);
-        assert_eq!(json["cueLine"][0]["line"], 0);
+        assert_eq!(json["cueLine"][0]["index"], 0);
+        assert_eq!(json["cueLine"][0]["start"], 0);
+        assert_eq!(json["cueLine"][0]["end"], 900);
         assert_eq!(json["cueLine"][0]["cues"][0]["start"], 0);
+        assert_eq!(json["cueLine"][0]["cues"][0]["end"], 400);
+        assert_eq!(json["cueLine"][0]["cues"][0]["value"], "It's");
         assert_eq!(json["cueLine"][0]["cues"][0]["byteStart"], 0);
         assert_eq!(json["cueLine"][0]["cues"][0]["byteEnd"], 3);
         assert_eq!(json["cueLine"][0]["value"], "It's");
-        assert_eq!(json["agents"][0]["agentId"], 2);
-        assert_eq!(json["agents"][0]["agentType"], "vocalist");
-        assert_eq!(json["agents"][0]["agentName"], "Matthew Bellamy");
+        assert_eq!(json["cueLine"][0]["agentId"], "lead");
+        assert_eq!(json["agents"][0]["id"], "lead");
+        assert_eq!(json["agents"][0]["role"], "main");
+        assert_eq!(json["agents"][0]["name"], "Matthew Bellamy");
     }
 }
