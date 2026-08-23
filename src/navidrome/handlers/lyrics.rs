@@ -1,5 +1,3 @@
-use serde::Deserialize;
-
 use crate::navidrome::models::song::{Cue, CueLine, LyricsMode, LyricsSource, LyricsSourceNames};
 // Structured lyrics: getLyricsBySongId and the legacy getLyrics. Tidal
 // returns plain text plus an LRC subtitle track for the same song; the
@@ -7,6 +5,9 @@ use crate::navidrome::models::song::{Cue, CueLine, LyricsMode, LyricsSource, Lyr
 // no kind field unless enhanced=true was requested, no cueLine data.
 use super::{fail, ok};
 use crate::navidrome::ids;
+use crate::navidrome::models::lyrics::{
+    Fetched, Lrclib, Lrcmux, LrcmuxWord, LyricsPlusBody, LyricsPlusToken, SongInfo,
+};
 use crate::navidrome::models::{
     LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse, StructuredLyrics,
 };
@@ -42,30 +43,6 @@ const LYRICS_SOURCES: &[LyricsSource] = &[
         weight: 90,
     },
 ];
-
-// Track metadata that builds the source URLs and fills the Subsonic
-// display fields.
-#[derive(Debug)]
-struct SongInfo {
-    artist: String,
-    title: String,
-    album: String,
-    duration: u32,
-}
-
-// Parsed lyrics from one source, candidate for the ranking. Not a
-// Subsonic response model: the handlers translate line/plain into
-// Lyrics or StructuredLyrics. line carries timed entries when mode is
-// LineSynced, untimed entries otherwise.
-struct Fetched {
-    source: LyricsSourceNames,
-    weight: u32,
-    mode: LyricsMode,
-    line: Vec<LyricLine>,
-    plain: String,
-    // Word/syllable timing emitted only when enhanced=true is requested.
-    cue_line: Vec<CueLine>,
-}
 
 // Fetch the track metadata, then every source concurrently, and order
 // the results by weight. The caller picks the winner.
@@ -203,58 +180,6 @@ async fn fetch_source(
             Ok(normalize(source, &text))
         }
     }
-}
-
-//TODO: Move to different file
-#[derive(Deserialize)]
-struct Lrclib {
-    #[serde(rename = "syncedLyrics")]
-    synced_lyrics: Option<String>,
-    #[serde(rename = "plainLyrics")]
-    plain_lyrics: String,
-}
-
-#[derive(Deserialize)]
-struct LrcmuxLine {
-    text: String,
-    start: u32,
-    end: u32,
-    words: Vec<LrcmuxWord>,
-}
-
-#[derive(Deserialize)]
-struct LrcmuxWord {
-    text: String,
-    start: u32,
-    end: u32,
-}
-
-#[derive(Deserialize)]
-struct Lrcmux {
-    meta: LrcmuxMeta,
-    lines: Vec<LrcmuxLine>,
-}
-
-#[derive(Deserialize, Default)]
-struct LrcmuxMeta {
-    // "word" when lines carry per-word timing.
-    #[serde(default)]
-    level: String,
-}
-
-#[derive(Deserialize)]
-struct LyricsPlusToken {
-    time: u32,
-    #[serde(default)]
-    duration: u32,
-    text: String,
-    #[serde(rename = "isLineEnding")]
-    is_line_ending: u32,
-}
-
-#[derive(Deserialize)]
-struct LyricsPlusBody {
-    lyrics: Vec<LyricsPlusToken>,
 }
 
 fn normalize(source: &LyricsSource, text: &str) -> Option<Fetched> {
@@ -628,10 +553,10 @@ fn parse_plain(text: &str) -> Vec<LyricLine> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Fetched, LrcmuxWord, LyricsPlusToken, LyricsSource, SongInfo, build_url, final_score,
-        lrcmux_cues, mode_bonus, mode_for, mode_rank, normalize, parse_lrc, parse_plain,
-        timestamp_ms, token_cues,
+        LyricsSource, build_url, final_score, lrcmux_cues, mode_bonus, mode_for, mode_rank,
+        normalize, parse_lrc, parse_plain, timestamp_ms, token_cues,
     };
+    use crate::navidrome::models::lyrics::{Fetched, LrcmuxWord, LyricsPlusToken, SongInfo};
     use crate::navidrome::models::song::{LyricsMode, LyricsSourceNames};
 
     const LRC: &str = "[00:00.42] ('Til I'm in the grave)\n\

@@ -4,6 +4,7 @@ pub mod album;
 pub mod artist;
 pub mod browse;
 pub mod favorites;
+pub mod lyrics;
 pub mod misc;
 pub mod playlist;
 pub mod queue;
