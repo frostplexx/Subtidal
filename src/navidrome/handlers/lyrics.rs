@@ -37,7 +37,7 @@ const LYRICS_SOURCES: &[LyricsSource] = &[
     LyricsSource {
         name: LyricsSourceNames::LRCMUX,
         endpoint: Some(
-            "api.lrcmux.dev/get?artist={artist}&title={track}&album={album}&duration={duration}",
+            "https://api.lrcmux.dev/get?artist={artist}&title={track}&album={album}&duration={duration}",
         ),
         weight: 90,
     },
