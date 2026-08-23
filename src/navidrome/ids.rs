@@ -95,4 +95,38 @@ mod tests {
     fn wrong_kind_rejected() {
         assert_eq!(decode(IdKind::Track, "al2"), None);
     }
+
+    use proptest::prelude::*;
+
+    // Client-supplied ID strings drive these functions, so they must never
+    // panic on arbitrary input.
+    proptest! {
+        #[test]
+        fn parse_never_panics(s in ".*") {
+            let _ = parse(&s);
+            let _ = parse_track_id(&s);
+            for kind in [
+                IdKind::Track,
+                IdKind::Album,
+                IdKind::Artist,
+                IdKind::Playlist,
+            ] {
+                let _ = decode(kind, &s);
+            }
+        }
+
+        // Every possible Tidal ID must survive an encode/decode roundtrip.
+        #[test]
+        fn encode_decode_roundtrip(id in any::<u64>()) {
+            for (kind, prefix) in [
+                (IdKind::Track, "t"),
+                (IdKind::Album, "al"),
+                (IdKind::Artist, "ar"),
+                (IdKind::Playlist, "pl"),
+            ] {
+                assert_eq!(decode(kind, &encode(kind, id)), Some(id));
+                assert_eq!(parse(&format!("{prefix}{id}")), Some((kind, id)));
+            }
+        }
+    }
 }

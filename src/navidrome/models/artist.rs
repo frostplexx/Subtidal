@@ -144,6 +144,8 @@ mod tests {
                     name: "X".into(),
                     cover_art: Some("https://example.com/a.jpg".into()),
                     album_count: Some(2),
+                    starred: None,
+                    starred_at: None,
                 },
                 album: vec![AlbumId3 {
                     id: "al1".into(),
@@ -161,6 +163,8 @@ mod tests {
                     genre: None,
                     is_compilation: None,
                     release_types: None,
+                    starred: None,
+                    starred_at: None,
                 }],
             },
         };

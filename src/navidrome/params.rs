@@ -271,4 +271,24 @@ mod tests {
         assert_eq!(p.submission, Some(true));
         assert_eq!(p.time, Some(1786116785370));
     }
+
+    use proptest::prelude::*;
+
+    // Untrusted client input drives this parser, so it must never crash.
+    // Any input must produce a value or an error, never a panic.
+    proptest! {
+        #[test]
+        fn from_merged_never_panics(p in ".*") {
+            let _ = QueryParams::from_merged(&p);
+        }
+
+        #[test]
+        fn merge_raw_never_panics(
+            query in ".*",
+            body in proptest::collection::vec(any::<u8>(), 0..256)
+        ) {
+            let merged = QueryParams::merge_raw(&query, &body);
+            let _ = QueryParams::from_merged(&merged);
+        }
+    }
 }
