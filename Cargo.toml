@@ -24,3 +24,4 @@ bytes = "1.12"
 futures-util = "0.3"
 
 [dev-dependencies]
+proptest = "1"
