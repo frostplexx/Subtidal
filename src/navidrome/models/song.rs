@@ -190,6 +190,31 @@ pub struct Lyrics {
     pub value: String,
 }
 
+
+pub struct LyricsSource {
+    pub name: LyricsSourceNames,
+    pub endpoint: Option<&'static str>,
+    pub weight: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum LyricsMode {
+    Plain,
+    LineSynced,
+    WordSynced,
+    SyllableSynced,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+// LRCLIB and LRCMUX are provider brand names; keep their acronym casing.
+#[allow(clippy::upper_case_acronyms)]
+pub enum LyricsSourceNames {
+    Tidal,
+    LRCLIB,
+    LyricsPlus,
+    LRCMUX,
+}
+
 #[derive(Serialize)]
 pub struct StructuredLyrics {
     #[serde(rename = "displayArtist")]
@@ -202,6 +227,12 @@ pub struct StructuredLyrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
     pub line: Vec<LyricLine>,
+    // OpenSubsonic songLyrics v2 fields. Gated behind enhanced=true:
+    // without them the reply is identical to version 1.
+    #[serde(rename = "cueLine", skip_serializing_if = "Option::is_none")]
+    pub cue_line: Option<Vec<CueLine>>,
+    #[serde(rename = "agents", skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<Agent>>,
 }
 
 #[derive(Serialize)]
@@ -209,6 +240,67 @@ pub struct LyricLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<u32>,
     pub value: String,
+}
+
+// OpenSubsonic songLyrics v2: word/syllable timings for one parent
+// line. index points at the parent entry in structuredLyrics.line.
+// agentId references an entry in structuredLyrics.agents; simple
+// unattributed lyrics omit it. byteStart and byteEnd are 0-based
+// inclusive offsets into the UTF-8 encoding of value.
+#[derive(Serialize)]
+pub struct CueLine {
+    pub index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<u32>,
+    pub value: String,
+    #[serde(rename = "agentId", skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    pub cue: Vec<Cue>,
+}
+
+// One timed word or syllable. start/end are milliseconds; byteStart and
+// byteEnd are 0-based inclusive UTF-8 offsets into cueLine.value. end
+// is present on every cue or none, per the contract.
+#[derive(Serialize)]
+pub struct Cue {
+    pub start: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<u32>,
+    pub value: String,
+    #[serde(rename = "byteStart")]
+    pub byte_start: u32,
+    #[serde(rename = "byteEnd")]
+    pub byte_end: u32,
+}
+
+// The semantic vocal layer of an agent: lead/default vocals, an
+// explicit individual voice part, background vocals, or chorus. Agent
+// emission is not wired up yet, so the role variants are intentionally
+// unused for now.
+#[derive(Serialize)]
+#[allow(dead_code)]
+pub enum AgentRole {
+    #[serde(rename = "main")]
+    Main,
+    #[serde(rename = "voice")]
+    Voice,
+    #[serde(rename = "bg")]
+    Bg,
+    #[serde(rename = "group")]
+    Group,
+}
+
+// A reusable vocal agent within one structuredLyrics entry. id is only
+// meaningful inside that entry. An attributed entry must mark exactly
+// one agent as Main.
+#[derive(Serialize)]
+pub struct Agent {
+    pub id: String,
+    pub role: AgentRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[cfg(test)]
@@ -317,10 +409,64 @@ mod tests {
                 start: Some(0),
                 value: "It's bugging me".into(),
             }],
+            cue_line: None,
+            agents: None,
         })
         .unwrap();
         assert!(json.get("kind").is_none());
+        assert!(json.get("cueLine").is_none());
+        assert!(json.get("agents").is_none());
         assert_eq!(json["line"][0]["start"], 0);
         assert_eq!(json["line"][0]["value"], "It's bugging me");
+    }
+
+    #[test]
+    fn structured_lyrics_emits_v2_fields_with_enhanced() {
+        let json = serde_json::to_value(&StructuredLyrics {
+            display_artist: "Muse".into(),
+            display_title: "Hysteria".into(),
+            lang: "eng".into(),
+            offset: 0,
+            synced: true,
+            kind: Some("main"),
+            line: vec![LyricLine {
+                start: Some(0),
+                value: "It's bugging me".into(),
+            }],
+            cue_line: Some(vec![CueLine {
+                index: 0,
+                start: Some(0),
+                end: Some(900),
+                value: "It's".into(),
+                agent_id: Some("lead".into()),
+                cue: vec![Cue {
+                    start: 0,
+                    end: Some(400),
+                    value: "It's".into(),
+                    byte_start: 0,
+                    byte_end: 3,
+                }],
+            }]),
+            agents: Some(vec![Agent {
+                id: "lead".into(),
+                role: AgentRole::Main,
+                name: Some("Matthew Bellamy".into()),
+            }]),
+        })
+        .unwrap();
+        assert_eq!(json["kind"], "main");
+        assert_eq!(json["cueLine"][0]["index"], 0);
+        assert_eq!(json["cueLine"][0]["start"], 0);
+        assert_eq!(json["cueLine"][0]["end"], 900);
+        assert_eq!(json["cueLine"][0]["cue"][0]["start"], 0);
+        assert_eq!(json["cueLine"][0]["cue"][0]["end"], 400);
+        assert_eq!(json["cueLine"][0]["cue"][0]["value"], "It's");
+        assert_eq!(json["cueLine"][0]["cue"][0]["byteStart"], 0);
+        assert_eq!(json["cueLine"][0]["cue"][0]["byteEnd"], 3);
+        assert_eq!(json["cueLine"][0]["value"], "It's");
+        assert_eq!(json["cueLine"][0]["agentId"], "lead");
+        assert_eq!(json["agents"][0]["id"], "lead");
+        assert_eq!(json["agents"][0]["role"], "main");
+        assert_eq!(json["agents"][0]["name"], "Matthew Bellamy");
     }
 }
