@@ -77,7 +77,6 @@ async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> 
         .join("&");
     let url = format!("{HOST}?{query}");
 
-    tracing::info!("fetching radiant lyrics for track {track_id}: {url}");
     let resp = reqwest::Client::new()
         .get(url)
         .header("P-Access-Token-Id", two_xor(&ENC_ID, &KEY_ID))
@@ -87,7 +86,6 @@ async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> 
         .map_err(Error::Http)?;
     let status = resp.status();
     let body = resp.text().await.map_err(Error::Http)?;
-    tracing::info!("radiant lyrics response for track {track_id}: status {status}, body: {body}");
 
     if !status.is_success() {
         return Err(Error::Tidal(
