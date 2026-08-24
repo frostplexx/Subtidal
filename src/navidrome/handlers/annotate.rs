@@ -50,7 +50,7 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
             continue;
         };
         let detail = match client.track(track_id).await {
-            Ok(v) => v,
+            Ok(v) => v.to_json(),
             Err(e) => {
                 tracing::warn!("scrobble id={id}: track fetch failed: {e}");
                 continue;

@@ -25,6 +25,11 @@ rate_limit = false
 # as read-only playlists.
 show_mixes = true
 
+# Serve word-synced lyrics (word/syllable-level timings with cueLine/cue). 
+# This sends the song metadata (title, artist, isrc, duration, album) to a third-party API.
+# Set to false to fall back to Tidal's built-in lyrics instead.
+# word_synced_lyrics = true
+
 # Optional scrobble backends. Both are best-effort: a failing reporter
 # only logs, never fails the client request. When either block is present,
 # getUser reports scrobblingEnabled=true.

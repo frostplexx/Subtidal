@@ -190,31 +190,6 @@ pub struct Lyrics {
     pub value: String,
 }
 
-
-pub struct LyricsSource {
-    pub name: LyricsSourceNames,
-    pub endpoint: Option<&'static str>,
-    pub weight: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum LyricsMode {
-    Plain,
-    LineSynced,
-    WordSynced,
-    SyllableSynced,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-// LRCLIB and LRCMUX are provider brand names; keep their acronym casing.
-#[allow(clippy::upper_case_acronyms)]
-pub enum LyricsSourceNames {
-    Tidal,
-    LRCLIB,
-    LyricsPlus,
-    LRCMUX,
-}
-
 #[derive(Serialize)]
 pub struct StructuredLyrics {
     #[serde(rename = "displayArtist")]

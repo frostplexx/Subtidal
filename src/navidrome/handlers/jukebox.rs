@@ -107,7 +107,7 @@ pub async fn jukebox_control(q: QueryParams) -> Result<warp::reply::Json, warp::
         for id in &ids {
             match client.track(*id).await {
                 Ok(v) => {
-                    if let Some(child) = song_from_track(&v) {
+                    if let Some(child) = song_from_track(&v.to_json()) {
                         entries.push(child);
                     }
                 }
