@@ -1,8 +1,7 @@
 use crate::navidrome::models::song::{Cue, CueLine};
 // Structured lyrics: getLyricsBySongId and the legacy getLyrics. Tidal
 // returns plain text plus an LRC subtitle track for the same song; the
-// synced one wins when both exist. Only the version 1 shape is served:
-// no kind field unless enhanced=true was requested, no cueLine data.
+// synced one wins when both exist.
 use super::{fail, ok};
 use crate::navidrome::ids;
 use crate::navidrome::models::lyrics::RadiantLyrics;

@@ -139,7 +139,6 @@ pub struct SimilarSongs2 {
 }
 
 // getLyricsBySongId data: { lyricsList: { structuredLyrics: [...] } }.
-// Version 1 shape: kind is omitted unless enhanced=true was requested.
 #[derive(Serialize)]
 pub struct LyricsListResponse {
     #[serde(rename = "lyricsList")]
@@ -202,8 +201,6 @@ pub struct StructuredLyrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
     pub line: Vec<LyricLine>,
-    // OpenSubsonic songLyrics v2 fields. Gated behind enhanced=true:
-    // without them the reply is identical to version 1.
     #[serde(rename = "cueLine", skip_serializing_if = "Option::is_none")]
     pub cue_line: Option<Vec<CueLine>>,
     #[serde(rename = "agents", skip_serializing_if = "Option::is_none")]
