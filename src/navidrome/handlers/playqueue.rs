@@ -126,7 +126,7 @@ async fn fetch_entries(client: &TidalClient, track_ids: &[u64]) -> Vec<Child> {
     for track_id in track_ids {
         match client.track(*track_id).await {
             Ok(v) => {
-                if let Some(song) = song_from_track(&v) {
+                if let Some(song) = song_from_track(&v.to_json()) {
                     entry.push(song);
                 }
             }

@@ -23,6 +23,12 @@ pub struct Settings {
     // getPlaylists as read-only playlists.
     #[serde(default = "default_show_mixes")]
     pub show_mixes: bool,
+    // Serve word-synced lyrics (enhanced v2 with cueLine/cue timings)
+    // from the third-party radiant service. When false, fall back to
+    // Tidal's built-in lyrics. NOTE: radiant sends the song metadata
+    // (title, artist, isrc, duration, album) to a third-party API.
+    #[serde(default = "default_word_synced_lyrics")]
+    pub word_synced_lyrics: bool,
     // Exponential backoff on failed logins (2s, 4s, 8s, ... per client
     // IP). Off by default: behind a reverse proxy every client shares
     // the proxy IP, so one attacker can lock out everyone.
@@ -57,6 +63,10 @@ fn default_tidal_quality() -> String {
 }
 
 fn default_show_mixes() -> bool {
+    true
+}
+
+fn default_word_synced_lyrics() -> bool {
     true
 }
 

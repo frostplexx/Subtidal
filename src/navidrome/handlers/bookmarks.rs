@@ -54,7 +54,7 @@ pub async fn get_bookmarks(_q: QueryParams) -> Result<warp::reply::Json, warp::R
     let mut bookmark: Vec<Bookmark> = Vec::new();
     for b in saved {
         let entry = match client.track(b.track_id).await {
-            Ok(v) => song_from_track(&v),
+            Ok(v) => song_from_track(&v.to_json()),
             Err(e) => {
                 tracing::debug!("tidal track fetch failed (bookmark dropped): {e}");
                 None

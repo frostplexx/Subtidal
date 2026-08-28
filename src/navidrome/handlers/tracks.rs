@@ -26,7 +26,7 @@ pub async fn get_song(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
     };
     let client = crate::tidal::client();
     let detail = match client.track(track_id).await {
-        Ok(v) => v,
+        Ok(v) => v.to_json(),
         Err(e) => {
             tracing::error!("tidal track fetch failed: {e}");
             return Ok(fail(0, "Song unavailable"));
