@@ -345,7 +345,7 @@ fn build_hls_playlist(dash: &crate::tidal::client::DashInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::{pick_random, tidal_quality};
-    use crate::navidrome::models::Child;
+    use crate::navidrome::models::{Child, GenreItem};
     use crate::tidal::client::{DashInfo, Segment};
 
     // Fixture matching the live hi-res MPD: 52 segments of 176128
@@ -422,6 +422,7 @@ mod tests {
             track: 0,
             year,
             genre: genre.map(String::from),
+            genres: genre.map(|g| vec![GenreItem { name: g.to_string() }]),
             cover_art: None,
             duration: 0,
             disc_number: None,

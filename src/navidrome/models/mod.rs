@@ -10,6 +10,7 @@ pub mod playlist;
 pub mod queue;
 pub mod search;
 pub mod song;
+pub use song::GenreItem;
 pub mod system;
 pub mod transcode;
 

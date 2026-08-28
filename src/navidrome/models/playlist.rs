@@ -80,6 +80,7 @@ mod tests {
                 track: 1,
                 year: None,
                 genre: None,
+                genres: None,
                 cover_art: None,
                 duration: 220,
                 disc_number: None,

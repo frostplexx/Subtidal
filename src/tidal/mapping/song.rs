@@ -2,7 +2,7 @@
 use serde_json::Value;
 
 use crate::navidrome::ids;
-use crate::navidrome::models::{Child, ReplayGain};
+use crate::navidrome::models::{Child, GenreItem, ReplayGain};
 
 use super::{cover_url, primary_artist, year_from};
 
@@ -22,6 +22,10 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         .as_str()
         .map(String::from)
         .or_else(|| album.get("genre").and_then(|g| g.as_str()).map(String::from));
+    // The same value as the OpenSubsonic genres array.
+    let genres = genre
+        .as_ref()
+        .map(|g| vec![GenreItem { name: g.clone() }]);
     // v2 tracks carry no audioQuality; every stream is served as an HLS
     // playlist of MP4 segments, so the container is always m4a.
     Some(Child {
@@ -35,6 +39,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         track: v["trackNumber"].as_u64().unwrap_or(0) as u32,
         year,
         genre,
+        genres,
         cover_art: album
             .get("cover")
             .and_then(|c| c.as_str())

@@ -80,6 +80,7 @@ mod tests {
             track: 1,
             year: Some(2023),
             genre: Some("rock".into()),
+            genres: None,
             cover_art: None,
             duration: 200,
             disc_number: None,
