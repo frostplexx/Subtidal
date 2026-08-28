@@ -7,20 +7,41 @@ use super::{cover_url, song::song_from_track};
 
 // Tidal playlist ids are UUIDs; Subsonic keeps them as opaque strings.
 // squareImage is a cover UUID; coverArt carries the full image URL so
-// clients that accept URLs skip getCoverArt entirely.
+// clients that accept URLs skip getCoverArt entirely. The v2 attributes
+// use accessType/numberOfTrackItems/createdAt/lastModifiedAt and an ISO
+// 8601 duration string; the older names stay as fallbacks for drift.
 pub fn playlist_from_tidal(v: &Value) -> Option<Playlist> {
     let id = v["uuid"].as_str()?.to_string();
     let name = v["title"].as_str()?.to_string();
+    let song_count = v["numberOfTrackItems"]
+        .as_u64()
+        .or_else(|| v["numberOfItems"].as_u64())
+        .or_else(|| v["numberOfTracks"].as_u64())
+        .map(|n| n as u32);
+    let known_tracks = song_count.unwrap_or(0) > 0;
     Some(Playlist {
         id,
         name,
         comment: v["description"].as_str().map(String::from),
         owner: v["creator"]["name"].as_str().map(String::from),
-        r#public: v["publicPlaylist"].as_bool().unwrap_or(false),
-        song_count: v["numberOfTracks"].as_u64().map(|n| n as u32),
-        duration: v["duration"].as_u64().map(|n| n as u32),
-        created: v["created"].as_str().map(String::from),
-        changed: v["lastUpdated"].as_str().map(String::from),
+        r#public: v["accessType"].as_str() == Some("PUBLIC")
+            || v["publicPlaylist"].as_bool().unwrap_or(false),
+        song_count,
+        // A missing duration plus any count makes clients divide by
+        // nothing and show NaN; 0 keeps the row renderable.
+        duration: v["duration"]
+            .as_str()
+            .and_then(iso_duration_seconds)
+            .or_else(|| v["duration"].as_u64().map(|n| n as u32))
+            .or_else(|| known_tracks.then_some(0)),
+        created: v["createdAt"]
+            .as_str()
+            .or_else(|| v["created"].as_str())
+            .map(String::from),
+        changed: v["lastModifiedAt"]
+            .as_str()
+            .or_else(|| v["lastUpdated"].as_str())
+            .map(String::from),
         cover_art: v["squareImage"]
             .as_str()
             .or_else(|| v["image"].as_str())
@@ -64,6 +85,33 @@ pub fn mixes_from_page(v: &Value) -> Vec<Value> {
         }
     }
     out
+}
+
+// v2 playlist durations are ISO 8601 strings such as "P30M5S" (Tidal
+// omits the T separator and means M as minutes, not months) or
+// "PT1H2M3S". Seconds only; a malformed string yields None.
+fn iso_duration_seconds(s: &str) -> Option<u32> {
+    let mut secs: u64 = 0;
+    let mut num: u64 = 0;
+    for ch in s.strip_prefix('P')?.chars() {
+        match ch {
+            '0'..='9' => num = num * 10 + u64::from(ch as u8 - b'0'),
+            // T is the (optional) date/time separator; ignore it.
+            'T' => num = 0,
+            'D' | 'H' | 'M' | 'S' => {
+                secs += num
+                    * match ch {
+                        'D' => 86400,
+                        'H' => 3600,
+                        'M' => 60,
+                        _ => 1,
+                    };
+                num = 0;
+            }
+            _ => return None,
+        }
+    }
+    u32::try_from(secs).ok()
 }
 
 // Map a mix object to a Subsonic Playlist. The id keeps an mx prefix so
@@ -127,22 +175,40 @@ mod tests {
             "title": "Morning Drive",
             "description": "Upbeat",
             "creator": {"id": 1, "name": "Ada"},
-            "numberOfTracks": 42,
-            "duration": 9134,
-            "publicPlaylist": true,
-            "created": "2023-01-15T10:00:00.000Z",
-            "lastUpdated": "2024-02-01T08:30:00.000Z",
+            "accessType": "PUBLIC",
+            "numberOfTrackItems": 42,
+            "duration": "P30M5S",
+            "createdAt": "2023-01-15T10:00:00.000Z",
+            "lastModifiedAt": "2024-02-01T08:30:00.000Z",
             "squareImage": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
         });
         let pl = playlist_from_tidal(&p).unwrap();
         assert_eq!(pl.id, "0f31-6c0a");
         assert_eq!(pl.owner.as_deref(), Some("Ada"));
         assert_eq!(pl.song_count, Some(42));
+        // "P30M5S" is 30 minutes 5 seconds, not months.
+        assert_eq!(pl.duration, Some(1805));
         assert!(pl.r#public);
+        assert_eq!(pl.created.as_deref(), Some("2023-01-15T10:00:00.000Z"));
+        assert_eq!(pl.changed.as_deref(), Some("2024-02-01T08:30:00.000Z"));
         assert_eq!(
             pl.cover_art.as_deref(),
             Some("https://resources.tidal.com/images/1a2b3c4d/5e6f/4a7b/8c9d/0e1f2a3b4c5d/320x320.jpg")
         );
+    }
+
+    #[test]
+    fn playlist_duration_parses_iso_8601_variants() {
+        assert_eq!(iso_duration_seconds("PT1H2M3S"), Some(3723));
+        assert_eq!(iso_duration_seconds("P1DT2H"), Some(93600));
+        assert_eq!(iso_duration_seconds("P45S"), Some(45));
+        assert_eq!(iso_duration_seconds("garbage"), None);
+        // Numeric legacy fallback stays intact.
+        let p = json!({"uuid": "u1", "title": "T", "duration": 9134});
+        assert_eq!(playlist_from_tidal(&p).unwrap().duration, Some(9134));
+        // Missing duration with a known count renders 0, never NaN.
+        let p = json!({"uuid": "u2", "title": "T2", "numberOfTrackItems": 7});
+        assert_eq!(playlist_from_tidal(&p).unwrap().duration, Some(0));
     }
 
 

@@ -216,7 +216,6 @@ mod tests {
         let song = crate::tidal::mapping::song_from_track(&json!({
             "id": 123,
             "title": "Song One",
-            "audioQuality": "LOSSLESS",
             "duration": 220,
             "trackNumber": 3,
             "artists": [{"id": 9, "name": "Artist A"}],
@@ -229,7 +228,7 @@ mod tests {
         assert_eq!(json["isDir"], false);
         assert_eq!(json["isVideo"], false);
         assert_eq!(json["type"], "song");
-        assert_eq!(json["contentType"], "audio/flac");
+        assert_eq!(json["contentType"], "audio/mp4");
         assert_eq!(json["track"], 3);
         assert_eq!(json["albumId"], "al456");
         assert_eq!(json["artistId"], "ar9");

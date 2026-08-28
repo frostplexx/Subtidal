@@ -68,7 +68,7 @@ async fn fill_mix_counts(client: &'static TidalClient, mixes: &mut [Playlist]) {
             match client.mix_items(&mix_id, 0, 1).await {
                 Ok(v) => v["totalNumberOfItems"].as_u64().map(|n| n as u32),
                 Err(e) => {
-                    tracing::debug!("tidal mix count fetch failed: {e}");
+                    tracing::debug!(mix_id = %mix_id, "tidal mix count fetch failed: {e}");
                     None
                 }
             }
@@ -265,11 +265,24 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
     indices.sort_unstable();
     indices.dedup();
     if !indices.is_empty() {
-        let raw = match playlist_raw_indices(client, pid, &indices).await {
+        // v2 deletes by item id, so the removal maps Subsonic track
+        // positions to the current playlist entries first.
+        let entries = match client.playlist_all_items(pid).await {
             Ok(v) => v,
             Err(e) => return Ok(mutation_error(e, "Playlist update failed")),
         };
-        if let Err(e) = client.playlist_remove_indices(pid, &raw).await {
+        let mut addr: Vec<crate::tidal::client::ItemAddr> = Vec::new();
+        let mut tracks_seen = 0u32;
+        for e in &entries {
+            if e["type"].as_str() == Some("tracks") && indices.contains(&tracks_seen) {
+                if let (Some(id), Some(item_id)) = (entry_id(e), e["meta"]["itemId"].as_str())
+                {
+                    addr.push(("tracks".to_string(), id, item_id.to_string()));
+                }
+                tracks_seen += 1;
+            }
+        }
+        if let Err(e) = client.playlist_remove_items(pid, &addr).await {
             return Ok(mutation_error(e, "Playlist update failed"));
         }
     }
@@ -330,64 +343,33 @@ async fn playlist_response(
 }
 
 // Replace a playlist's tracks with the given ones: clear, then add.
-// Tidal deletes by raw item position (tracks and videos alike), so the
-// clear collects every current index and drops them in one request.
+// v2 deletes by item id, so the clear collects every current entry's
+// (type, id, itemId) address and drops them all in one request.
 async fn replace_songs(client: &TidalClient, uuid: &str, track_ids: &[u64]) -> Result<(), Error> {
-    let mut raw: Vec<u32> = Vec::new();
-    let mut offset = 0u32;
-    loop {
-        let page = client.playlist_items(uuid, offset, 100).await?;
-        let batch: Vec<Value> = page["items"].as_array().cloned().unwrap_or_default();
-        for i in 0..batch.len() {
-            raw.push(offset + i as u32);
-        }
-        offset += 100;
-        if batch.is_empty() || batch.len() < 100 {
-            break;
-        }
-    }
-    client.playlist_remove_indices(uuid, &raw).await?;
+    let entries = client.playlist_all_items(uuid).await?;
+    let addr: Vec<crate::tidal::client::ItemAddr> = entries
+        .iter()
+        .filter_map(|e| {
+            Some((
+                e["type"].as_str().unwrap_or("tracks").to_string(),
+                entry_id(e)?,
+                e["meta"]["itemId"].as_str()?.to_string(),
+            ))
+        })
+        .collect();
+    client.playlist_remove_items(uuid, &addr).await?;
     if !track_ids.is_empty() {
         client.playlist_add_tracks(uuid, track_ids).await?;
     }
     Ok(())
 }
 
-// Raw item positions (indices into Tidal's items array, tracks and
-// videos) of the given Subsonic track positions. Subsonic entries count
-// only tracks; Tidal deletes by raw position, so the mapping walks the
-// items and counts tracks. Out-of-range positions are dropped.
-async fn playlist_raw_indices(
-    client: &TidalClient,
-    uuid: &str,
-    track_positions: &[u32],
-) -> Result<Vec<u32>, Error> {
-    let Some(&max) = track_positions.iter().max() else {
-        return Ok(Vec::new());
-    };
-    let mut raw: Vec<u32> = Vec::new();
-    let mut tracks_seen = 0u32;
-    let mut offset = 0u32;
-    'outer: loop {
-        let page = client.playlist_items(uuid, offset, 100).await?;
-        let batch: Vec<Value> = page["items"].as_array().cloned().unwrap_or_default();
-        for (i, e) in batch.iter().enumerate() {
-            if e["type"].as_str() == Some("track") {
-                if track_positions.contains(&tracks_seen) {
-                    raw.push(offset + i as u32);
-                }
-                tracks_seen += 1;
-                if tracks_seen > max {
-                    break 'outer;
-                }
-            }
-        }
-        offset += 100;
-        if batch.is_empty() || batch.len() < 100 {
-            break;
-        }
-    }
-    Ok(raw)
+// The resource id of one playlist item entry, numeric or UUID.
+fn entry_id(e: &serde_json::Value) -> Option<String> {
+    e["item"]["id"]
+        .as_str()
+        .map(String::from)
+        .or_else(|| e["item"]["id"].as_u64().map(|n| n.to_string()))
 }
 
 // Map a Tidal mutation error: 404 and 403 (missing or foreign playlist)

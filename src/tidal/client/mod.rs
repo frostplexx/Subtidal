@@ -19,6 +19,7 @@ mod artists;
 mod auth;
 mod favorites;
 mod feed;
+mod jsonapi;
 mod playlists;
 mod search;
 mod stream;
@@ -27,6 +28,7 @@ use stream::StreamLimiter;
 // Test fixtures construct Segment values directly.
 #[cfg(test)]
 pub(crate) use stream::Segment;
+pub(crate) use playlists::ItemAddr;
 mod tracks;
 mod users;
 
@@ -251,7 +253,98 @@ impl TidalClient {
             .map(|(k, v)| format!("{}={}", k, percent_encode(v)))
             .collect::<Vec<_>>()
             .join("&");
-        self.get_json_base(base, &format!("{path}?{query}"), cache).await
+        self.get_json_base(base, &format!("{path}?{query}"), cache)
+            .await
+    }
+
+    // --- OpenAPI (JSON:API) helpers --------------------------------
+    // The v2 host differs from v1 in three ways: no countryCode query
+    // param (it derives from the token; sending one errors), the
+    // mandatory x-tidal-client-version header, and query values that
+    // keep commas and brackets literal (the official SDK serializes
+    // with allowReserved, so `filter[query]` keys and comma-joined
+    // include lists pass through raw).
+    async fn openapi_get(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        let query: String = if params.is_empty() {
+            String::new()
+        } else {
+            let q = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("?{q}")
+        };
+        self.openapi_get_raw(&format!("{path}{query}"), cache).await
+    }
+
+    // GET with an already-fully-formed path+query string. Pagination
+    // cursors come back opaque and must re-send verbatim, so walkers
+    // append them here rather than through percent-encoding.
+    async fn openapi_get_raw(
+        &self,
+        full_path: &str,
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        if let Some(v) = cache.get(full_path).await {
+            return Ok(v);
+        }
+        let token = self.access_token().await?;
+        let resp = self
+            .http
+            .get(format!("{OPENAPI_URL}{full_path}"))
+            .bearer_auth(token)
+            .header("x-tidal-client-version", CLIENT_VERSION)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await?;
+        if !status.is_success() {
+            return Err(Error::Tidal(status.as_u16(), body.to_string()));
+        }
+        cache.insert(full_path.to_string(), body.clone()).await;
+        Ok(body)
+    }
+
+    // Mutating JSON:API request (POST/PATCH/DELETE). Never cached.
+    // JSON:API errors read the `errors` array for the message.
+    async fn openapi_send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        payload: Option<&Value>,
+    ) -> Result<Value, Error> {
+        let token = self.access_token().await?;
+        let mut req = self
+            .http
+            .request(method, format!("{OPENAPI_URL}{path}"))
+            .bearer_auth(token)
+            .header("x-tidal-client-version", CLIENT_VERSION);
+        req = match payload {
+            Some(body) => req
+                .header("content-type", "application/vnd.api+json")
+                .json(body),
+            None => req,
+        };
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        let body: Value = serde_json::from_str(&text).unwrap_or(serde_json::json!(null));
+        if !status.is_success() {
+            // JSON:API errors read prettier than the raw document.
+            let message = body["errors"][0]["detail"]
+                .as_str()
+                .or_else(|| body["errors"][0]["title"].as_str())
+                .map(String::from)
+                .unwrap_or(text);
+            return Err(Error::Tidal(status.as_u16(), message));
+        }
+        Ok(body)
     }
 }
 

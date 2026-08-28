@@ -1,6 +1,7 @@
-// Stream metadata: playbackinfo manifest decoding. Backs the stream
-// endpoint, which 302-redirects to a single-file Tidal CDN URL, or, for
-// hi-res FLAC, rewrites the segmented DASH manifest into an HLS playlist.
+// Stream metadata: trackManifests decoding. Backs the stream endpoint,
+// which rewrites the DASH manifest into an HLS playlist of Tidal's own
+// CDN segment URLs. v2 always answers MPEG_DASH, so every stream is
+// served as HLS.
 use std::collections::VecDeque;
 use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
@@ -11,7 +12,7 @@ use regex::Regex;
 use serde_json::Value;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use super::{Error, TidalClient, API_URL};
+use super::{Error, TidalClient, API_URL, OPENAPI_URL};
 
 // One run of equal-length segments from the DASH SegmentTimeline.
 // count is r+1: DASH repeats a duration r extra times.
@@ -37,6 +38,9 @@ pub struct DashInfo {
 
 // Stream metadata for one track.
 pub struct StreamInfo {
+    // Kept for shape parity and tests; the handlers no longer branch on
+    // mime type (v2 always answers DASH).
+    #[allow(dead_code)]
     pub mime_type: String,
     // Direct single-file URL when the manifest is playable as one file
     // (BTS). Segmented DASH (hi-res FLAC) has no such URL; the stream
@@ -227,33 +231,34 @@ fn new_session_id() -> String {
 }
 
 impl TidalClient {
-    // Fetch playbackinfo for one track at the given quality tier.
-    // Never cached: the CDN URLs carry short-lived signed tokens.
+    // Fetch a track manifest at the given quality tier. Never cached:
+    // the CDN URLs carry short-lived signed tokens. v2 has no BTS and no
+    // quality tiers: the manifest always answers MPEG_DASH, so the tiers
+    // only widen the format list. The tier-retry loop lives on in
+    // stream_info_v1 and is not needed here.
     pub async fn stream_info(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
         // Throttle: wait (bounded) for a concurrency and window slot.
         // The permit stays held across the HTTP call.
         let _permit = self.stream_limiter.acquire().await?;
         let token = self.access_token().await?;
-        let cc = self.country_code().await?;
         // One playback session per fetch, like the official app, which
         // sends X-Playback-Session-Id on every request of a download.
         let session_id = new_session_id();
-        let mut query = vec![
-            ("audioquality", quality),
-            ("playbackmode", mode),
-            ("assetpresentation", "FULL"),
-        ];
-        if let Some(cc) = &cc {
-            query.push(("countryCode", cc.as_str()));
-        }
+        let formats = audio_quality_to_formats(quality);
         let result = async {
             let resp = self
                 .http
-                .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
+                .get(format!("{}/trackManifests/{track_id}", OPENAPI_URL))
                 .bearer_auth(token)
                 .header("x-tidal-client-version", super::CLIENT_VERSION)
                 .header("X-Playback-Session-Id", session_id)
-                .query(&query)
+                .query(&[
+                    ("manifestType", "MPEG_DASH"),
+                    ("formats", formats),
+                    ("uriScheme", "DATA"),
+                    ("usage", if mode == "OFFLINE" { "DOWNLOAD" } else { "PLAYBACK" }),
+                    ("adaptive", "false"),
+                ])
                 .send()
                 .await?;
             let status = resp.status();
@@ -268,7 +273,7 @@ impl TidalClient {
             if !status.is_success() {
                 return Err(Error::Tidal(status.as_u16(), body.to_string()));
             }
-            parse_stream(body)
+            parse_manifest(body)
         }
         .await;
         // Feed the circuit breaker: non-JSON bodies, 429, and 5xx are
@@ -303,10 +308,97 @@ impl TidalClient {
             }
         }
     }
+
+    // --- v1 backup (dead code) -------------------------------------
+    #[allow(dead_code)]
+    pub async fn stream_info_v1(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
+        let _permit = self.stream_limiter.acquire().await?;
+        let token = self.access_token().await?;
+        let cc = self.country_code().await?;
+        let session_id = new_session_id();
+        let mut query = vec![
+            ("audioquality", quality),
+            ("playbackmode", mode),
+            ("assetpresentation", "FULL"),
+        ];
+        if let Some(cc) = &cc {
+            query.push(("countryCode", cc.as_str()));
+        }
+        let result = async {
+            let resp = self
+                .http
+                .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
+                .bearer_auth(token)
+                .header("x-tidal-client-version", super::CLIENT_VERSION)
+                .header("X-Playback-Session-Id", session_id)
+                .query(&query)
+                .send()
+                .await?;
+            let status = resp.status();
+            let text = resp.text().await?;
+            let body: Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => return Err(Error::HttpDecode(status.as_u16(), text)),
+            };
+            if !status.is_success() {
+                return Err(Error::Tidal(status.as_u16(), body.to_string()));
+            }
+            parse_stream_v1(body)
+        }
+        .await;
+        let outcome = match &result {
+            Ok(_) => FetchOutcome::Success,
+            Err(e) if throttle_signature(e) => FetchOutcome::Throttled,
+            _ => FetchOutcome::Other,
+        };
+        self.stream_limiter.note(outcome);
+        result
+    }
 }
 
-// Decode a playbackinfo manifest into StreamInfo.
-fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
+// The format set per quality tier, mirroring the SDK's audioQualityToFormats.
+fn audio_quality_to_formats(quality: &str) -> &'static str {
+    match quality {
+        "HI_RES" => "HEAACV1,AACLC,FLAC,FLAC_HIRES",
+        "LOSSLESS" => "HEAACV1,AACLC,FLAC",
+        "HIGH" => "HEAACV1,AACLC",
+        _ => "HEAACV1",
+    }
+}
+
+// Decode a v2 trackManifests document: attributes.uri is a base64 data
+// URI carrying the MPD. A plain https uri (uriScheme=DATA should prevent
+// it, but defensively) becomes a direct stream URL.
+fn parse_manifest(body: Value) -> Result<StreamInfo, Error> {
+    let attrs = &body["data"]["attributes"];
+    let uri = attrs["uri"]
+        .as_str()
+        .ok_or_else(|| Error::Auth("response missing manifest".into()))?;
+    if let Some(url) = uri.strip_prefix("https://") {
+        return Ok(StreamInfo {
+            mime_type: "application/vnd.tidal.bts".into(),
+            direct_url: Some(format!("https://{url}")),
+            dash: None,
+        });
+    }
+    let b64 = uri
+        .strip_prefix("data:application/dash+xml;base64,")
+        .ok_or_else(|| Error::Auth("unexpected manifest uri".into()))?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+        .map_err(|e| Error::Auth(format!("manifest decode failed: {e}")))?;
+    let manifest = String::from_utf8_lossy(&decoded).into_owned();
+    let dash = parse_dash(&manifest);
+    Ok(StreamInfo {
+        mime_type: "application/dash+xml".into(),
+        direct_url: None,
+        dash,
+    })
+}
+
+#[allow(dead_code)]
+fn parse_stream_v1(body: Value) -> Result<StreamInfo, Error> {
     let mime = body["manifestMimeType"].as_str().unwrap_or("").to_string();
     let manifest_b64 = body["manifest"]
         .as_str()
@@ -317,7 +409,6 @@ fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
         .map_err(|e| Error::Auth(format!("manifest decode failed: {e}")))?;
     let manifest = String::from_utf8_lossy(&decoded).into_owned();
     let direct_url = if mime.contains("bts") {
-        // BTS: JSON with a direct single-file URL.
         serde_json::from_str::<Value>(&manifest)
             .ok()
             .and_then(|v| v["urls"].get(0).and_then(|u| u.as_str()).map(String::from))
@@ -416,8 +507,25 @@ fn parse_segments(block: &str) -> Vec<Segment> {
 fn tag_attrs(tag: &str) -> Vec<(String, String)> {
     RE_ATTR
         .captures_iter(tag)
-        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .map(|c| (c[1].to_string(), xml_unescape(&c[2])))
         .collect()
+}
+
+// An MPD is XML, so '&' inside a URL attribute is written '&amp;'.
+// Segment URLs keep the raw text otherwise, and a player fetching
+// '...token=X&amp;info=Y' mangles the query string into 'amp;info=Y',
+// which the CDN signature check rejects with 403. Decode the small
+// entity set; '&amp;' last so '&amp;lt;' decodes to literal '&lt;'.
+fn xml_unescape(s: &str) -> String {
+    let mut out = s
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'");
+    if s.contains("&amp;") {
+        out = out.replace("&amp;", "&");
+    }
+    out
 }
 
 fn str_attr(attrs: &[(String, String)], name: &str) -> Option<String> {
@@ -498,6 +606,30 @@ mod tests {
     }
 
     #[test]
+    fn unescapes_xml_entities_in_segment_urls() {
+        // A real v2 MPD escapes '&' inside its URL attributes as '&amp;'.
+        // The served playlist must carry the decoded single '&', or the
+        // player mangles the query string and the CDN answers 403.
+        let mpd = r#"<MPD><Period><AdaptationSet mimeType="audio/mp4"><Representation id="AACLC,44100,16" codecs="mp4a.40.2" bandwidth="1234" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T&amp;info=UEx&amp;foo=1" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T&amp;info=UExWQ&amp;bar=2" startNumber="1"><SegmentTimeline><S d="176128" r="2"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
+        let d = parse_dash(mpd).expect("parses");
+        assert_eq!(
+            d.init_url,
+            "https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T&info=UEx&foo=1"
+        );
+        assert!(!d.media_url.contains("&amp;"));
+        assert!(d.media_url.contains("?token=T"));
+        assert!(d.media_url.contains("&info=UExWQ&bar=2"));
+    }
+
+    #[test]
+    fn unescapes_amp_last() {
+        // '&amp;lt;' is a literal '&lt;' after decoding, never '<'.
+        assert_eq!(xml_unescape("&amp;lt;"), "&lt;");
+        assert_eq!(xml_unescape("a&amp;b"), "a&b");
+        assert_eq!(xml_unescape("&lt;&amp;&quot;"), "<&\"");
+    }
+
+    #[test]
     fn parses_hires_dash() {
         let d = parse_dash(MPD).expect("parses");
         assert_eq!(d.bandwidth, 1616237);
@@ -532,9 +664,48 @@ mod tests {
             "manifestMimeType": "application/vnd.tidal.bts",
             "manifest": base64::engine::general_purpose::STANDARD.encode(r#"{"mimeType":"audio/mp4","codecs":"mp4a.40.2","encryptionType":"NONE","urls":["https://cdn/1.mp4?token=x"]}"#)
         });
-        let info = parse_stream(body).unwrap();
+        let info = parse_stream_v1(body).unwrap();
         assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
         assert!(info.dash.is_none());
+    }
+
+    #[test]
+    fn parses_v2_manifest_document() {
+        let mpd = MPD;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(mpd);
+        let body: Value = serde_json::json!({
+            "data": {
+                "type": "trackManifests",
+                "id": "7",
+                "attributes": {
+                    "uri": format!("data:application/dash+xml;base64,{b64}"),
+                    "formats": ["HEAACV1", "AACLC", "FLAC", "FLAC_HIRES"],
+                },
+            },
+        });
+        let info = parse_manifest(body).unwrap();
+        assert_eq!(info.mime_type, "application/dash+xml");
+        assert!(info.direct_url.is_none());
+        let dash = info.dash.expect("dash parsed");
+        assert_eq!(dash.bandwidth, 1616237);
+    }
+
+    #[test]
+    fn parses_v2_https_uri_as_direct_url() {
+        let body: Value = serde_json::json!({
+            "data": { "attributes": { "uri": "https://cdn/1.mp4?token=x" } }
+        });
+        let info = parse_manifest(body).unwrap();
+        assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
+        assert!(info.dash.is_none());
+    }
+
+    #[test]
+    fn formats_follow_tier() {
+        assert_eq!(audio_quality_to_formats("HI_RES"), "HEAACV1,AACLC,FLAC,FLAC_HIRES");
+        assert_eq!(audio_quality_to_formats("LOSSLESS"), "HEAACV1,AACLC,FLAC");
+        assert_eq!(audio_quality_to_formats("HIGH"), "HEAACV1,AACLC");
+        assert_eq!(audio_quality_to_formats("LOW"), "HEAACV1");
     }
 
     #[test]

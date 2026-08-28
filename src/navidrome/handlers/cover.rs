@@ -45,7 +45,10 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
     // redirect.
     if id.starts_with("http") {
         if tidal_image_url(id) {
-            return Ok(redirect(id.clone()));
+            // Rebuild the URL at the requested size; the artwork href
+            // has a baked resolution (e.g. 1280x1280) that a 300px
+            // request must not inherit.
+            return Ok(redirect(cover_url(id, size)));
         }
         return Ok(fail(70, "Cover art not found").into_response());
     }
@@ -99,4 +102,48 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
     };
     let url = if artist_pic { artist_pic_url(&uuid, size) } else { cover_url(&uuid, size) };
     Ok(redirect(url))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::navidrome::params::QueryParams;
+
+    // The Location header of a getCoverArt reply for the given query.
+    async fn location_for(query: &str) -> String {
+        let q = QueryParams::from_merged(query).unwrap();
+        let resp = get_cover_art(q).await.unwrap();
+        resp.headers()
+            .get("Location")
+            .expect("redirect")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn echoed_image_url_is_resized_to_requested_size() {
+        // A playlist cover echoed back with a baked 320x320 must serve
+        // the exact requested 80 (which the CDN has), not 160.
+        let loc = location_for(
+            "id=https://resources.tidal.com/images/3536e16f/a438/4fdf/8935/e58e8bb4a68b/320x320.jpg&u=admin&s=olZ9Uk6yHaPd&t=x&v=1.13.0&c=Feishin&size=80",
+        )
+        .await;
+        assert_eq!(
+            loc,
+            "https://resources.tidal.com/images/3536e16f/a438/4fdf/8935/e58e8bb4a68b/80x80.jpg"
+        );
+    }
+
+    #[tokio::test]
+    async fn echoed_oversized_image_gets_downscaled() {
+        let loc = location_for(
+            "id=https://resources.tidal.com/images/3536e16f/a438/4fdf/8935/e58e8bb4a68b/1280x1280.jpg&u=admin&s=x&t=x&v=1.13.0&c=Feishin&size=300",
+        )
+        .await;
+        assert_eq!(
+            loc,
+            "https://resources.tidal.com/images/3536e16f/a438/4fdf/8935/e58e8bb4a68b/320x320.jpg"
+        );
+    }
 }

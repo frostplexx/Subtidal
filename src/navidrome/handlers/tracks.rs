@@ -211,13 +211,11 @@ fn default_tier() -> &'static str {
     }
 }
 
-// stream: resolve a track to a Tidal CDN stream and serve it. Single-file
-// BTS streams (AAC) 302-redirect; the server never touches the audio
-// bytes. With format=hls the handler asks for HI_RES: hi-res tracks
-// answer segmented DASH (FLAC 24-bit), which is rewritten into an HLS
-// playlist pointing at Tidal's own init + segment URLs, so FLAC also
-// flows client-to-CDN without server egress. Tidal has no AAC HLS, so
-// hls requests ignore maxBitRate. Ids are t<id> or bare numbers.
+// stream: resolve a track to its v2 manifest and serve it as an HLS
+// playlist of Tidal's own CDN segment URLs (v2 has no BTS single-file
+// streams, so every request is segmented). The playlist points at the
+// init + numbered segments; no audio bytes cross this server. Ids are
+// t<id> or bare numbers.
 pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing").into_response());
@@ -226,60 +224,46 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
         return Ok(fail(70, "Song not found").into_response());
     };
     let client = crate::tidal::client();
-    let wants_hls = q.format.as_deref() == Some("hls");
-    let tier = if wants_hls {
-        "HI_RES"
-    } else if q.max_bit_rate.is_none() && q.format.is_none() {
+    let tier = if q.max_bit_rate.is_none() && q.format.is_none() {
         default_tier()
     } else {
         tidal_quality(q.max_bit_rate, q.format.as_deref())
     };
-    let mut tier: &str = tier;
-    loop {
-        match client.stream_info(track_id, tier, "STREAM").await {
-            Ok(info) => {
-                if let Some(url) = info.direct_url {
-                    tracing::debug!("stream {track_id} tier={tier} -> redirect");
-                    return Ok(redirect(url));
-                }
-                if wants_hls && let Some(dash) = &info.dash {
-                    tracing::debug!(
-                        "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
-                        dash.sample_rate, dash.bit_depth, dash.codec
-                    );
-                    return Ok(hls_reply(build_hls_playlist(dash)));
-                }
+    match client.stream_info(track_id, tier, "STREAM").await {
+        Ok(info) => {
+            // A direct url is not expected on v2 (uriScheme=DATA), but
+            // the parse defends against a manifest host change.
+            if let Some(url) = info.direct_url {
+                tracing::debug!("stream {track_id} tier={tier} -> redirect");
+                return Ok(redirect(url));
+            }
+            if let Some(dash) = &info.dash {
                 tracing::debug!(
-                    "tier {tier} returned {} for track {track_id}; retrying HIGH",
-                    info.mime_type
+                    "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
+                    dash.sample_rate, dash.bit_depth, dash.codec
                 );
-                if tier == "HIGH" {
-                    break;
-                }
-                tier = "HIGH";
+                return Ok(hls_reply(build_hls_playlist(dash)));
             }
-            Err(e) => {
-                if matches!(e, Error::RateLimited) {
-                    tracing::warn!("tidal stream limit hit for track {track_id}");
-                    break;
-                }
-                if e.is_unavailable_asset() {
-                    tracing::warn!("track {track_id} not playable on tidal: {e}");
-                    return Ok(fail(70, "Song not found").into_response());
-                }
-                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-                break;
+            tracing::debug!("manifest for track {track_id} carried no playable stream");
+        }
+        Err(e) => {
+            if matches!(e, Error::RateLimited) {
+                tracing::warn!("tidal stream limit hit for track {track_id}");
+                return Ok(fail(0, "Stream unavailable").into_response());
             }
+            if e.is_unavailable_asset() {
+                tracing::warn!("track {track_id} not playable on tidal: {e}");
+                return Ok(fail(70, "Song not found").into_response());
+            }
+            tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
         }
     }
     Ok(fail(0, "Stream unavailable").into_response())
 }
 
-// download: a song as a 302 to its Tidal CDN stream URL, like stream.
+// download: a song's manifest served as an HLS playlist, like stream.
 // Subsonic allows several ids (a zip archive); the server builds no zip,
-// so a multi-id request fails. Only direct single-file streams (BTS)
-// serve as downloads; segmented hi-res DASH has no single URL and
-// cascades a tier down to HIGH. The manifest is requested in offline
+// so a multi-id request fails. The manifest is requested in offline
 // mode, like the official app's downloader; a mode rejection falls back
 // to the streaming mode.
 pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
@@ -299,30 +283,25 @@ pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rej
     } else {
         tidal_quality(q.max_bit_rate, q.format.as_deref())
     };
-    let mut tier: &str = tier;
-    loop {
-        match client.download_info(track_id, tier).await {
-            Ok(info) => {
-                if let Some(url) = info.direct_url {
-                    return Ok(redirect(url));
-                }
-                if tier == "HIGH" {
-                    break;
-                }
-                tier = "HIGH";
+    match client.download_info(track_id, tier).await {
+        Ok(info) => {
+            if let Some(url) = info.direct_url {
+                return Ok(redirect(url));
             }
-            Err(e) => {
-                if matches!(e, Error::RateLimited) {
-                    tracing::warn!("tidal stream limit hit for track {track_id}");
-                    break;
-                }
-                if e.is_unavailable_asset() {
-                    tracing::warn!("track {track_id} not playable on tidal: {e}");
-                    return Ok(fail(70, "Song not found").into_response());
-                }
-                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-                break;
+            if let Some(dash) = &info.dash {
+                return Ok(hls_reply(build_hls_playlist(dash)));
             }
+        }
+        Err(e) => {
+            if matches!(e, Error::RateLimited) {
+                tracing::warn!("tidal stream limit hit for track {track_id}");
+                return Ok(fail(0, "Stream unavailable").into_response());
+            }
+            if e.is_unavailable_asset() {
+                tracing::warn!("track {track_id} not playable on tidal: {e}");
+                return Ok(fail(70, "Song not found").into_response());
+            }
+            tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
         }
     }
     Ok(fail(0, "Stream unavailable").into_response())

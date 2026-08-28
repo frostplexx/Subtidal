@@ -1,26 +1,146 @@
-// Artist endpoints.
+// Artist endpoints. v2 OpenAPI (JSON:API) shapes; v1 bodies stay as
+// dead-code backups under `_v1` names. Album dedup and the release-type
+// ordering logic live on at the bottom, operating on v2-flattened items.
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::TidalClient;
+use super::{jsonapi, TidalClient};
+
+const ARTIST_INCLUDE: &str = "profileArt";
+const ARTIST_ALBUMS_INCLUDE: &str = "albums,albums.artists,albums.coverArt,albums.genres";
+const ARTIST_TRACKS_INCLUDE: &str = "tracks,tracks.albums.coverArt,tracks.artists";
 
 impl TidalClient {
     pub async fn artist(&self, id: u64) -> Result<Value, super::Error> {
+        let doc = self
+            .openapi_get(
+                &format!("/artists/{id}"),
+                &[("include", ARTIST_INCLUDE)],
+                &self.meta_cache,
+            )
+            .await?;
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
+    }
+
+    // One artist's releases, albums first, then EPs, then singles. The
+    // v2 albums relationship carries no separate compilations list (that
+    // v1 filter has no v2 equivalent, so compilations drop), and every
+    // page's albums dedup on their own: a single and an album with the
+    // same title must never collapse.
+    pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![("include", ARTIST_ALBUMS_INCLUDE)];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/artists/{artist_id}/relationships/albums"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            items.extend(jsonapi::bare_items(&doc));
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        dedup_albums(&mut items);
+        items.sort_by_key(|v| album_type_rank(v["type"].as_str().unwrap_or("")));
+        Ok(serde_json::json!({ "items": items }))
+    }
+
+    // An artist's most popular tracks. Backs getTopSongs. The
+    // relationship orders by popularity (the web app's track list);
+    // collapseBy=NONE keeps every track.
+    pub async fn artist_top_tracks(&self, artist_id: u64, _limit: u32) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![
+                ("include", ARTIST_TRACKS_INCLUDE),
+                ("collapseBy", "NONE"),
+            ];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/artists/{artist_id}/relationships/tracks"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            items.extend(jsonapi::bare_items(&doc));
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        // The handler slices by count; walk everything so the slice is
+        // accurate.
+        Ok(serde_json::json!({ "items": items }))
+    }
+
+    // An artist's biography. Backs getArtistInfo2. The text carries
+    // [wimpLink ...] wiki markup; the handler strips it.
+    pub async fn artist_bio(&self, artist_id: u64) -> Result<Value, super::Error> {
+        let doc = self
+            .openapi_get(
+                &format!("/artists/{artist_id}"),
+                &[("include", "biography")],
+                &self.meta_cache,
+            )
+            .await?;
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
+    }
+
+    // Artists similar to the given one. Backs getArtistInfo2.
+    pub async fn artist_similar(&self, artist_id: u64, _limit: u32) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![
+                ("include", "similarArtists,similarArtists.profileArt"),
+            ];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/artists/{artist_id}/relationships/similarArtists"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            items.extend(jsonapi::bare_items(&doc));
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(serde_json::json!({ "items": items }))
+    }
+
+    // Favorited artists, newest first. Backs getStarred/getStarred2.
+    pub async fn favorite_artists(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+        self.favorite_pages("Artists", "items,items.profileArt", offset, limit)
+            .await
+    }
+
+    // --- v1 backups (dead code) ------------------------------------
+    #[allow(dead_code)]
+    pub async fn artist_v1(&self, id: u64) -> Result<Value, super::Error> {
         self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
     }
 
-    // One artist's releases. Backs getArtist. The v1 endpoint defaults to
-    // full albums only; EPs and singles need filter=EPSANDSINGLES and
-    // guest-appearance compilations filter=COMPILATIONS. Each page cap is
-    // far above any artist's catalog, so one call per list returns
-    // everything. Albums come first, then EPs and singles, then
-    // compilations. Each list is deduplicated on its own (see
-    // dedup_albums): a single and an album with the same title must never
-    // collapse. A failure on a secondary list only logs and the albums
-    // still render.
-    pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_albums_v1(&self, artist_id: u64) -> Result<Value, super::Error> {
         let mut albums = self
             .get_json_q(
                 &format!("/artists/{artist_id}/albums"),
@@ -44,18 +164,12 @@ impl TidalClient {
         Ok(albums)
     }
 
-    // Fetch one secondary release list (EPs/singles or compilations),
-    // deduplicated. None when the call fails; the caller keeps the
-    // albums list and only logs.
+    #[allow(dead_code)]
     async fn release_items(&self, artist_id: u64, filter: &str) -> Option<Vec<Value>> {
         let resp = match self
             .get_json_q(
                 &format!("/artists/{artist_id}/albums"),
-                &[
-                    ("limit", "1000"),
-                    ("offset", "0"),
-                    ("filter", filter),
-                ],
+                &[("limit", "1000"), ("offset", "0"), ("filter", filter)],
                 &self.meta_cache,
             )
             .await
@@ -71,8 +185,8 @@ impl TidalClient {
         Some(items)
     }
 
-    // An artist's most popular tracks. Backs getTopSongs.
-    pub async fn artist_top_tracks(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_top_tracks_v1(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
         let limit = limit.to_string();
         self.get_json_q(
             &format!("/artists/{artist_id}/toptracks"),
@@ -82,15 +196,14 @@ impl TidalClient {
         .await
     }
 
-    // An artist's biography. Backs getArtistInfo2. The text carries
-    // [wimpLink ...] wiki markup; the handler strips it.
-    pub async fn artist_bio(&self, artist_id: u64) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_bio_v1(&self, artist_id: u64) -> Result<Value, super::Error> {
         self.get_json(&format!("/artists/{artist_id}/bio"), &self.meta_cache)
             .await
     }
 
-    // Artists similar to the given one. Backs getArtistInfo2.
-    pub async fn artist_similar(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_similar_v1(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
         let limit = limit.to_string();
         self.get_json_q(
             &format!("/artists/{artist_id}/similar"),
@@ -100,9 +213,8 @@ impl TidalClient {
         .await
     }
 
-    // Favorited artists, newest first. Backs getStarred/getStarred2.
-    // Same { item, created } wrapper shape as favorite_albums.
-    pub async fn favorite_artists(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn favorite_artists_v1(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         let user_id = self.user_id().await?;
         let offset = offset.to_string();
         let limit = limit.to_string();
@@ -118,6 +230,17 @@ impl TidalClient {
             &self.meta_cache,
         )
         .await
+    }
+}
+
+// Compilation albums have no v2 equivalent, so the album list order is
+// the albumType string: ALBUM first, then EP, then SINGLE.
+fn album_type_rank(t: &str) -> u8 {
+    match t {
+        "ALBUM" => 0,
+        "EP" => 1,
+        "SINGLE" => 2,
+        _ => 3,
     }
 }
 
@@ -175,7 +298,7 @@ fn dedup_albums(items: &mut Vec<Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{dedup_albums, merge_album_sections, merge_compilations};
+    use super::{album_type_rank, dedup_albums, merge_album_sections, merge_compilations};
     use serde_json::{json, Value};
 
     #[test]
@@ -275,5 +398,11 @@ mod tests {
         assert_eq!(albums.len(), 2);
         assert_eq!(albums[1]["isCompilation"], true);
         assert!(albums[0].get("isCompilation").is_none());
+    }
+
+    #[test]
+    fn album_type_rank_orders_album_before_ep_before_single() {
+        assert!(album_type_rank("ALBUM") < album_type_rank("EP"));
+        assert!(album_type_rank("EP") < album_type_rank("SINGLE"));
     }
 }

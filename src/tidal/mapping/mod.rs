@@ -36,35 +36,55 @@ pub(crate) fn tidal_image_url(uuid: &str) -> bool {
     host == "tidal.com" || host.ends_with(".tidal.com")
 }
 
-// Album cover sizes: 160/320/640/1280. Snap the requested size upward.
+// A Tidal image URL whose path ends in /<WxW>.jpg (the artwork files
+// served from the images CDN). Rebuilds it with the requested size;
+// anything else on a Tidal host passes through unchanged.
+fn resize_image_url(url: &str, size: u32) -> Option<String> {
+    let prefix = "https://resources.tidal.com/images/";
+    let rest = url.strip_prefix(prefix)?;
+    let (base, file) = rest.rsplit_once('/')?;
+    let file = file.strip_suffix(".jpg")?;
+    let (w, h) = file.split_once('x')?;
+    if w != h {
+        return None;
+    }
+    Some(format!("{prefix}{base}/{size}x{size}.jpg"))
+}
+
+// Square sizes served by the images CDN for album/playlist covers.
+// Anything else returns 403, so snap to the nearest size at or above
+// the request, and serve the exact size when it exists.
+const COVER_SIZES: [u32; 8] = [80, 160, 320, 480, 640, 750, 1080, 1280];
+// Artist pictures have a smaller ladder; 640/1280 return 403 there.
+const ARTIST_SIZES: [u32; 4] = [160, 320, 480, 750];
+
+fn snap(size: u32, ladder: &[u32]) -> u32 {
+    match ladder.binary_search(&size) {
+        Ok(_) => size,
+        Err(0) => ladder[0],
+        Err(i) => ladder[i.min(ladder.len() - 1)],
+    }
+}
+
 pub fn cover_url(uuid: &str, size: u32) -> String {
+    let s = snap(size, &COVER_SIZES);
     if tidal_image_url(uuid) {
-        return uuid.to_string();
+        // A full image URL with a baked size (the v2 artwork files) is
+        // resized to the requested size, not passed through verbatim.
+        return resize_image_url(uuid, s).unwrap_or_else(|| uuid.to_string());
     }
     // Tidal cover UUIDs become slash paths: abc-def -> abc/def.
     let path = uuid.replace('-', "/");
-    let snapped = match size {
-        0..=160 => 160,
-        161..=320 => 320,
-        321..=640 => 640,
-        _ => 1280,
-    };
-    format!("https://resources.tidal.com/images/{path}/{snapped}x{snapped}.jpg")
+    format!("https://resources.tidal.com/images/{path}/{s}x{s}.jpg")
 }
 
-// Artist pictures only exist at 160/320/480/750; 640 and 1280 403.
 pub fn artist_pic_url(uuid: &str, size: u32) -> String {
+    let s = snap(size, &ARTIST_SIZES);
     if tidal_image_url(uuid) {
-        return uuid.to_string();
+        return resize_image_url(uuid, s).unwrap_or_else(|| uuid.to_string());
     }
     let path = uuid.replace('-', "/");
-    let snapped = match size {
-        0..=160 => 160,
-        161..=320 => 320,
-        321..=480 => 480,
-        _ => 750,
-    };
-    format!("https://resources.tidal.com/images/{path}/{snapped}x{snapped}.jpg")
+    format!("https://resources.tidal.com/images/{path}/{s}x{s}.jpg")
 }
 
 pub(crate) fn year_from(s: Option<&str>) -> Option<u32> {
@@ -127,12 +147,44 @@ mod tests {
     #[test]
     fn cover_url_passes_through_tidal_urls_but_not_foreign_ones() {
         assert_eq!(
-            cover_url("https://resources.tidal.com/images/x/640x640.jpg", 320),
+            cover_url("https://resources.tidal.com/images/x/640x640.jpg", 640),
             "https://resources.tidal.com/images/x/640x640.jpg"
         );
         assert_eq!(
             cover_url("https://evil.com/x", 320),
             "https://resources.tidal.com/images/https://evil.com/x/320x320.jpg"
+        );
+    }
+
+    #[test]
+    fn cover_url_resizes_baked_artwork_urls() {
+        // A 300px request on a 1280 artwork must serve 320, not 1280.
+        assert_eq!(
+            cover_url("https://resources.tidal.com/images/abc/def/ghi/1280x1280.jpg", 300),
+            "https://resources.tidal.com/images/abc/def/ghi/320x320.jpg"
+        );
+        // Non-square or unparseable image paths pass through untouched.
+        assert_eq!(
+            cover_url("https://resources.tidal.com/images/abc/def/18.jpg", 300),
+            "https://resources.tidal.com/images/abc/def/18.jpg"
+        );
+        assert_eq!(
+            artist_pic_url("https://resources.tidal.com/images/abc/def/ghi/1280x1280.jpg", 300),
+            "https://resources.tidal.com/images/abc/def/ghi/320x320.jpg"
+        );
+        // An exact CDN size is served verbatim; a size above the ladder
+        // clamps to the largest file.
+        assert_eq!(
+            cover_url("https://resources.tidal.com/images/abc/def/ghi/320x320.jpg", 80),
+            "https://resources.tidal.com/images/abc/def/ghi/80x80.jpg"
+        );
+        assert_eq!(
+            cover_url("https://resources.tidal.com/images/abc/def/ghi/640x640.jpg", 2000),
+            "https://resources.tidal.com/images/abc/def/ghi/1280x1280.jpg"
+        );
+        assert_eq!(
+            cover_url("https://resources.tidal.com/images/abc/def/ghi/1280x1280.jpg", 480),
+            "https://resources.tidal.com/images/abc/def/ghi/480x480.jpg"
         );
     }
 

@@ -1,13 +1,359 @@
-// Playlist endpoints.
+// Playlist endpoints. v2 OpenAPI (JSON:API) shapes; v1 bodies stay as
+// dead-code backups under `_v1` names. The v2 API has no etag
+// precondition: mutations address entries by item id, not by position,
+// so removals fetch the current items first and delete by itemId.
 use serde_json::Value;
 
-use super::TidalClient;
+use super::{jsonapi, TidalClient};
+
+// Playlist items with everything a track entry needs: the track, its
+// artists and cover, and the item id for later removal.
+const ITEMS_INCLUDE: &str = "items,items.albums.coverArt,items.artists,items.genres";
+const PLAYLIST_INCLUDE: &str = "coverArt";
+// Mix items are addressed through the playlists endpoint: the mix
+// collections (my_mixes page, userDailyMixes/me) identify their cards
+// with type "playlists", and the collection paths themselves 404 for
+// individual mixes. The legacy collection paths stay as fallbacks.
+const MIX_COLLECTIONS: [&str; 5] = [
+    "playlists",
+    "userDailyMixes",
+    "userDiscoveryMixes",
+    "userNewReleaseMixes",
+    "userOfflineMixes",
+];
+
+// The (type, id, itemId) triple that addresses one playlist entry for
+// removal. The item id is opaque and only the items relationship returns
+// it; it cannot change between the GET and the DELETE, so playlists that
+// mutate between the two are safe.
+pub(crate) type ItemAddr = (String, String, String);
 
 impl TidalClient {
-    // The user's playlists, newest first. Backs getPlaylists. The response
-    // items are the playlist objects themselves (unlike favorites, no
-    // `item` wrapper).
+    // The user's playlists, newest first. Backs getPlaylists. The
+    // response items are the playlist objects themselves (unlike
+    // favorites, no `item` wrapper). This walks the userCollectionPlaylists
+    // items relationship, the non-deprecated route for owned playlists.
+    // The deprecated /playlists?filter[owners.id]=me route rejects its
+    // documented sort values live (observed 400 on sort=-createdAt), so
+    // it is not used; its shape and pagination are identical.
     pub async fn user_playlists(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> =
+                vec![("sort", "-addedAt"), ("include", "items,items.coverArt")];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    "/userCollectionPlaylists/me/relationships/items",
+                    &params,
+                    &self.playlist_cache,
+                )
+                .await?;
+            for e in jsonapi::flatten_item_entries(&doc, false)["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+            {
+                if let Some(p) = e.get("item") {
+                    items.push(p.clone());
+                }
+            }
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+            // Stop once the requested slice is fully in hand.
+            if items.len() >= offset as usize + limit as usize {
+                break;
+            }
+        }
+        let start = offset as usize;
+        let end = start + limit as usize;
+        Ok(serde_json::json!({
+            "items": items.into_iter().skip(start).take(end.saturating_sub(start)).collect::<Vec<_>>(),
+        }))
+    }
+
+    // One mix's tracks. Same { items: [{ item, type }] } wrapper as
+    // playlist items; totalNumberOfItems is the full walk count (v2
+    // relationship docs carry no total). Mixes regenerate, so their
+    // pages live in the short mix_cache, never the 6h meta_cache.
+    pub async fn mix_items(
+        &self,
+        mix_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        let mut last_error: Option<super::Error> = None;
+        for collection in MIX_COLLECTIONS {
+            match self
+                .mix_items_from(collection, mix_id, offset, limit)
+                .await
+            {
+                Ok(v) => return Ok(v),
+                // A missing mix in one collection is not an error: try
+                // the next. Any other failure is real.
+                Err(super::Error::Tidal(404, _)) | Err(super::Error::Tidal(400, _)) => {
+                    last_error = Some(super::Error::Tidal(404, "mix not found".into()));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| super::Error::Tidal(404, "mix not found".into())))
+    }
+
+    async fn mix_items_from(
+        &self,
+        collection: &str,
+        mix_id: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![("include", ITEMS_INCLUDE)];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/{collection}/{mix_id}/relationships/items"),
+                    &params,
+                    &self.mix_cache,
+                )
+                .await?;
+            items.extend(
+                jsonapi::flatten_item_entries(&doc, false)["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+            // Stop once the requested slice is fully in hand.
+            if items.len() >= offset as usize + limit as usize {
+                break;
+            }
+        }
+        let total = items.len() as u64;
+        let start = offset as usize;
+        let end = start + limit as usize;
+        let items: Vec<Value> = items
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect();
+        Ok(serde_json::json!({
+            "items": items,
+            "totalNumberOfItems": total,
+        }))
+    }
+
+    // The user's mixes (Daily Mix, My Mix, Discovery). Backs the mix
+    // entries blended into getPlaylists. Mixes regenerate daily, so they
+    // live in the short mix_cache, never the 6h meta_cache. This Pages
+    // endpoint is private and unchanged.
+    pub async fn my_mixes(&self) -> Result<Value, super::Error> {
+        self.get_json_q(
+            "/pages/my_collection_my_mixes",
+            &[("deviceType", "BROWSER"), ("locale", "en_US")],
+            &self.mix_cache,
+        )
+        .await
+    }
+
+    // One playlist by UUID. Backs getCoverArt for playlist covers.
+    pub async fn playlist(&self, uuid: &str) -> Result<Value, super::Error> {
+        let doc = self
+            .openapi_get(
+                &format!("/playlists/{uuid}"),
+                &[("include", PLAYLIST_INCLUDE)],
+                &self.playlist_cache,
+            )
+            .await?;
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
+    }
+
+    // One page of a playlist's tracks, wrapped as { item: { ...track }, type }.
+    pub async fn playlist_items(&self, uuid: &str, offset: u32, limit: u32) -> Result<Value, super::Error> {
+        let all = self.playlist_all_items(uuid).await?;
+        let total = all.len() as u64;
+        let start = offset as usize;
+        let end = start + limit as usize;
+        let items: Vec<Value> = all
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect();
+        Ok(serde_json::json!({
+            "items": items,
+            "totalNumberOfItems": total,
+        }))
+    }
+
+    // Every entry of a playlist: { item, type, meta: { itemId, ... } }.
+    // Page-walking with cursor pagination; entries carry their item id so
+    // removals address exact entries. Videos and tracks both count here,
+    // matching the raw index semantics the v1 handler used.
+    pub async fn playlist_all_items(&self, uuid: &str) -> Result<Vec<Value>, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![("include", ITEMS_INCLUDE)];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/playlists/{uuid}/relationships/items"),
+                    &params,
+                    &self.playlist_cache,
+                )
+                .await?;
+            items.extend(
+                jsonapi::flatten_item_entries(&doc, true)["items"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(items)
+    }
+
+    // After any playlist change, drop the cached playlist objects and
+    // item pages so the next read fetches fresh data. Every v2 playlist
+    // key starts with /playlists (the list query, the detail, the item
+    // pages), so one prefix covers them all.
+    fn invalidate_playlist_caches(&self) {
+        let _ = self
+            .playlist_cache
+            .invalidate_entries_if(|k, _| k.starts_with("/playlists"));
+    }
+
+    // Create a playlist. Backs createPlaylist. The response is the new
+    // playlist object, with a uuid and zero tracks.
+    pub async fn create_playlist(&self, title: &str, description: Option<&str>) -> Result<Value, super::Error> {
+        let mut attributes = serde_json::json!({ "name": title });
+        if let Some(d) = description {
+            attributes["description"] = serde_json::json!(d);
+        }
+        let payload = serde_json::json!({
+            "data": { "type": "playlists", "attributes": attributes },
+        });
+        let doc = self
+            .openapi_send(reqwest::Method::POST, "/playlists", Some(&payload))
+            .await?;
+        self.invalidate_playlist_caches();
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
+    }
+
+    // Update playlist metadata (name, description). Backs updatePlaylist
+    // and createPlaylist's rename mode. PATCH is partial: only the given
+    // fields change. accessType is deliberately omitted: the v1 source
+    // has no accessType (only publicPlaylist), so sending it would risk
+    // flipping a private playlist public.
+    pub async fn update_playlist(
+        &self,
+        uuid: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<(), super::Error> {
+        if title.is_none() && description.is_none() {
+            return Ok(());
+        }
+        let current = self.playlist(uuid).await?;
+        let name = title.unwrap_or(current["title"].as_str().unwrap_or(""));
+        let description = description.unwrap_or(current["description"].as_str().unwrap_or(""));
+        let body = serde_json::json!({
+            "data": {
+                "id": uuid,
+                "type": "playlists",
+                "attributes": {
+                    "name": name,
+                    "description": description,
+                },
+            },
+        });
+        self.openapi_send(reqwest::Method::PATCH, &format!("/playlists/{uuid}"), Some(&body))
+            .await?;
+        self.invalidate_playlist_caches();
+        Ok(())
+    }
+
+    // Append tracks to a playlist. Backs updatePlaylist's songIdToAdd and
+    // createPlaylist's songId. Requests without an item meta append to
+    // the end. Sending several ids in one request is atomic on Tidal's
+    // side, so a single POST covers the whole batch.
+    pub async fn playlist_add_tracks(&self, uuid: &str, track_ids: &[u64]) -> Result<(), super::Error> {
+        if track_ids.is_empty() {
+            return Ok(());
+        }
+        let data: Vec<Value> = track_ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({ "id": id.to_string(), "type": "tracks" })
+            })
+            .collect();
+        let payload = serde_json::json!({ "data": data });
+        self.openapi_send(
+            reqwest::Method::POST,
+            &format!("/playlists/{uuid}/relationships/items"),
+            Some(&payload),
+        )
+        .await?;
+        self.invalidate_playlist_caches();
+        Ok(())
+    }
+
+    // Remove entries by item id. Backs songIndexToRemove and
+    // replace_songs. Each address is (type, id, itemId); the caller maps
+    // Subsonic track positions to addresses once, through playlist_all_items.
+    // Chunked at 100 like the v1 endpoint.
+    pub async fn playlist_remove_items(&self, uuid: &str, items: &[ItemAddr]) -> Result<(), super::Error> {
+        for chunk in items.chunks(100) {
+            let data: Vec<Value> = chunk
+                .iter()
+                .map(|(rtype, id, item_id)| {
+                    serde_json::json!({
+                        "id": id,
+                        "type": rtype,
+                        "meta": { "itemId": item_id },
+                    })
+                })
+                .collect();
+            let payload = serde_json::json!({ "data": data });
+            self.openapi_send(
+                reqwest::Method::DELETE,
+                &format!("/playlists/{uuid}/relationships/items"),
+                Some(&payload),
+            )
+            .await?;
+            self.invalidate_playlist_caches();
+        }
+        Ok(())
+    }
+
+    // Delete a playlist. Backs deletePlaylist.
+    pub async fn delete_playlist(&self, uuid: &str) -> Result<(), super::Error> {
+        self.openapi_send(reqwest::Method::DELETE, &format!("/playlists/{uuid}"), None)
+            .await?;
+        self.invalidate_playlist_caches();
+        Ok(())
+    }
+
+    // --- v1 backups (dead code) ------------------------------------
+    #[allow(dead_code)]
+    pub async fn user_playlists_v1(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         let user_id = self.user_id().await?;
         let offset = offset.to_string();
         let limit = limit.to_string();
@@ -25,9 +371,8 @@ impl TidalClient {
         .await
     }
 
-    // One mix's tracks. Same { item } wrapper as playlist items, so
-    // playlist_song_from_item maps them; totalNumberOfItems is the count.
-    pub async fn mix_items(
+    #[allow(dead_code)]
+    pub async fn mix_items_v1(
         &self,
         mix_id: &str,
         offset: u32,
@@ -43,26 +388,14 @@ impl TidalClient {
         .await
     }
 
-    // The user's mixes (Daily Mix, My Mix, Discovery). Backs the mix
-    // entries blended into getPlaylists. Mixes regenerate daily, so they
-    // live in the short mix_cache, never the 6h meta_cache.
-    pub async fn my_mixes(&self) -> Result<Value, super::Error> {
-        self.get_json_q(
-            "/pages/my_collection_my_mixes",
-            &[("deviceType", "BROWSER"), ("locale", "en_US")],
-            &self.mix_cache,
-        )
-        .await
-    }
-
-    // One playlist by UUID. Backs getCoverArt for playlist covers.
-    pub async fn playlist(&self, uuid: &str) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn playlist_v1(&self, uuid: &str) -> Result<Value, super::Error> {
         self.get_json(&format!("/playlists/{uuid}"), &self.playlist_cache)
             .await
     }
 
-    // One page of a playlist's tracks, wrapped as { item: { ...track }, type }.
-    pub async fn playlist_items(&self, uuid: &str, offset: u32, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn playlist_items_v1(&self, uuid: &str, offset: u32, limit: u32) -> Result<Value, super::Error> {
         let offset = offset.to_string();
         let limit = limit.to_string();
         let path = format!("/playlists/{uuid}/items");
@@ -74,9 +407,8 @@ impl TidalClient {
         .await
     }
 
-    // After any playlist change, drop the cached playlist objects and
-    // item pages so the next read fetches fresh data.
-    fn invalidate_playlist_caches(&self, user_id: u64, uuid: &str) {
+    #[allow(dead_code)]
+    fn invalidate_playlist_caches_v1(&self, user_id: u64, uuid: &str) {
         let user_prefix = format!("/users/{user_id}/playlists");
         let pl_prefix = format!("/playlists/{uuid}");
         let _ = self.playlist_cache.invalidate_entries_if(move |k, _| {
@@ -84,9 +416,8 @@ impl TidalClient {
         });
     }
 
-    // Create a playlist. Backs createPlaylist. The response is the new
-    // playlist object, with a uuid and zero tracks.
-    pub async fn create_playlist(&self, title: &str, description: Option<&str>) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn create_playlist_v1(&self, title: &str, description: Option<&str>) -> Result<Value, super::Error> {
         let user_id = self.user_id().await?;
         let token = self.access_token().await?;
         let url = format!("{}/users/{user_id}/playlists", super::API_URL);
@@ -104,19 +435,13 @@ impl TidalClient {
         if !status.is_success() {
             return Err(super::Error::Tidal(status.as_u16(), body.to_string()));
         }
-        self.invalidate_playlist_caches(user_id, body["uuid"].as_str().unwrap_or(""));
+        let user_id = body["creator"]["id"].as_u64().unwrap_or(user_id);
+        self.invalidate_playlist_caches_v1(user_id, body["uuid"].as_str().unwrap_or(""));
         Ok(body)
     }
 
-    // Update playlist metadata (name, description). Backs updatePlaylist
-    // and createPlaylist's rename mode. Uses the OpenAPI JSON:API PATCH on
-    // openapi.tidal.com, as Sone does; the v1 API registers no PUT here
-    // (it answers 405). When only one field is given, the other comes from
-    // the current playlist: the body always carries both name and
-    // description. accessType is deliberately omitted: PATCH updates are
-    // partial, and the v1 source has no accessType (only publicPlaylist),
-    // so sending it would risk flipping a private playlist public.
-    pub async fn update_playlist(
+    #[allow(dead_code)]
+    pub async fn update_playlist_v1(
         &self,
         uuid: &str,
         title: Option<&str>,
@@ -127,7 +452,7 @@ impl TidalClient {
         }
         let user_id = self.user_id().await?;
         let token = self.access_token().await?;
-        let current = self.playlist(uuid).await?;
+        let current = self.playlist_v1(uuid).await?;
         let name = title.unwrap_or(current["title"].as_str().unwrap_or(""));
         let description = description.unwrap_or(current["description"].as_str().unwrap_or(""));
         let body = serde_json::json!({
@@ -152,7 +477,7 @@ impl TidalClient {
         let resp = req.json(&body).send().await?;
         let status = resp.status();
         if status.is_success() {
-            self.invalidate_playlist_caches(user_id, uuid);
+            self.invalidate_playlist_caches_v1(user_id, uuid);
             Ok(())
         } else {
             Err(super::Error::Tidal(
@@ -162,13 +487,8 @@ impl TidalClient {
         }
     }
 
-    // Append tracks to a playlist. Backs updatePlaylist's songIdToAdd and
-    // createPlaylist's songId. The v1 items endpoint wants bare track ids
-    // (trackIds, no "track:" prefix) via POST, plus an If-None-Match
-    // precondition from a fresh GET. onDupes=SKIP and
-    // onArtifactNotFound=SKIP keep one duplicate or missing id from
-    // failing the whole batch.
-    pub async fn playlist_add_tracks(&self, uuid: &str, track_ids: &[u64]) -> Result<(), super::Error> {
+    #[allow(dead_code)]
+    pub async fn playlist_add_tracks_v1(&self, uuid: &str, track_ids: &[u64]) -> Result<(), super::Error> {
         if track_ids.is_empty() {
             return Ok(());
         }
@@ -196,7 +516,7 @@ impl TidalClient {
             .await?;
         let status = resp.status();
         if status.is_success() {
-            self.invalidate_playlist_caches(user_id, uuid);
+            self.invalidate_playlist_caches_v1(user_id, uuid);
             Ok(())
         } else {
             Err(super::Error::Tidal(
@@ -206,12 +526,8 @@ impl TidalClient {
         }
     }
 
-    // Remove items at raw positions (0-based indices in the items array,
-    // tracks and videos alike). Backs songIndexToRemove and replace_songs.
-    // The v1 endpoint deletes by index; comma-joined indices travel in one
-    // request (chunked at 100 to keep URLs short). Every chunk needs a
-    // fresh If-None-Match precondition, so the etag is fetched per chunk.
-    pub async fn playlist_remove_indices(
+    #[allow(dead_code)]
+    pub async fn playlist_remove_indices_v1(
         &self,
         uuid: &str,
         indices: &[u32],
@@ -247,14 +563,12 @@ impl TidalClient {
                     resp.text().await.unwrap_or_default(),
                 ));
             }
-            self.invalidate_playlist_caches(user_id, uuid);
+            self.invalidate_playlist_caches_v1(user_id, uuid);
         }
         Ok(())
     }
 
-    // A fresh etag for a playlist, from the playlist GET. Tidal's item
-    // mutations require the If-None-Match precondition; "*" is the
-    // fallback when the header is absent.
+    #[allow(dead_code)]
     async fn playlist_etag(&self, uuid: &str) -> Result<String, super::Error> {
         let token = self.access_token().await?;
         let url = format!("{}/playlists/{uuid}", super::API_URL);
@@ -278,8 +592,8 @@ impl TidalClient {
             .unwrap_or_else(|| "*".to_string()))
     }
 
-    // Delete a playlist. Backs deletePlaylist.
-    pub async fn delete_playlist(&self, uuid: &str) -> Result<(), super::Error> {
+    #[allow(dead_code)]
+    pub async fn delete_playlist_v1(&self, uuid: &str) -> Result<(), super::Error> {
         let user_id = self.user_id().await?;
         let token = self.access_token().await?;
         let url = format!("{}/playlists/{uuid}", super::API_URL);
@@ -290,7 +604,7 @@ impl TidalClient {
         let resp = req.send().await?;
         let status = resp.status();
         if status.is_success() {
-            self.invalidate_playlist_caches(user_id, uuid);
+            self.invalidate_playlist_caches_v1(user_id, uuid);
             Ok(())
         } else {
             Err(super::Error::Tidal(
