@@ -1,83 +1,129 @@
 // Lyric-source DTOs and fetcher state for the lyrics handlers. These are
 // not Subsonic response models: they parse external source payloads
-// (LRCLIB, LRCMUX, LyricsPlus) or hold candidate state for the ranker.
+// (LRCLIB, LRCMUX, LyricsPlus, radiant) or hold candidate state for the
+// ranker.
 use serde::Deserialize;
 
-use crate::navidrome::models::song::{CueLine, LyricLine, LyricsMode, LyricsSourceNames};
-
-// Track metadata that builds the source URLs and fills the Subsonic
-// display fields.
-#[derive(Debug)]
-pub struct SongInfo {
-    pub artist: String,
-    pub title: String,
-    pub album: String,
-    pub duration: u32,
+// The radiant /lyrics response. `type` is always "Word" for a lyrics
+// payload; other types may appear on other endpoints. Each data entry is
+// one parent line; its syllabus array holds the per-word timings.
+//
+// Most fields are deserialization-contract data the handlers don't
+// consume yet, so dead_code is allowed: removing them would silently
+// drop fields the third-party API returns.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct RadiantLyrics {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub data: Vec<RadiantLine>,
+    pub metadata: RadiantMetadata,
 }
 
-// Parsed lyrics from one source, candidate for the ranking. Not a
-// Subsonic response model: the handlers translate line/plain into
-// Lyrics or StructuredLyrics. line carries timed entries when mode is
-// LineSynced, untimed entries otherwise.
-pub struct Fetched {
-    pub source: LyricsSourceNames,
-    pub weight: u32,
-    pub mode: LyricsMode,
-    pub line: Vec<LyricLine>,
-    // Raw plain text captured for diagnostics/future use; not yet read.
-    #[allow(dead_code)]
-    pub plain: String,
-    // Word/syllable timing emitted only when enhanced=true is requested.
-    pub cue_line: Vec<CueLine>,
-}
-
-#[derive(Deserialize)]
-pub struct Lrclib {
-    #[serde(rename = "syncedLyrics")]
-    pub synced_lyrics: Option<String>,
-    #[serde(rename = "plainLyrics")]
-    pub plain_lyrics: String,
-}
-
-#[derive(Deserialize)]
-pub struct LrcmuxLine {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct RadiantLine {
     pub text: String,
-    pub start: u32,
-    pub end: u32,
-    pub words: Vec<LrcmuxWord>,
-}
-
-#[derive(Deserialize)]
-pub struct LrcmuxWord {
-    pub text: String,
-    pub start: u32,
-    pub end: u32,
-}
-
-#[derive(Deserialize)]
-pub struct Lrcmux {
-    pub meta: LrcmuxMeta,
-    pub lines: Vec<LrcmuxLine>,
-}
-
-#[derive(Deserialize, Default)]
-pub struct LrcmuxMeta {
-    // "word" when lines carry per-word timing.
+    /// Seconds. The syllabus timings below are milliseconds.
+    pub start_time: f64,
+    pub duration: f64,
+    pub end_time: f64,
+    pub syllabus: Vec<RadiantSyllable>,
+    /// Free-form object; may hold per-line extras. Raw so extra fields
+    /// never break deserialization.
+    pub element: serde_json::Value,
     #[serde(default)]
-    pub level: String,
+    pub translation: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct LyricsPlusToken {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct RadiantSyllable {
+    pub text: String,
+    /// Milliseconds from track start.
     pub time: u32,
-    #[serde(default)]
     pub duration: u32,
-    pub text: String,
-    #[serde(rename = "isLineEnding")]
-    pub is_line_ending: u32,
+    #[serde(default)]
+    pub is_background: bool,
 }
 
-#[derive(Deserialize)]
-pub struct LyricsPlusBody {
-    pub lyrics: Vec<LyricsPlusToken>,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct RadiantMetadata {
+    pub source: String,
+    #[serde(default)]
+    pub song_writers: Vec<String>,
+    #[serde(default)]
+    pub copyright: Option<String>,
+    #[serde(default)]
+    pub licence: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn radiant_lyrics_deserializes_word_payload() {
+        let v = r##"{
+            "type": "Word",
+            "data": [
+                {
+                    "text": "Ich steppe in den Wald",
+                    "startTime": 13.675,
+                    "duration": 3.325,
+                    "endTime": 17,
+                    "syllabus": [
+                        {"text": "Ich ", "time": 13675, "duration": 62, "isBackground": false},
+                        {"text": "steppe ", "time": 13787, "duration": 250, "isBackground": false}
+                    ],
+                    "element": {},
+                    "translation": null
+                }
+            ],
+            "metadata": {
+                "source": "Deezer",
+                "songWriters": ["Lukas Strobel"],
+                "copyright": "Sony/ATV Music Publishing LLC",
+                "licence": "Lyrics Licensed & Provided by LyricFind"
+            },
+            "_cached": true
+        }"##;
+        let r: RadiantLyrics = serde_json::from_str(v).unwrap();
+        assert_eq!(r.kind, "Word");
+        assert_eq!(r.data.len(), 1);
+        let line = &r.data[0];
+        assert_eq!(line.text, "Ich steppe in den Wald");
+        assert_eq!(line.start_time, 13.675);
+        assert_eq!(line.duration, 3.325);
+        assert_eq!(line.end_time, 17.0);
+        assert_eq!(line.syllabus.len(), 2);
+        assert_eq!(line.syllabus[0].text, "Ich ");
+        assert_eq!(line.syllabus[0].time, 13675);
+        assert!(!line.syllabus[0].is_background);
+        assert_eq!(line.translation, None);
+        assert_eq!(r.metadata.source, "Deezer");
+        assert_eq!(r.metadata.song_writers, vec!["Lukas Strobel"]);
+        assert_eq!(r.metadata.licence.as_deref(), Some("Lyrics Licensed & Provided by LyricFind"));
+    }
+
+    #[test]
+    fn radiant_lyrics_accepts_sparse_metadata() {
+        let v = r##"{
+            "type": "Word",
+            "data": [{"text": "X", "startTime": 0.0, "duration": 1.0,
+                       "endTime": 1.0, "syllabus": [], "element": {},
+                       "translation": null}],
+            "metadata": {"source": "Deezer"}
+        }"##;
+        let r: RadiantLyrics = serde_json::from_str(v).unwrap();
+        assert!(r.metadata.song_writers.is_empty());
+        assert_eq!(r.metadata.copyright, None);
+    }
+}
+
+

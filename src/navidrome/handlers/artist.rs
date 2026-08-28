@@ -134,7 +134,7 @@ async fn artist_info(q: QueryParams) -> Result<ArtistInfo2, warp::reply::Json> {
             }
         },
         Some((IdKind::Track, n)) => match client.track(n).await {
-            Ok(v) => match v["artists"].get(0).and_then(|a| a["id"].as_u64()) {
+            Ok(v) => match v.artists.as_ref().and_then(|a| a.first()).map(|a| a.id) {
                 Some(a) => a,
                 None => return Err(fail(70, "Artist not found")),
             },

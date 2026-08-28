@@ -193,7 +193,7 @@ pub(crate) async fn report_now_playing(track_id: u64) {
         return;
     };
     let detail = match client.track(track_id).await {
-        Ok(v) => v,
+        Ok(v) => v.to_json(),
         Err(e) => {
             tracing::warn!("now-playing id={track_id}: track fetch failed: {e}");
             return;
