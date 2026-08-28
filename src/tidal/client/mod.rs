@@ -21,6 +21,7 @@ mod favorites;
 mod feed;
 mod genres;
 mod jsonapi;mod playlists;
+mod playqueues;
 mod search;
 mod stream;
 pub use stream::DashInfo;
@@ -122,6 +123,12 @@ pub struct TidalClient {
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
     playlist_cache: Cache<String, Value>,
+    // Play queue reads are mirrored onto Tidal's own queue, which the
+    // mobile clients churn constantly; a minute of staleness is fine.
+    queue_cache: Cache<String, Value>,
+    // The user's play queue id, resolved once and reused until the
+    // queue is deleted.
+    queue_id: Mutex<Option<String>>,
     // Hard cap on parallel playbackinfo fetches and on stream starts
     // per window; see stream.rs. Excess stream requests are rejected.
     stream_limiter: StreamLimiter,
@@ -172,6 +179,12 @@ impl TidalClient {
                 .max_capacity(10_000)
                 .support_invalidation_closures()
                 .build(),
+            queue_cache: Cache::builder()
+                .time_to_live(Duration::from_secs(60))
+                .max_capacity(100)
+                .support_invalidation_closures()
+                .build(),
+            queue_id: Mutex::new(None),
             stream_limiter: StreamLimiter::new(),
         }
     }

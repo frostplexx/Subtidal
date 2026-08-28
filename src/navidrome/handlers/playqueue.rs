@@ -9,7 +9,7 @@ use crate::navidrome::models::{
     Child, PingResponse, PlayQueue, PlayQueueByIndex, PlayQueueByIndexResponse, PlayQueueResponse,
 };
 use crate::navidrome::now_playing::now_ms;
-use crate::navidrome::params::QueryParams;
+use crate::navidrome::params::{IdList, QueryParams};
 use crate::navidrome::play_state;
 use crate::tidal::client::TidalClient;
 use crate::tidal::mapping::song_from_track;
@@ -33,6 +33,7 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
             changed_by: q.c.clone().unwrap_or_default(),
             changed_ms: now_ms(),
         });
+        sync_saved_queue(None).await;
         return Ok(ok(PingResponse {}));
     }
     let current = match q.current.as_deref() {
@@ -51,6 +52,9 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
         changed_ms: now_ms(),
     });
     tracing::info!("savePlayQueue {} songs", q.id.0.len());
+    if let Some(cur) = current {
+        sync_saved_queue(Some((q.id.clone(), cur))).await;
+    }
     Ok(ok(PingResponse {}))
 }
 
@@ -72,6 +76,7 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
             changed_by: q.c.clone().unwrap_or_default(),
             changed_ms: now_ms(),
         });
+        sync_saved_queue(None).await;
         return Ok(ok(PingResponse {}));
     }
     let current = q
@@ -87,6 +92,9 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
         changed_ms: now_ms(),
     });
     tracing::info!("savePlayQueueByIndex {} songs", q.id.0.len());
+    if let Some(cur) = current {
+        sync_saved_queue(Some((q.id.clone(), cur))).await;
+    }
     Ok(ok(PingResponse {}))
 }
 
@@ -94,14 +102,7 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
 // current song is reported as its index in the entry list.
 pub async fn get_play_queue_by_index(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let client = crate::tidal::client();
-    let saved = match play_state::queue() {
-        Some(q) => q,
-        None => {
-            return Ok(ok(PlayQueueByIndexResponse {
-                play_queue: empty_queue_by_index(),
-            }))
-        }
-    };
+    let saved = restore_queue(client).await;
     let entry = fetch_entries(client, &saved.track_ids).await;
     let current_index = saved
         .current
@@ -141,10 +142,7 @@ async fn fetch_entries(client: &TidalClient, track_ids: &[u64]) -> Vec<Child> {
 // getPlayQueue: the saved queue, or an empty one when nothing is saved.
 pub async fn get_play_queue(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let client = crate::tidal::client();
-    let saved = match play_state::queue() {
-        Some(q) => q,
-        None => return Ok(ok(PlayQueueResponse { play_queue: empty_queue() })),
-    };
+    let saved = restore_queue(client).await;
     let entry = fetch_entries(client, &saved.track_ids).await;
     Ok(ok(PlayQueueResponse {
         play_queue: PlayQueue {
@@ -158,27 +156,62 @@ pub async fn get_play_queue(_q: QueryParams) -> Result<warp::reply::Json, warp::
     }))
 }
 
-fn empty_queue() -> PlayQueue {
-    PlayQueue {
+// The queue to serve: the local store when it has tracks (it carries
+// the pre-current songs and the elapsed position), else Tidal's play
+// queue, which restores the queue across server restarts and from
+// other clients. A Tidal restore has no elapsed position.
+// The queue to serve: the local store when it has tracks (it carries
+// the pre-current songs and the elapsed position), else Tidal's play
+// queue, which restores the queue across server restarts and from
+// other clients. A Tidal restore has no elapsed position.
+async fn restore_queue(client: &TidalClient) -> play_state::PlayQueue {
+    if let Some(q) = play_state::queue().filter(|q| !q.track_ids.is_empty()) {
+        return q;
+    }
+    let fresh = play_state::PlayQueue {
+        track_ids: Vec::new(),
         current: None,
-        position: 0,
+        position_ms: 0,
         username: String::new(),
-        changed: play_state::iso8601_z(now_ms()),
         changed_by: String::new(),
-        entry: vec![],
+        changed_ms: now_ms(),
+    };
+    match client.fetch_play_queue().await {
+        Ok((ids, current)) if !ids.is_empty() => play_state::PlayQueue { track_ids: ids, current, ..fresh },
+        _ => fresh,
     }
 }
 
-fn empty_queue_by_index() -> PlayQueueByIndex {
-    PlayQueueByIndex {
-        current_index: None,
-        position: 0,
-        username: String::new(),
-        changed: play_state::iso8601_z(now_ms()),
-        changed_by: String::new(),
-        entry: vec![],
+// Mirror the saved queue to Tidal. Best effort: a failure stays local
+// and only logs, so Subsonic clients never see an error for a synced
+// queue. Compiled out of the test build so the warp tests never touch
+// the network.
+#[cfg(not(test))]
+async fn sync_saved_queue(ids: Option<(IdList, u64)>) {
+    let client = crate::tidal::client();
+    let result = match ids {
+        Some((ids, current)) => {
+            let parsed = parse_song_ids(&ids);
+            match parsed {
+                Ok(v) => {
+                    if v.contains(&current) {
+                        client.push_play_queue(&v, current).await
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+        None => client.clear_play_queue().await,
+    };
+    if let Err(e) = result {
+        tracing::debug!("play queue sync to Tidal skipped: {e}");
     }
 }
+
+#[cfg(test)]
+async fn sync_saved_queue(_ids: Option<(IdList, u64)>) {}
 
 #[cfg(test)]
 mod tests {
