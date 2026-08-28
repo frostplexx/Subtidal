@@ -1,9 +1,8 @@
 // Playlists and genres.
-use serde_json::Value;
 
 use crate::navidrome::ids;
 use crate::navidrome::models::{
-    Child, Genres, GenresResponse, GetPlaylistResponse, PingResponse, Playlist, Playlists,
+    Child, Genre, Genres, GenresResponse, GetPlaylistResponse, PingResponse, Playlist, Playlists,
     PlaylistsResponse, PlaylistWithSongs,
 };
 use crate::navidrome::params::{IdList, QueryParams};
@@ -146,8 +145,7 @@ pub async fn get_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
     let Some(playlist) = playlist_from_tidal(&result) else {
         return Ok(fail(70, "Playlist not found"));
     };
-    let total = result["numberOfTracks"].as_u64().unwrap_or(0) as u32;
-    let entry = match playlist_entries(client, id, total).await {
+    let entry = match playlist_entries(client, id).await {
         Ok(entry) => entry,
         Err(()) => return Ok(fail(0, "Playlist unavailable")),
     };
@@ -156,33 +154,39 @@ pub async fn get_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
     }))
 }
 
-// All tracks of a playlist, paged at 100 (Tidal's cap for this endpoint).
-// A playlist longer than 10k tracks is treated as broken.
-async fn playlist_entries(
-    client: &TidalClient,
-    uuid: &str,
-    total: u32,
-) -> Result<Vec<Child>, ()> {
-    let mut entry: Vec<Child> = Vec::new();
-    let mut offset = 0u32;
-    loop {
-        let page = match client.playlist_items(uuid, offset, 100).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!("tidal playlist items fetch failed: {e}");
-                return Err(());
-            }
-        };
-        let batch: Vec<Value> = page["items"].as_array().cloned().unwrap_or_default();
-        entry.extend(batch.iter().filter_map(playlist_song_from_item));
-        offset += 100;
-        // Stop when all known tracks arrived, the page came back empty,
-        // or the playlist is implausibly huge.
-        if offset >= total || batch.is_empty() || entry.len() >= 10_000 {
-            break;
+// All tracks of a playlist in one pass. The v1 items endpoint fetches
+// pages concurrently, turning a long playlist's sequential cursor walk
+// into a few parallel batches. A playlist longer than 10k tracks is
+// treated as broken and truncated; the v2 cursor walk stays as the
+// fallback when v1 fails or returns an unexpected shape.
+async fn playlist_entries(client: &'static TidalClient, uuid: &str) -> Result<Vec<Child>, ()> {
+    match TidalClient::playlist_items_parallel(client, uuid).await {
+        Ok(entries) if entries.first().is_none_or(|e| e["item"].is_object()) => {
+            return Ok(entries
+                .iter()
+                .take(10_000)
+                .filter_map(playlist_song_from_item)
+                .collect());
+        }
+        Ok(_) => {
+            tracing::debug!("v1 playlist items shape unexpected; falling back to the v2 walk");
+        }
+        Err(e) => {
+            tracing::debug!("v1 playlist items fetch failed ({e}); falling back to the v2 walk");
         }
     }
-    Ok(entry)
+    let entries = match client.playlist_all_items(uuid).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal playlist items fetch failed: {e}");
+            return Err(());
+        }
+    };
+    Ok(entries
+        .iter()
+        .take(10_000)
+        .filter_map(playlist_song_from_item)
+        .collect())
 }
 
 // createPlaylist: create a playlist, or update one when playlistId is
@@ -318,7 +322,7 @@ pub async fn delete_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
 
 // The full playlist payload (header plus tracks) for createPlaylist.
 async fn playlist_response(
-    client: &TidalClient,
+    client: &'static TidalClient,
     uuid: &str,
 ) -> Result<warp::reply::Json, warp::Rejection> {
     let result = match client.playlist(uuid).await {
@@ -332,8 +336,7 @@ async fn playlist_response(
     let Some(playlist) = playlist_from_tidal(&result) else {
         return Ok(fail(70, "Playlist not found"));
     };
-    let total = result["numberOfTracks"].as_u64().unwrap_or(0) as u32;
-    let entry = match playlist_entries(client, uuid, total).await {
+    let entry = match playlist_entries(client, uuid).await {
         Ok(entry) => entry,
         Err(()) => return Ok(fail(0, "Playlist unavailable")),
     };
@@ -398,11 +401,28 @@ pub(crate) fn parse_song_ids(list: &IdList) -> Result<Vec<u64>, &'static str> {
     Ok(ids)
 }
 
-// getGenres: Tidal exposes no genre list, so the list is empty. Clients get
-// a valid response; counts are unavailable until a genre source exists.
+// getGenres: Tidal's catalog carries genre names; counts come from the
+// per-genre album/track endpoints. Clients validate every row strictly
+// (name in `value`, numeric counts), so a fetch failure returns a valid
+// empty list rather than an error.
 pub async fn get_genres() -> Result<warp::reply::Json, warp::Rejection> {
+    let client = crate::tidal::client();
+    let genres = match crate::tidal::client::genre_list(client).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|r| Genre {
+                name: r["name"].as_str().unwrap_or("").to_string(),
+                song_count: r["songCount"].as_u64().unwrap_or(0) as u32,
+                album_count: r["albumCount"].as_u64().unwrap_or(0) as u32,
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!("tidal genre catalog fetch failed: {e}");
+            vec![]
+        }
+    };
     Ok(ok(GenresResponse {
-        genres: Genres { genre: vec![] },
+        genres: Genres { genre: genres },
     }))
 }
 

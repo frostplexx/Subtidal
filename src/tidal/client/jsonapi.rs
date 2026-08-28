@@ -295,7 +295,12 @@ pub(crate) fn next_cursor(doc: &Value) -> Option<String> {
 // Scanning `included` by type instead would mix categories.
 pub(crate) fn flatten_search(doc: &Value) -> Value {
     let idx = index(doc);
-    let rels = doc["data"]["relationships"].as_object();
+    // data is the searchResults documents array; the resource links live
+    // on its first element.
+    let rels = doc["data"]
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|r| r["relationships"].as_object());
     let mut out = serde_json::Map::new();
     for (category, key) in [
         ("albums", "albums"),
@@ -433,6 +438,30 @@ mod tests {
         assert_eq!(v["publicPlaylist"], false);
         assert_eq!(v["created"], "2023-01-01T00:00:00Z");
         assert_eq!(v["lastUpdated"], "2023-02-01T00:00:00Z");
+    }
+
+    #[test]
+    fn search_results_links_resolve_from_the_results_document() {
+        let doc = json!({
+            "data": [{
+                "type": "searchResults",
+                "id": "search",
+                "relationships": {
+                    "artists": {
+                        "data": [
+                            {"type": "artists", "id": "5"}
+                        ]
+                    }
+                }
+            }],
+            "included": [
+                {"type": "artists", "id": "5",
+                 "attributes": {"name": "Green Day"}}
+            ]
+        });
+        let v = flatten_search(&doc);
+        assert_eq!(v["artists"]["items"][0]["name"], "Green Day");
+        assert_eq!(v["tracks"]["items"].as_array().unwrap().len(), 0);
     }
 
     #[test]

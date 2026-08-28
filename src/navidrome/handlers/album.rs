@@ -20,14 +20,17 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
         return Ok(fail(70, "Album not found"));
     };
     let client = crate::tidal::client();
-    let detail = match client.album(album_id).await {
+    // v1 detail and items end to end: the v1 album object carries the
+    // fields the mappers read, and v1 track objects carry
+    // replayGain/peak. No backfill needed.
+    let detail = match client.album_v1(album_id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal album fetch failed: {e}");
             return Ok(fail(0, "Album unavailable"));
         }
     };
-    let tracks = match client.album_tracks(album_id).await {
+    let tracks = match crate::tidal::client::TidalClient::album_items_parallel(client, album_id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal album tracks fetch failed: {e}");

@@ -168,11 +168,14 @@ pub struct Genres {
 
 #[derive(Serialize)]
 pub struct Genre {
+    // Clients validate genre rows strictly: the name must be `value` and
+    // both counts must be present numbers.
+    #[serde(rename = "value")]
     pub name: String,
-    #[serde(rename = "songCount", skip_serializing_if = "Option::is_none")]
-    pub song_count: Option<u32>,
-    #[serde(rename = "albumCount", skip_serializing_if = "Option::is_none")]
-    pub album_count: Option<u32>,
+    #[serde(rename = "songCount")]
+    pub song_count: u32,
+    #[serde(rename = "albumCount")]
+    pub album_count: u32,
 }
 
 // jukeboxControl data: jukeboxStatus (all actions); get also returns
@@ -275,6 +278,22 @@ mod tests {
         assert_eq!(
             json,
             r##"{"jukeboxStatus":{"currentIndex":7,"playing":true,"gain":0.9,"position":67},"jukeboxPlaylist":{"entry":[]}}"##
+        );
+    }
+
+    #[test]
+    fn genre_serializes_to_the_client_validated_shape() {
+        // Feishin validates genre rows strictly: the name in `value`, and
+        // both counts present as numbers.
+        let genre = Genre {
+            name: "pop".into(),
+            song_count: 42,
+            album_count: 7,
+        };
+        let json = serde_json::to_string(&genre).unwrap();
+        assert_eq!(
+            json,
+            r##"{"value":"pop","songCount":42,"albumCount":7}"##
         );
     }
 }

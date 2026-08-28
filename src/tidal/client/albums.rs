@@ -5,9 +5,6 @@ use serde_json::Value;
 use super::{jsonapi, TidalClient};
 
 const ALBUM_INCLUDE: &str = "artists,coverArt,genres";
-// Album items embed the tracks plus their artists/cover sources; the
-// identifier meta supplies track/volume numbers.
-const ALBUM_ITEMS_INCLUDE: &str = "items,items.albums.coverArt,items.artists,items.genres";
 
 impl TidalClient {
     pub async fn album(&self, id: u64) -> Result<Value, super::Error> {
@@ -21,12 +18,22 @@ impl TidalClient {
         Ok(jsonapi::flatten_resource(&doc["data"], &doc))
     }
 
-    // One album's tracks in track order. Backs getAlbum. Response items
-    // are the bare flattened track objects (the shape v1 returned), with
-    // trackNumber/volumeNumber injected from the item identifiers.
-    pub async fn album_tracks(&self, album_id: u64) -> Result<Value, super::Error> {
-        let path = format!("/albums/{album_id}/relationships/items");
-        self.walk_bare_items(&path).await
+    // One album's tracks in track order. Backs getAlbum. Items come
+    // from the v1 offset-paged endpoint, whose track objects carry
+    // replayGain/peak; the v2 relationships items never do. The v1
+    // entries wrap each track in {item, type}.
+    pub async fn album_items_parallel(
+        client: &'static TidalClient,
+        album_id: u64,
+    ) -> Result<Value, super::Error> {
+        let path = format!("/albums/{album_id}/items");
+        let entries =
+            super::v1_pages_parallel(client, &path, &client.meta_cache, &[], 100, 6).await?;
+        let items: Vec<Value> = entries
+            .into_iter()
+            .filter_map(|e| e.get("item").cloned())
+            .collect();
+        Ok(serde_json::json!({ "items": items }))
     }
 
     // Favorited albums, newest first. Backs getAlbumList2 (type=starred).
@@ -40,34 +47,11 @@ impl TidalClient {
         .await
     }
 
-    // Walk a relationship-items endpoint page by page and return the
-    // flattened resources directly, one per item. Shared by album tracks
-    // and artist top tracks, whose v1 shapes were bare item lists.
-    async fn walk_bare_items(&self, path: &str) -> Result<Value, super::Error> {
-        let mut items: Vec<Value> = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut params: Vec<(&str, &str)> = vec![("include", ALBUM_ITEMS_INCLUDE)];
-            if let Some(c) = &cursor {
-                params.push(("page[cursor]", c.as_str()));
-            }
-            let doc = self.openapi_get(path, &params, &self.meta_cache).await?;
-            items.extend(jsonapi::bare_items(&doc));
-            match jsonapi::next_cursor(&doc) {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
-        Ok(serde_json::json!({ "items": items }))
-    }
-
-    // --- v1 backups (dead code) ------------------------------------
-    #[allow(dead_code)]
+    // --- v1 backups ------------------------------------------------
     pub async fn album_v1(&self, id: u64) -> Result<Value, super::Error> {
         self.get_json(&format!("/albums/{id}"), &self.meta_cache).await
     }
 
-    #[allow(dead_code)]
     pub async fn album_tracks_v1(&self, album_id: u64) -> Result<Value, super::Error> {
         self.get_json_q(
             &format!("/albums/{album_id}/tracks"),

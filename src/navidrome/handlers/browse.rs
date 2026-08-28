@@ -342,8 +342,8 @@ async fn album_directory(
     client: &crate::tidal::client::TidalClient,
     album_id: u64,
 ) -> Result<Directory, Error> {
-    let detail = client.album(album_id).await?;
-    let tracks = client.album_tracks(album_id).await?;
+    let detail = client.album_v1(album_id).await?;
+    let tracks = client.album_tracks_v1(album_id).await?;
     let year = year_from(detail["releaseDate"].as_str());
     let mut child: Vec<DirectoryChild> = tracks["items"]
         .as_array()
@@ -399,6 +399,7 @@ fn dir_entry(
         path: None,
         created: None,
         song_count: None,
+        replay_gain: None,
     }
 }
 

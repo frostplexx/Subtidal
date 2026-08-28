@@ -84,8 +84,7 @@ fn pick_random(
 }
 
 // getSongsByGenre: favorite tracks filtered by genre, paginated by
-// offset/count. Tidal exposes no genre catalog (getGenres is empty), so
-// this matches whatever genre string the track JSON carries.
+// offset/count. The genre string is the label the track JSON carries.
 pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(genre) = q.genre.as_deref() else {
         return Ok(fail(10, "Required parameter missing"));
@@ -141,7 +140,7 @@ async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'stati
     let per = (count / artists.len().max(1)).max(1) as u32;
     let mut songs: Vec<Child> = Vec::new();
     for (i, a) in artists.iter().enumerate() {
-        match client.artist_top_tracks(*a, per).await {
+        match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, *a, per).await {
             Ok(v) => songs.extend(
                 v["items"]
                     .as_array()

@@ -15,6 +15,13 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     let (artist_id, artist_name) = primary_artist(v);
     let year = year_from(v["releaseDate"].as_str())
         .or_else(|| year_from(album.get("releaseDate").and_then(|r| r.as_str())));
+    // v2 flatten writes the track's first genre onto `genre` (that data
+    // ships in the items.genres include); v1 track JSON embeds it on the
+    // album instead. Read both, prefer the track's own.
+    let genre = v["genre"]
+        .as_str()
+        .map(String::from)
+        .or_else(|| album.get("genre").and_then(|g| g.as_str()).map(String::from));
     // v2 tracks carry no audioQuality; every stream is served as an HLS
     // playlist of MP4 segments, so the container is always m4a.
     Some(Child {
@@ -27,10 +34,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         artist: artist_name,
         track: v["trackNumber"].as_u64().unwrap_or(0) as u32,
         year,
-        genre: album
-            .get("genre")
-            .and_then(|g| g.as_str())
-            .map(String::from),
+        genre,
         cover_art: album
             .get("cover")
             .and_then(|c| c.as_str())
@@ -83,6 +87,37 @@ mod tests {
             song.cover_art.unwrap(),
             "https://resources.tidal.com/images/abc/123/640x640.jpg"
         );
+    }
+
+    #[test]
+    fn song_takes_genre_from_the_track_when_flattened() {
+        // The v2 flatten writes the track's own first genre onto `genre`;
+        // the embedded v1 album object carries album.genre instead.
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "genre": "Hip-Hop",
+            "album": {"id": 456, "title": "Album One", "genre": "Rock"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.genre.as_deref(), Some("Hip-Hop"));
+    }
+
+    #[test]
+    fn song_takes_genre_from_the_album_when_track_has_none() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One", "genre": "Rock"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.genre.as_deref(), Some("Rock"));
     }
 
     #[test]

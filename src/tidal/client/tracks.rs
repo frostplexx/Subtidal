@@ -117,23 +117,26 @@ impl TidalClient {
             .await
     }
 
-    #[allow(dead_code)]
-    pub async fn favorite_tracks_v1(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
-        let user_id = self.user_id().await?;
-        let offset = offset.to_string();
-        let limit = limit.to_string();
+    // The user's favorite tracks as raw v1 entries ({created, item}),
+    // every offset page fetched concurrently. v1 track objects carry
+    // replayGain/peak, which the v2 collection never does; the v2
+    // collection keeps genres instead (see getSongsByGenre). Backs the
+    // favorites lists.
+    pub async fn favorite_tracks_parallel(
+        client: &'static TidalClient,
+    ) -> Result<Value, super::Error> {
+        let user_id = client.user_id().await?.to_string();
         let path = format!("/users/{user_id}/favorites/tracks");
-        self.get_json_q(
+        let items = super::v1_pages_parallel(
+            client,
             &path,
-            &[
-                ("limit", limit.as_str()),
-                ("offset", offset.as_str()),
-                ("order", "DATE"),
-                ("orderDirection", "DESC"),
-            ],
-            &self.meta_cache,
+            &client.meta_cache,
+            &[("order", "DATE"), ("orderDirection", "DESC")],
+            100,
+            6,
         )
-        .await
+        .await?;
+        Ok(serde_json::json!({ "items": items }))
     }
 }
 

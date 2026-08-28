@@ -8,7 +8,7 @@ use super::{jsonapi, TidalClient};
 
 // Playlist items with everything a track entry needs: the track, its
 // artists and cover, and the item id for later removal.
-const ITEMS_INCLUDE: &str = "items,items.albums.coverArt,items.artists,items.genres";
+const ITEMS_INCLUDE: &str = "items,items.albums.coverArt,items.artists";
 const PLAYLIST_INCLUDE: &str = "coverArt";
 // Mix items are addressed through the playlists endpoint: the mix
 // collections (my_mixes page, userDailyMixes/me) identify their cards
@@ -180,23 +180,6 @@ impl TidalClient {
         Ok(jsonapi::flatten_resource(&doc["data"], &doc))
     }
 
-    // One page of a playlist's tracks, wrapped as { item: { ...track }, type }.
-    pub async fn playlist_items(&self, uuid: &str, offset: u32, limit: u32) -> Result<Value, super::Error> {
-        let all = self.playlist_all_items(uuid).await?;
-        let total = all.len() as u64;
-        let start = offset as usize;
-        let end = start + limit as usize;
-        let items: Vec<Value> = all
-            .into_iter()
-            .skip(start)
-            .take(end.saturating_sub(start))
-            .collect();
-        Ok(serde_json::json!({
-            "items": items,
-            "totalNumberOfItems": total,
-        }))
-    }
-
     // Every entry of a playlist: { item, type, meta: { itemId, ... } }.
     // Page-walking with cursor pagination; entries carry their item id so
     // removals address exact entries. Videos and tracks both count here,
@@ -226,6 +209,78 @@ impl TidalClient {
                 Some(c) => cursor = Some(c),
                 None => break,
             }
+        }
+        Ok(items)
+    }
+
+    // --- v1 playlist items, fetched concurrently ---------------------
+    // The v2 relationship endpoint pages only by opaque cursor, so its
+    // walk is one sequential request per page (a long playlist's ~60-100
+    // round trips show up as the 5-6s getPlaylist logs). The v1 items
+    // endpoint pages by offset instead, which lets pages run concurrently:
+    // offsets are stable for a read-only request. Pages of 100, six in
+    // flight, reordered on the way back.
+    const V1_ITEMS_LIMIT: u32 = 100;
+    const V1_ITEMS_IN_FLIGHT: usize = 6;
+
+    async fn v1_items_page(
+        client: &'static TidalClient,
+        uuid: &str,
+        offset: u32,
+    ) -> Result<Value, super::Error> {
+        let offset = offset.to_string();
+        client
+            .get_json_q(
+                &format!("/playlists/{uuid}/items"),
+                &[("limit", "100"), ("offset", offset.as_str())],
+                &client.playlist_cache,
+            )
+            .await
+    }
+    // Fetch every item of a playlist through the v1 endpoint, with the
+    // pages in flight concurrently. Returns the raw entries: v1 wraps
+    // each track as { item, type }, the same shape v2 flatten emits, so
+    // callers reuse the same mapper. Without a total on the first page
+    // the walk degrades to one page at a time until a short page.
+    pub async fn playlist_items_parallel(
+        client: &'static TidalClient,
+        uuid: &str,
+    ) -> Result<Vec<Value>, super::Error> {
+        let first = Self::v1_items_page(client, uuid, 0).await?;
+        let mut items: Vec<Value> = first["items"].as_array().cloned().unwrap_or_default();
+        let Some(total) = first["totalNumberOfItems"].as_u64() else {
+            let mut offset = Self::V1_ITEMS_LIMIT;
+            loop {
+                let page = Self::v1_items_page(client, uuid, offset).await?;
+                let batch = page["items"].as_array().cloned().unwrap_or_default();
+                let n = batch.len();
+                items.extend(batch);
+                offset += Self::V1_ITEMS_LIMIT;
+                if n < Self::V1_ITEMS_LIMIT as usize || items.len() >= 10_000 {
+                    break;
+                }
+            }
+            return Ok(items);
+        };
+        let mut offset = Self::V1_ITEMS_LIMIT;
+        while offset < total as u32 {
+            let end = (offset as u64
+                + (Self::V1_ITEMS_IN_FLIGHT as u64 * Self::V1_ITEMS_LIMIT as u64))
+            .min(total) as u32;
+            let mut handles = Vec::with_capacity(Self::V1_ITEMS_IN_FLIGHT);
+            for off in (offset..end).step_by(Self::V1_ITEMS_LIMIT as usize) {
+                let uuid = uuid.to_string();
+                handles.push(tokio::spawn(async move {
+                    Self::v1_items_page(client, &uuid, off).await
+                }));
+            }
+            for handle in handles {
+                let page = handle.await.map_err(|e| {
+                    super::Error::HttpDecode(500, format!("playlist page task failed: {e}"))
+                })??;
+                items.extend(page["items"].as_array().cloned().unwrap_or_default());
+            }
+            offset = end;
         }
         Ok(items)
     }

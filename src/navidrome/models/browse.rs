@@ -125,6 +125,10 @@ pub struct DirectoryChild {
     pub created: Option<String>,
     #[serde(rename = "songCount", skip_serializing_if = "Option::is_none")]
     pub song_count: Option<u32>,
+    // OpenSubsonic ReplayGain, same shape as a song child so the player
+    // applies normalization also when the queue came from a directory.
+    #[serde(rename = "replayGain", skip_serializing_if = "Option::is_none")]
+    pub replay_gain: Option<crate::navidrome::models::ReplayGain>,
 }
 
 // A song fills every field; a directory stays minimal.
@@ -153,6 +157,7 @@ impl From<Child> for DirectoryChild {
             path: Some(s.path),
             created: Some(s.created),
             song_count: None,
+            replay_gain: Some(s.replay_gain),
         }
     }
 }

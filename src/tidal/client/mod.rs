@@ -19,8 +19,8 @@ mod artists;
 mod auth;
 mod favorites;
 mod feed;
-mod jsonapi;
-mod playlists;
+mod genres;
+mod jsonapi;mod playlists;
 mod search;
 mod stream;
 pub use stream::DashInfo;
@@ -31,6 +31,8 @@ pub(crate) use stream::Segment;
 pub(crate) use playlists::ItemAddr;
 mod tracks;
 mod users;
+
+pub use genres::genre_list;
 
 pub(crate) use feed::albums_from_page;
 pub use favorites::FavoriteKind;
@@ -346,6 +348,104 @@ impl TidalClient {
         }
         Ok(body)
     }
+}
+
+// Fetch one offset-paged page from a legacy v1 items endpoint.
+async fn v1_page(
+    client: &'static TidalClient,
+    path: &str,
+    cache: &'static Cache<String, Value>,
+    extra: &'static [(&'static str, &'static str)],
+    offset: u32,
+    limit: u32,
+) -> Result<Value, Error> {
+    let offset = offset.to_string();
+    let limit = limit.to_string();
+    let mut params: Vec<(&str, &str)> = Vec::with_capacity(extra.len() + 2);
+    params.extend_from_slice(extra);
+    params.push(("limit", limit.as_str()));
+    params.push(("offset", offset.as_str()));
+    client.get_json_q(path, &params, cache).await
+}
+
+// All offset pages of a legacy v1 items list, fetched concurrently and
+// reordered by offset on return. Page 0 learns totalNumberOfItems; a
+// missing total degrades to a sequential walk until a short page. The
+// v1 item lists carry replayGain/peak on every track and offset paging,
+// which the v2 relationships never do.
+pub(crate) async fn v1_pages_parallel(
+    client: &'static TidalClient,
+    path: &str,
+    cache: &'static Cache<String, Value>,
+    extra: &'static [(&'static str, &'static str)],
+    page_size: u32,
+    in_flight: usize,
+) -> Result<Vec<Value>, Error> {
+    let first = v1_page(client, path, cache, extra, 0, page_size).await?;
+    let mut items: Vec<Value> = first["items"].as_array().cloned().unwrap_or_default();
+    let total = match first["totalNumberOfItems"].as_u64() {
+        Some(t) => t,
+        None => {
+            let mut offset = page_size;
+            loop {
+                let page = v1_page(client, path, cache, extra, offset, page_size).await?;
+                let batch = page["items"].as_array().cloned().unwrap_or_default();
+                let n = batch.len();
+                items.extend(batch);
+                offset += page_size;
+                if n < page_size as usize || items.len() >= 10_000 {
+                    break;
+                }
+            }
+            return Ok(items);
+        }
+    };
+    let mut offset = page_size;
+    while offset < total as u32 {
+        let end = (offset as u64 + in_flight as u64 * page_size as u64).min(total);
+        let mut handles = Vec::with_capacity(in_flight);
+        for off in (offset..end as u32).step_by(page_size as usize) {
+            let path = path.to_string();
+            handles.push(tokio::spawn(async move {
+                v1_page(client, &path, cache, extra, off, page_size).await
+            }));
+        }
+        for handle in handles {
+            let page = handle
+                .await
+                .map_err(|e| Error::HttpDecode(500, format!("v1 page task failed: {e}")))??;
+            items.extend(page["items"].as_array().cloned().unwrap_or_default());
+        }
+        offset = end as u32;
+    }
+    Ok(items)
+}
+
+// Offset pages walked sequentially, stopping once limit items are in
+// hand or the server returns a short page. For bounded prefixes where
+// fetching everything would waste requests (top tracks).
+pub(crate) async fn v1_prefix(
+    client: &'static TidalClient,
+    path: &str,
+    cache: &'static Cache<String, Value>,
+    extra: &'static [(&'static str, &'static str)],
+    page_size: u32,
+    limit: u32,
+) -> Result<Vec<Value>, Error> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut offset = 0u32;
+    loop {
+        let page = v1_page(client, path, cache, extra, offset, page_size).await?;
+        let batch = page["items"].as_array().cloned().unwrap_or_default();
+        let n = batch.len();
+        items.extend(batch);
+        offset += page_size;
+        if items.len() >= limit as usize || n < page_size as usize {
+            break;
+        }
+    }
+    items.truncate(limit as usize);
+    Ok(items)
 }
 
 // Minimal percent-encoding for query strings. No new dependency needed.

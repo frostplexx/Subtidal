@@ -10,7 +10,6 @@ use super::{jsonapi, TidalClient};
 
 const ARTIST_INCLUDE: &str = "profileArt";
 const ARTIST_ALBUMS_INCLUDE: &str = "albums,albums.artists,albums.coverArt,albums.genres";
-const ARTIST_TRACKS_INCLUDE: &str = "tracks,tracks.albums.coverArt,tracks.artists";
 
 impl TidalClient {
     pub async fn artist(&self, id: u64) -> Result<Value, super::Error> {
@@ -55,35 +54,18 @@ impl TidalClient {
         Ok(serde_json::json!({ "items": items }))
     }
 
-    // An artist's most popular tracks. Backs getTopSongs. The
-    // relationship orders by popularity (the web app's track list);
-    // collapseBy=NONE keeps every track.
-    pub async fn artist_top_tracks(&self, artist_id: u64, _limit: u32) -> Result<Value, super::Error> {
-        let mut items: Vec<Value> = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut params: Vec<(&str, &str)> = vec![
-                ("include", ARTIST_TRACKS_INCLUDE),
-                ("collapseBy", "NONE"),
-            ];
-            if let Some(c) = &cursor {
-                params.push(("page[cursor]", c.as_str()));
-            }
-            let doc = self
-                .openapi_get(
-                    &format!("/artists/{artist_id}/relationships/tracks"),
-                    &params,
-                    &self.meta_cache,
-                )
-                .await?;
-            items.extend(jsonapi::bare_items(&doc));
-            match jsonapi::next_cursor(&doc) {
-                Some(c) => cursor = Some(c),
-                None => break,
-            }
-        }
-        // The handler slices by count; walk everything so the slice is
-        // accurate.
+    // An artist's most popular tracks. Backs getTopSongs/top tracks in
+    // getArtistInfo and similarSongs. Items come from the v1 toptracks
+    // endpoint, whose track objects carry replayGain/peak; the v2
+    // relationship never does. Fetching stops once `limit` items are in
+    // hand, so the small slices similarSongs asks for cost one page.
+    pub async fn artist_top_tracks_parallel(
+        client: &'static TidalClient,
+        artist_id: u64,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        let path = format!("/artists/{artist_id}/toptracks");
+        let items = super::v1_prefix(client, &path, &client.meta_cache, &[], 100, limit).await?;
         Ok(serde_json::json!({ "items": items }))
     }
 
