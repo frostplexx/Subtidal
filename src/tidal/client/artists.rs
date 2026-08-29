@@ -1,6 +1,8 @@
-// Artist endpoints. v2 OpenAPI (JSON:API) shapes; v1 bodies stay as
-// dead-code backups under `_v1` names. Album dedup and the release-type
-// ordering logic live on at the bottom, operating on v2-flattened items.
+// Artist endpoints. v1 bodies stay as dead-code backups under `_v1`
+// names where a v2 shape exists. The album list uses v1: three
+// requests cover the whole catalog, while the v2 relationship walk
+// paginates 20 items at a time. Album dedup and the compilation
+// stamping live on at the bottom.
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
@@ -9,7 +11,6 @@ use serde_json::Value;
 use super::{jsonapi, TidalClient};
 
 const ARTIST_INCLUDE: &str = "profileArt";
-const ARTIST_ALBUMS_INCLUDE: &str = "albums,albums.artists,albums.coverArt,albums.genres";
 
 impl TidalClient {
     pub async fn artist(&self, id: u64) -> Result<Value, super::Error> {
@@ -23,35 +24,35 @@ impl TidalClient {
         Ok(jsonapi::flatten_resource(&doc["data"], &doc))
     }
 
-    // One artist's releases, albums first, then EPs, then singles. The
-    // v2 albums relationship carries no separate compilations list (that
-    // v1 filter has no v2 equivalent, so compilations drop), and every
-    // page's albums dedup on their own: a single and an album with the
-    // same title must never collapse.
+    // One artist's releases: albums, then EPs and singles, then
+    // compilations. The v1 albums endpoint pages up to 1000 items and
+    // splits by section, so the whole list costs three requests; the
+    // v2 relationship walk would cost one cursor page per 20 albums
+    // (twelve round trips for Lady Gaga). The v1 index is partial:
+    // region-variant releases drop out of the list, but their direct
+    // album pages still resolve through the getAlbum v2 fallback.
     pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
-        let mut items: Vec<Value> = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let mut params: Vec<(&str, &str)> = vec![("include", ARTIST_ALBUMS_INCLUDE)];
-            if let Some(c) = &cursor {
-                params.push(("page[cursor]", c.as_str()));
+        let mut albums = self
+            .get_json_q(
+                &format!("/artists/{artist_id}/albums"),
+                &[("limit", "1000"), ("offset", "0")],
+                &self.meta_cache,
+            )
+            .await?;
+        if let Some(items) = albums["items"].as_array_mut() {
+            dedup_albums(items);
+        }
+        let ep_singles = self.release_items(artist_id, "EPSANDSINGLES").await;
+        let compilations = self.release_items(artist_id, "COMPILATIONS").await;
+        if let Some(all) = albums["items"].as_array_mut() {
+            if let Some(mut extra) = ep_singles {
+                merge_album_sections(all, &mut extra);
             }
-            let doc = self
-                .openapi_get(
-                    &format!("/artists/{artist_id}/relationships/albums"),
-                    &params,
-                    &self.meta_cache,
-                )
-                .await?;
-            items.extend(jsonapi::bare_items(&doc));
-            match jsonapi::next_cursor(&doc) {
-                Some(c) => cursor = Some(c),
-                None => break,
+            if let Some(mut extra) = compilations {
+                merge_compilations(all, &mut extra);
             }
         }
-        dedup_albums(&mut items);
-        items.sort_by_key(|v| album_type_rank(v["type"].as_str().unwrap_or("")));
-        Ok(serde_json::json!({ "items": items }))
+        Ok(albums)
     }
 
     // An artist's most popular tracks. Backs getTopSongs/top tracks in
@@ -121,32 +122,6 @@ impl TidalClient {
         self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
     }
 
-    #[allow(dead_code)]
-    pub async fn artist_albums_v1(&self, artist_id: u64) -> Result<Value, super::Error> {
-        let mut albums = self
-            .get_json_q(
-                &format!("/artists/{artist_id}/albums"),
-                &[("limit", "1000"), ("offset", "0")],
-                &self.meta_cache,
-            )
-            .await?;
-        if let Some(items) = albums["items"].as_array_mut() {
-            dedup_albums(items);
-        }
-        let ep_singles = self.release_items(artist_id, "EPSANDSINGLES").await;
-        let compilations = self.release_items(artist_id, "COMPILATIONS").await;
-        if let Some(all) = albums["items"].as_array_mut() {
-            if let Some(mut extra) = ep_singles {
-                merge_album_sections(all, &mut extra);
-            }
-            if let Some(mut extra) = compilations {
-                merge_compilations(all, &mut extra);
-            }
-        }
-        Ok(albums)
-    }
-
-    #[allow(dead_code)]
     async fn release_items(&self, artist_id: u64, filter: &str) -> Option<Vec<Value>> {
         let resp = match self
             .get_json_q(
@@ -215,17 +190,6 @@ impl TidalClient {
     }
 }
 
-// Compilation albums have no v2 equivalent, so the album list order is
-// the albumType string: ALBUM first, then EP, then SINGLE.
-fn album_type_rank(t: &str) -> u8 {
-    match t {
-        "ALBUM" => 0,
-        "EP" => 1,
-        "SINGLE" => 2,
-        _ => 3,
-    }
-}
-
 // Append EPs and singles to the album list. The EP/singles list is
 // deduplicated on its own: a single and an album with the same title
 // are different releases and must both stay.
@@ -280,7 +244,7 @@ fn dedup_albums(items: &mut Vec<Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{album_type_rank, dedup_albums, merge_album_sections, merge_compilations};
+    use super::{dedup_albums, merge_album_sections, merge_compilations};
     use serde_json::{json, Value};
 
     #[test]
@@ -380,11 +344,5 @@ mod tests {
         assert_eq!(albums.len(), 2);
         assert_eq!(albums[1]["isCompilation"], true);
         assert!(albums[0].get("isCompilation").is_none());
-    }
-
-    #[test]
-    fn album_type_rank_orders_album_before_ep_before_single() {
-        assert!(album_type_rank("ALBUM") < album_type_rank("EP"));
-        assert!(album_type_rank("EP") < album_type_rank("SINGLE"));
     }
 }
