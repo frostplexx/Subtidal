@@ -8,6 +8,7 @@ use crate::navidrome::models::{
 };
 use crate::navidrome::params::QueryParams;
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
 use super::{fail, ok, redirect};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{song_from_track, year_from};
@@ -110,9 +111,11 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
 }
 
 // The core shared by getSimilarSongs and getSimilarSongs2: a random
-// collection from the given artist and similar artists. The seed's top
-// tracks plus the top tracks of the three closest similar artists are
-// shuffled and truncated to count. A similar artist's fetch failure
+// collection of songs similar to the artist. The primary source is
+// Tidal's own similar feed: the similarTracks relationship, seeded from
+// the artist's most popular track. A short or empty feed pads with the
+// old heuristic (top tracks of the seed and its three closest similar
+// artists), deduped against the feed. A similar artist's fetch failure
 // degrades to a warning; the seed's failure fails the request.
 async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'static str)> {
     let Some(id) = q.id.0.first() else {
@@ -123,42 +126,93 @@ async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'stati
     };
     let count = q.count.unwrap_or(50).min(500) as usize;
     let client = crate::tidal::client();
-    let similar = match client.artist_similar(artist_id, 3).await {
+
+    // The real feed first. On failure the heuristic below still runs, so
+    // a broken relationship endpoint degrades instead of failing.
+    let mut songs: Vec<Child> = match similar_feed_songs(client, artist_id).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("tidal similar artists fetch failed: {e}");
-            return Err((0, "Similar songs unavailable"));
+            tracing::warn!("tidal similar feed failed for artist {artist_id}: {e}");
+            Vec::new()
         }
     };
-    let mut artists: Vec<u64> = vec![artist_id];
-    artists.extend(
-        similar["items"]
-            .as_array()
-            .map(|items| items.iter().filter_map(|a| a["id"].as_u64()).collect::<Vec<_>>())
-            .unwrap_or_default(),
-    );
-    let per = (count / artists.len().max(1)).max(1) as u32;
-    let mut songs: Vec<Child> = Vec::new();
-    for (i, a) in artists.iter().enumerate() {
-        match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, *a, per).await {
-            Ok(v) => songs.extend(
-                v["items"]
-                    .as_array()
-                    .map(|items| items.iter().filter_map(song_from_track).collect::<Vec<_>>())
-                    .unwrap_or_default(),
-            ),
+
+    if songs.len() < count {
+        let known: HashSet<u64> = songs
+            .iter()
+            .filter_map(|s| ids::parse_track_id(&s.id))
+            .collect();
+        let similar = match client.artist_similar(artist_id, 3).await {
+            Ok(v) => v,
             Err(e) => {
-                if i == 0 {
-                    tracing::error!("tidal top tracks fetch failed: {e}");
-                    return Err((0, "Similar songs unavailable"));
+                tracing::error!("tidal similar artists fetch failed: {e}");
+                return Err((0, "Similar songs unavailable"));
+            }
+        };
+        let mut artists: Vec<u64> = vec![artist_id];
+        artists.extend(
+            similar["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|a| a["id"].as_u64())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
+        // Per-artist slice targets the remaining slots, capped upward so
+        // a short feed still requests one track per artist.
+        let per = ((count - songs.len()) / artists.len().max(1)).max(1) as u32;
+        for (i, a) in artists.iter().enumerate() {
+            match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, *a, per).await {
+                Ok(v) => songs.extend(
+                    v["items"]
+                        .as_array()
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(song_from_track)
+                                .filter(|s| {
+                                    ids::parse_track_id(&s.id).is_none_or(|t| !known.contains(&t))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                ),
+                Err(e) => {
+                    if i == 0 {
+                        tracing::error!("tidal top tracks fetch failed: {e}");
+                        return Err((0, "Similar songs unavailable"));
+                    }
+                    tracing::warn!("tidal top tracks failed for artist {a}: {e}");
                 }
-                tracing::warn!("tidal top tracks failed for artist {a}: {e}");
             }
         }
     }
     songs.shuffle(&mut rand::rng());
     songs.truncate(count);
     Ok(songs)
+}
+
+// Tidal's similarTracks relationship for the artist's most popular
+// track. Songs derive from the flattened feed. An empty feed (no top
+// track or no mappable items) returns an empty list so the caller can
+// pad from the heuristic.
+async fn similar_feed_songs(
+    client: &'static crate::tidal::client::TidalClient,
+    artist_id: u64,
+) -> Result<Vec<Child>, Error> {
+    let top = crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, artist_id, 1)
+        .await?;
+    let Some(seed_id) = top["items"][0]["id"].as_u64() else {
+        return Ok(Vec::new());
+    };
+    let feed = client.track_similar(seed_id, 200).await?;
+    Ok(feed["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(song_from_track).collect())
+        .unwrap_or_default())
 }
 
 pub async fn get_similar_songs2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {

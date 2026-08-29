@@ -441,6 +441,57 @@ mod tests {
     }
 
     #[test]
+    fn similar_tracks_feed_flattens_to_mappable_items() {
+        // The similarTracks relationship document: identifiers in `data`,
+        // full track resources in `included` (with their albums, artists,
+        // and coverArt nested). Missing included resources are skipped, so
+        // a partially-resolved feed degrades instead of panicking.
+        let doc = json!({
+            "data": [
+                {"type": "tracks", "id": "11",
+                 "meta": {"trackNumber": 1, "volumeNumber": 1}},
+                {"type": "tracks", "id": "12"},
+            ],
+            "included": [
+                {
+                    "type": "artists", "id": "3",
+                    "attributes": {"name": "Ghost"},
+                },
+                {
+                    "type": "albums", "id": "5",
+                    "attributes": {"title": "Opus", "releaseDate": "2013-03-01"},
+                },
+                {
+                    "type": "artworks", "id": "1",
+                    "attributes": {"files": [
+                        {"href": "https://art.tidal.com/a",
+                         "meta": {"width": 1280, "height": 1280}},
+                    ]},
+                },
+                {
+                    "type": "tracks", "id": "11",
+                    "attributes": {"title": "Year Zero", "duration": "PT3M40S"},
+                    "relationships": {
+                        "artists": {"data": [{"type": "artists", "id": "3"}]},
+                        "albums": {"data": [{"type": "albums", "id": "5"}]},
+                        "coverArt": {"data": [{"type": "artworks", "id": "1"}]},
+                    },
+                },
+            ],
+        });
+        let items = bare_items(&doc);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Year Zero");
+        assert_eq!(items[0]["duration"], json!(220));
+        assert_eq!(items[0]["album"]["id"], json!(5));
+        assert_eq!(items[0]["album"]["title"], "Opus");
+        assert_eq!(items[0]["artists"][0]["name"], "Ghost");
+        assert_eq!(items[0]["cover"], "https://art.tidal.com/a");
+        assert_eq!(items[0]["trackNumber"], 1);
+        assert_eq!(items[0]["volumeNumber"], 1);
+    }
+
+    #[test]
     fn search_results_links_resolve_from_the_results_document() {
         let doc = json!({
             "data": [{

@@ -80,6 +80,41 @@ impl TidalClient {
         .await
     }
 
+    // Tracks similar to the given one, from Tidal's own similar feed
+    // (the relationships/similarTracks relationship). Backs
+    // getSimilarSongs. The relationship pages by cursor, like
+    // favorite_pages; walking stops once `limit` items are in hand.
+    pub async fn track_similar(&self, track_id: u64, limit: u32) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![(
+                "include",
+                "similarTracks,similarTracks.albums.coverArt,similarTracks.artists,similarTracks.genres",
+            )];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/tracks/{track_id}/relationships/similarTracks"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            items.extend(jsonapi::bare_items(&doc));
+            if items.len() as u32 >= limit {
+                break;
+            }
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        items.truncate(limit as usize);
+        Ok(serde_json::json!({ "items": items }))
+    }
+
     // A track's detail page. The typed TidalTrack carries everything the
     // handlers need (title, artists, duration, mixes) and serializes back
     // to raw Tidal JSON for the legacy Value-based mappers.
