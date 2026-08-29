@@ -290,6 +290,35 @@ pub(crate) fn next_cursor(doc: &Value) -> Option<String> {
         .map(String::from)
 }
 
+// Tracks of a resource's own `items` relationship (e.g., album items
+// inlined into the album document), flattened like bare_items with the
+// identifiers' trackNumber/volumeNumber meta injected. Used when a
+// separate relationship walk 404s by region but the parent document
+// still resolves.
+pub(crate) fn relationship_items(obj: &Value, doc: &Value) -> Vec<Value> {
+    let idx = index(doc);
+    let Some(idents) = obj["relationships"]["items"]["data"].as_array() else {
+        return Vec::new();
+    };
+    idents
+        .iter()
+        .filter_map(|ident| {
+            let mut item = match resolve(&idx, ident) {
+                Some(r) => flatten_with(r, &idx),
+                None => return None,
+            };
+            let meta = &ident["meta"];
+            if meta["trackNumber"].is_number() {
+                item["trackNumber"] = meta["trackNumber"].clone();
+            }
+            if meta["volumeNumber"].is_number() {
+                item["volumeNumber"] = meta["volumeNumber"].clone();
+            }
+            Some(item)
+        })
+        .collect()
+}
+
 // A /searchResults document into the v1 search shape: each section's
 // items come from the resource's relationship identifiers in order.
 // Scanning `included` by type instead would mix categories.
@@ -438,6 +467,63 @@ mod tests {
         assert_eq!(v["publicPlaylist"], false);
         assert_eq!(v["created"], "2023-01-01T00:00:00Z");
         assert_eq!(v["lastUpdated"], "2023-02-01T00:00:00Z");
+    }
+
+    #[test]
+    fn album_items_inlined_into_the_album_document() {
+        // The v2 album document with include=items: the album resource
+        // carries item identifiers (with trackNumber/volumeNumber meta),
+        // the included tracks resolve against the same index. This is
+        // the getAlbum fallback shape for regionally-unavailable albums.
+        let doc = json!({
+            "data": {
+                "type": "albums", "id": "5",
+                "attributes": { "title": "Opus", "albumType": "ALBUM",
+                                 "numberOfItems": 1, "duration": "PT4M12S" },
+                "relationships": {
+                    "artists": { "data": [{ "type": "artists", "id": "3" }] },
+                    "coverArt": { "data": [{ "type": "artworks", "id": "1" }] },
+                    "items": {
+                        "data": [
+                            { "type": "tracks", "id": "7",
+                              "meta": { "trackNumber": 2, "volumeNumber": 1 } }
+                        ]
+                    },
+                },
+            },
+            "included": [
+                { "type": "artists", "id": "3", "attributes": { "name": "Ghost" } },
+                { "type": "artworks", "id": "1", "attributes": { "files": [
+                    { "href": "https://art.tidal.com/a", "meta": { "width": 1280, "height": 1280 } }
+                ] } },
+                {
+                    "type": "tracks", "id": "7",
+                    "attributes": { "title": "Run", "duration": "PT4M12S" },
+                    "relationships": {
+                        "artists": { "data": [{ "type": "artists", "id": "3" }] },
+                        "albums": { "data": [{ "type": "albums", "id": "5" }] },
+                        "coverArt": { "data": [{ "type": "artworks", "id": "1" }] },
+                    },
+                },
+            ],
+        });
+        let album = flatten_resource(&doc["data"], &doc);
+        assert_eq!(album["id"], json!(5));
+        assert_eq!(album["title"], "Opus");
+        assert_eq!(album["type"], "ALBUM");
+        assert_eq!(album["numberOfTracks"], 1);
+        assert_eq!(album["duration"], json!(252));
+        assert_eq!(album["cover"], "https://art.tidal.com/a");
+        let items = relationship_items(&doc["data"], &doc);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Run");
+        assert_eq!(items[0]["artists"][0]["name"], "Ghost");
+        // The primary resource never repeats inside `included`, so the
+        // items' album join resolves to nothing; the caller (album_with_items
+        // in albums.rs) injects the flattened parent album onto its items.
+        assert!(items[0]["album"].is_null());
+        assert_eq!(items[0]["trackNumber"], 2);
+        assert_eq!(items[0]["volumeNumber"], 1);
     }
 
     #[test]

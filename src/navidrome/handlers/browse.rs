@@ -337,23 +337,50 @@ async fn artist_directory(
 }
 
 // An album directory: the album's tracks, in track order. The album year
-// fills in for tracks that carry no release date.
+// fills in for tracks that carry no release date. The v1 detail+tracks
+// path keeps replayGain/peak on the tracks; when the album is regionally
+// unavailable (v1 404s "Album [x] not found", e.g. UK promo EPs in an IT
+// account) the v2 album document with the items relationship inlined
+// still resolves, so that becomes the fallback.
 async fn album_directory(
     client: &crate::tidal::client::TidalClient,
     album_id: u64,
 ) -> Result<Directory, Error> {
-    let detail = client.album_v1(album_id).await?;
-    let tracks = client.album_tracks_v1(album_id).await?;
+    let detail_v1 = match client.album_v1(album_id).await {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::debug!("v1 album detail failed, falling back to v2: {e}");
+            None
+        }
+    };
+    let tracks_v1 = match &detail_v1 {
+        Some(_) => match client.album_tracks_v1(album_id).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::debug!("v1 album tracks failed, falling back to v2: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    let (detail, tracks) = match (detail_v1, tracks_v1) {
+        (Some(d), Some(t)) => (d, t["items"].as_array().cloned().unwrap_or_default()),
+        _ => match client.album_with_items(album_id).await {
+            Ok(v) => (
+                v["album"].clone(),
+                v["items"].as_array().cloned().unwrap_or_default(),
+            ),
+            Err(e) => {
+                tracing::error!("tidal album fetch failed: {e}");
+                return Err(e);
+            }
+        },
+    };
     let year = year_from(detail["releaseDate"].as_str());
-    let mut child: Vec<DirectoryChild> = tracks["items"]
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|t| song_from_track(t).map(DirectoryChild::from))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut child: Vec<DirectoryChild> = tracks
+        .iter()
+        .filter_map(|t| song_from_track(t).map(DirectoryChild::from))
+        .collect();
     for c in &mut child {
         if c.year.is_none() {
             c.year = year;
