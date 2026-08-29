@@ -129,8 +129,8 @@ pub struct TidalClient {
     // The user's play queue id, resolved once and reused until the
     // queue is deleted.
     queue_id: Mutex<Option<String>>,
-    // Hard cap on parallel playbackinfo fetches and on stream starts
-    // per window; see stream.rs. Excess stream requests are rejected.
+    // Hard cap on parallel playbackinfo fetches; see stream.rs. A wait
+    // that exceeds the slot bound is rejected with RateLimited.
     stream_limiter: StreamLimiter,
 }
 
