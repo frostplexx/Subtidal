@@ -7,7 +7,7 @@
 // back to using the name itself. Count fetches run concurrently and
 // are cached; a count failure degrades to zero without failing the
 // row.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
@@ -25,22 +25,35 @@ pub async fn genre_list(client: &'static TidalClient) -> Result<Vec<Value>, supe
     );
     let doc = doc?;
     let paths = genre_paths(&paths_doc?);
+    let extras = extra_count_keys();
+    let valid = valid_count_keys(&paths, &extras);
     let rows = genre_rows(&doc);
     let mut out = Vec::with_capacity(rows.len());
     // Six count requests in flight at once; reordered on the way back.
+    // Genres without a v1 browse path get zero counts without a doomed
+    // HTTP call, so getGenres stays silent about them.
     let mut i = 0;
     while i < rows.len() {
         let end = (i + 6).min(rows.len());
         let mut handles = Vec::with_capacity(end - i);
         for r in &rows[i..end] {
             let name = r["name"].as_str().unwrap_or("").to_string();
-            let key = count_key(&name, &paths);
-            handles.push(tokio::spawn(async move { genre_counts(client, &key).await }));
+            let key = count_key(&name, &paths, &extras);
+            if valid.contains(&key) {
+                handles.push(Some(tokio::spawn(async move {
+                    genre_counts(client, &key).await
+                })));
+            } else {
+                handles.push(None);
+            }
         }
         for (r, h) in rows[i..end].iter().zip(handles) {
-            let (album_count, song_count) = h.await.map_err(|e| {
-                super::Error::HttpDecode(500, format!("genre counts task failed: {e}"))
-            })??;
+            let (album_count, song_count) = match h {
+                Some(h) => h.await.map_err(|e| {
+                    super::Error::HttpDecode(500, format!("genre counts task failed: {e}"))
+                })??,
+                None => (0, 0),
+            };
             out.push(json!({
                 "id": r["id"],
                 "name": r["name"],
@@ -69,12 +82,40 @@ fn genre_paths(doc: &Value) -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-// The count endpoint key for a genre name: the v1 browse path when one
-// exists ("Hip Hop/Rap" -> "Hiphop"), otherwise the name itself.
-fn count_key(genre_name: &str, paths: &HashMap<String, String>) -> String {
+// v2 genre names that share a v1 browse path with a DIFFERENTLY named
+// v1 genre. v2 calls it "Folk"; v1 names the editorial browse genre
+// "Folk / Americana" with path "Americana".
+fn extra_count_keys() -> HashMap<&'static str, &'static str> {
+    let mut m = HashMap::new();
+    m.insert("Folk", "Americana");
+    m
+}
+
+// The count endpoint keys that can resolve to a real v1 browse path.
+fn valid_count_keys(
+    paths: &HashMap<String, String>,
+    extras: &HashMap<&'static str, &'static str>,
+) -> HashSet<String> {
     paths
-        .get(&normalize(genre_name))
+        .values()
         .cloned()
+        .chain(extras.values().map(|s| s.to_string()))
+        .collect()
+}
+
+// The count endpoint key for a genre name: the v1 browse path when one
+// exists ("Hip Hop/Rap" -> "Hiphop", "Folk" -> "Americana"), otherwise
+// the name itself.
+fn count_key(
+    genre_name: &str,
+    paths: &HashMap<String, String>,
+    extras: &HashMap<&'static str, &'static str>,
+) -> String {
+    let n = normalize(genre_name);
+    paths
+        .get(&n)
+        .map(|s| s.to_string())
+        .or_else(|| extras.get(n.as_str()).map(|s| s.to_string()))
         .unwrap_or_else(|| genre_name.to_string())
 }
 
@@ -183,17 +224,36 @@ mod tests {
     }
 
     #[test]
-    fn count_key_uses_path_then_name_fallback() {
+    fn count_key_uses_path_then_extras_then_name() {
         let paths = genre_paths(&json!([
             {"name": "Hip Hop / Rap", "path": "Hiphop"},
             {"name": "Pop", "path": "Pop"}
         ]));
-        assert_eq!(count_key("Hip Hop/Rap", &paths), "Hiphop");
-        assert_eq!(count_key("Pop", &paths), "Pop");
+        let extras = extra_count_keys();
+        assert_eq!(count_key("Hip Hop/Rap", &paths, &extras), "Hiphop");
+        assert_eq!(count_key("Pop", &paths, &extras), "Pop");
+        // v2 "Folk" maps onto v1's "Folk / Americana" path.
+        assert_eq!(count_key("Folk", &paths, &extras), "Americana");
         // Genres only in v2 keep their own name as the key; the endpoint
         // 404s and the count degrades to zero.
-        assert_eq!(count_key("Alternative", &paths), "Alternative");
-        assert_eq!(count_key("Alternative", &HashMap::new()), "Alternative");
+        assert_eq!(count_key("Alternative", &paths, &extras), "Alternative");
+        assert_eq!(count_key("Alternative", &paths, &HashMap::new()), "Alternative");
+    }
+
+    #[test]
+    fn valid_keys_cover_paths_and_extras() {
+        let paths = genre_paths(&json!([
+            {"name": "World Music", "path": "World"},
+            {"name": "Pop", "path": "Pop"}
+        ]));
+        let extras = extra_count_keys();
+        let valid = valid_count_keys(&paths, &extras);
+        assert!(valid.contains("World"));
+        assert!(valid.contains("Pop"));
+        assert!(valid.contains("Americana"));
+        // v2-only names resolve to paths Tidal never exposes; they are
+        // not valid and never hit the network.
+        assert!(!valid.contains("Holiday"));
     }
 
     #[test]
