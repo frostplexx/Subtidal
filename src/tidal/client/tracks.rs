@@ -234,6 +234,11 @@ pub struct TidalTrack {
     /// Mix IDs such as TRACK_MIX, present on track detail responses.
     #[serde(default)]
     pub mixes: Option<Value>,
+    /// Algorithmic-generation (AI) flag; true on tracks and albums by AI
+    /// artists. Artists themselves carry no such flag, so artist filtering
+    /// must go through their albums and tracks.
+    #[serde(default)]
+    pub ai: Option<bool>,
     /// "track" or "video", from playlist item wrappers.
     #[serde(default)]
     pub item_type: Option<String>,
@@ -325,6 +330,7 @@ mod tests {
             "premiumStreamingOnly": false,
             "audioModes": ["STEREO"],
             "mediaMetadata": {"tags": ["LOSSLESS"]},
+            "ai": true,
             "mixes": {"TRACK_MIX": "00112233445566778899aabbccddeeff"}
         });
         let t: TidalTrack = serde_json::from_value(v).unwrap();
@@ -341,6 +347,7 @@ mod tests {
         assert_eq!(t.track_number, Some(3));
         assert_eq!(t.volume_number, Some(2));
         assert_eq!(t.mixes.as_ref().unwrap()["TRACK_MIX"], "00112233445566778899aabbccddeeff");
+        assert_eq!(t.ai, Some(true));
         let artist = t.artists.as_ref().unwrap().first().unwrap();
         assert_eq!(artist.id, 9);
         assert_eq!(artist.artist_type.as_deref(), Some("MAIN"));
@@ -360,5 +367,6 @@ mod tests {
         assert_eq!(t.artists, None);
         assert_eq!(t.album, None);
         assert!(t.mixes.is_none());
+        assert_eq!(t.ai, None);
     }
 }

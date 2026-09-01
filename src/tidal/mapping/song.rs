@@ -8,7 +8,11 @@ use super::{cover_url, primary_artist, year_from};
 
 pub fn song_from_track(v: &Value) -> Option<Child> {
     let id = v["id"].as_u64()?;
-    let title = v["title"].as_str()?.to_string();
+    let mut title = v["title"].as_str()?.to_string();
+    if v["ai"].as_bool() == Some(true) {
+        // title.push_str("  ✦");
+        title.push_str(" • AI");
+    }
     let album = v["album"].as_object()?;
     let album_id = album["id"].as_u64()?;
     let album_name = album["title"].as_str().unwrap_or("").to_string();
@@ -18,14 +22,15 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     // v2 flatten writes the track's first genre onto `genre` (that data
     // ships in the items.genres include); v1 track JSON embeds it on the
     // album instead. Read both, prefer the track's own.
-    let genre = v["genre"]
-        .as_str()
-        .map(String::from)
-        .or_else(|| album.get("genre").and_then(|g| g.as_str()).map(String::from));
+    let genre = v["genre"].as_str().map(String::from).or_else(|| {
+        album
+            .get("genre")
+            .and_then(|g| g.as_str())
+            .map(String::from)
+    });
     // The same value as the OpenSubsonic genres array.
-    let genres = genre
-        .as_ref()
-        .map(|g| vec![GenreItem { name: g.clone() }]);
+    let genres = genre.as_ref().map(|g| vec![GenreItem { name: g.clone() }]);
+
     // v2 tracks carry no audioQuality; every stream is served as an HLS
     // playlist of MP4 segments, so the container is always m4a.
     Some(Child {
@@ -56,6 +61,9 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         created: String::new(),
         starred: None,
         starred_at: None,
+        explicit_status: v["explicit"]
+            .as_bool()
+            .map(|e| if e { "explicit" } else { "clean" }.to_string()),
         replay_gain: ReplayGain {
             track_gain: v["replayGain"].as_f64(),
             track_peak: v["peak"].as_f64(),
@@ -170,5 +178,48 @@ mod tests {
         let song = song_from_track(&track).unwrap();
         assert_eq!(song.replay_gain.track_gain, None);
         assert_eq!(song.replay_gain.track_peak, None);
+    }
+
+    #[test]
+    fn song_maps_explicit_status() {
+        let explicit = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "explicit": true
+        });
+        let song = song_from_track(&explicit).unwrap();
+        assert_eq!(song.explicit_status.as_deref(), Some("explicit"));
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["explicitStatus"], "explicit");
+
+        let clean = json!({
+            "id": 124,
+            "title": "Song Two",
+            "duration": 220,
+            "trackNumber": 4,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "explicit": false
+        });
+        let song = song_from_track(&clean).unwrap();
+        assert_eq!(song.explicit_status.as_deref(), Some("clean"));
+
+        // Endpoints that omit the flag produce no explicitStatus at all.
+        let bare = json!({
+            "id": 125,
+            "title": "Song Three",
+            "duration": 220,
+            "trackNumber": 5,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&bare).unwrap();
+        assert_eq!(song.explicit_status, None);
+        let json = serde_json::to_value(&song).unwrap();
+        assert!(json.get("explicitStatus").is_none());
     }
 }
