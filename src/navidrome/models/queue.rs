@@ -94,6 +94,7 @@ mod tests {
             created: "2023-01-01T00:00:00Z".into(),
             starred: None,
             starred_at: None,
+            explicit_status: None,
             replay_gain: crate::navidrome::models::ReplayGain::default(),
         }
     }

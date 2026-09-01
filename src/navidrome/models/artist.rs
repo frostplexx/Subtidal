@@ -166,6 +166,7 @@ mod tests {
                     release_types: None,
                     starred: None,
                     starred_at: None,
+                    explicit_status: None,
                 }],
             },
         };

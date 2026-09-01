@@ -39,6 +39,9 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
         year: year_from(v["releaseDate"].as_str()),
         genre: v["genre"].as_str().map(String::from),
         genres: v["genre"].as_str().map(|g| vec![GenreItem { name: g.to_string() }]),
+        explicit_status: v["explicit"]
+            .as_bool()
+            .map(|e| if e { "explicit" } else { "clean" }.to_string()),
         is_compilation: is_compilation.then_some(true),
         release_types: (!release_types.is_empty()).then_some(release_types),
         starred: None,
@@ -71,7 +74,8 @@ mod tests {
             "duration": 2200,
             "releaseDate": "2020-01-01",
             "cover": "def-456",
-            "type": "ALBUM"
+            "type": "ALBUM",
+            "explicit": true
         });
         let a = album_from_tidal(&album).unwrap();
         assert_eq!(a.id, "al456");
@@ -83,6 +87,7 @@ mod tests {
         assert_eq!(a.play_count, 0);
         assert_eq!(a.created, None);
         assert_eq!(a.release_types, Some(vec!["Album".to_string()]));
+        assert_eq!(a.explicit_status.as_deref(), Some("explicit"));
         assert_eq!(a.is_compilation, None);
     }
 

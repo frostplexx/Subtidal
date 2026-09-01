@@ -2,7 +2,6 @@ use chrono::Utc;
 
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::models::misc::Share;
-use crate::tidal::{self, client};
 // Fake-empty features: shares and internet radio have no Tidal backend.
 // Reads return empty lists, so clients see a working feature; writes
 // fail with a clear message instead of pretending to persist.

@@ -147,6 +147,10 @@ pub struct AlbumId3 {
     pub genre: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genres: Option<Vec<GenreItem>>,
+    // OpenSubsonic explicitStatus mirrors the release's `explicit` flag;
+    // omitted when the API payload carries no flag.
+    #[serde(rename = "explicitStatus", skip_serializing_if = "Option::is_none")]
+    pub explicit_status: Option<String>,
     // OpenSubsonic extensions: releaseTypes carries Album/EP/Single, and
     // isCompilation marks guest-appearance compilations. Both omit when
     // unknown, matching the codebase's skip-when-none convention.
@@ -189,6 +193,7 @@ mod tests {
                     release_types: None,
                     starred: None,
                     starred_at: None,
+                    explicit_status: None,
                 }],
             },
         };
@@ -222,6 +227,7 @@ mod tests {
                     release_types: None,
                     starred: None,
                     starred_at: None,
+                    explicit_status: None,
                 },
                 song: vec![Child {
                     id: "t9".into(),
@@ -248,6 +254,7 @@ mod tests {
                     created: String::new(),
                     starred: None,
                     starred_at: None,
+                    explicit_status: None,
                     replay_gain: crate::navidrome::models::ReplayGain::default(),
                 }],
             },
@@ -280,6 +287,7 @@ mod tests {
             release_types: None,
             starred: None,
             starred_at: None,
+            explicit_status: None,
         };
         let json = serde_json::to_value(&album).unwrap();
         assert_eq!(json["coverArt"], "https://example.com/c.jpg");

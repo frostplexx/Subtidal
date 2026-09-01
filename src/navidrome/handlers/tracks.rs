@@ -487,6 +487,7 @@ mod tests {
             created: String::new(),
             starred: None,
             starred_at: None,
+            explicit_status: None,
             replay_gain: crate::navidrome::models::ReplayGain::default(),
         }
     }

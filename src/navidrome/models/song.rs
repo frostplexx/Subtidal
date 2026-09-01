@@ -53,6 +53,10 @@ pub struct Child {
     pub starred: Option<String>,
     #[serde(rename = "starredAt", skip_serializing_if = "Option::is_none")]
     pub starred_at: Option<String>,
+    // OpenSubsonic explicitStatus: "explicit" or "clean" mirrors Tidal's
+    // boolean flag; omitted when the API payload carries no flag.
+    #[serde(rename = "explicitStatus", skip_serializing_if = "Option::is_none")]
+    pub explicit_status: Option<String>,
     // OpenSubsonic ReplayGain; always present, inner fields omitted when
     // unknown (Navidrome convention).
     #[serde(rename = "replayGain")]

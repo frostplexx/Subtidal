@@ -411,6 +411,7 @@ fn dir_entry(
         year: None,
         genre: None,
         genres: None,
+        explicit_status: None,
         cover_art,
         duration: None,
         disc_number: None,

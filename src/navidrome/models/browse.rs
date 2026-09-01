@@ -103,6 +103,8 @@ pub struct DirectoryChild {
     pub genre: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genres: Option<Vec<GenreItem>>,
+    #[serde(rename = "explicitStatus", skip_serializing_if = "Option::is_none")]
+    pub explicit_status: Option<String>,
     #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
     pub cover_art: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +150,7 @@ impl From<Child> for DirectoryChild {
             year: s.year,
             genre: s.genre,
             genres: s.genres,
+            explicit_status: s.explicit_status,
             cover_art: s.cover_art,
             duration: Some(s.duration),
             disc_number: s.disc_number,
