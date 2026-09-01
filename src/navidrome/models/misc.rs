@@ -18,10 +18,10 @@ pub struct Shares {
 pub struct Share {
     pub id: String,
     pub url: String,
-    pub description: String,
+    pub description: Option<String>,
     pub username: String,
     pub created: String,
-    pub expires: String,
+    pub expires: Option<String>,
 }
 
 // getInternetRadioStations data:
