@@ -154,11 +154,8 @@ pub async fn get_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
     }))
 }
 
-// All tracks of a playlist in one pass. The v1 items endpoint fetches
-// pages concurrently, turning a long playlist's sequential cursor walk
-// into a few parallel batches. A playlist longer than 10k tracks is
-// treated as broken and truncated; the v2 cursor walk stays as the
-// fallback when v1 fails or returns an unexpected shape.
+// All tracks of a playlist in one pass.A playlist longer than 10k tracks is treated as broken and truncated.
+// The v2 cursor walk stays as the fallback when v1 fails or returns an unexpected shape.
 async fn playlist_entries(client: &'static TidalClient, uuid: &str) -> Result<Vec<Child>, ()> {
     match TidalClient::playlist_items_parallel(client, uuid).await {
         Ok(entries) if entries.first().is_none_or(|e| e["item"].is_object()) => {

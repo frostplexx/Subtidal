@@ -235,12 +235,9 @@ pub async fn get_similar_songs(q: QueryParams) -> Result<warp::reply::Json, warp
     }
 }
 
-// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. Tidal has no
-// real transcoding; the tier selects the stream the account can play.
-// Bitrate wins when set: <=64 -> LOW (HE-AAC ~96k), <=320 -> HIGH (AAC
-// 320k), anything above -> LOSSLESS. Without a bitrate, a lossy format
-// hint caps at HIGH; flac or no format asks for LOSSLESS. Tidal cascades
-// downward when a track or the account lacks the tier.
+//TODO: turn tidal qualities into an enum.
+
+// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. 
 fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static str {
     match max_bit_rate {
         // 0 means "no limit" in Subsonic; only a positive bitrate caps.
@@ -248,7 +245,7 @@ fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static st
         Some(m) if (65..=320).contains(&m) => "HIGH",
         _ => match format {
             Some("flac") => "LOSSLESS",
-            Some(f) if !f.is_empty() => "HIGH",
+            Some(f) if !f.is_empty() => "LOSSLESS",
             _ => "LOSSLESS",
         },
     }

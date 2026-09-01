@@ -337,11 +337,7 @@ async fn artist_directory(
 }
 
 // An album directory: the album's tracks, in track order. The album year
-// fills in for tracks that carry no release date. The v1 detail+tracks
-// path keeps replayGain/peak on the tracks; when the album is regionally
-// unavailable (v1 404s "Album [x] not found", e.g. UK promo EPs in an IT
-// account) the v2 album document with the items relationship inlined
-// still resolves, so that becomes the fallback.
+// fills in for tracks that carry no release date. 
 async fn album_directory(
     client: &crate::tidal::client::TidalClient,
     album_id: u64,

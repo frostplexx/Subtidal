@@ -10,11 +10,7 @@ use super::{fail, ok};
 use crate::tidal::mapping::{album_from_tidal, cover_url, song_from_track};
 
 // getAlbum: one album plus its tracks in track order. The album's year
-// fills in for tracks, which carry no release date of their own. The
-// v1 detail+items path keeps replayGain/peak on the tracks; when the
-// album is regionally unavailable (v1 404s "Album [x] not found", e.g.
-// UK promo EPs in an IT account) the v2 album document with the items
-// relationship inlined still resolves, so that becomes the fallback.
+// uses v1 api
 pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));

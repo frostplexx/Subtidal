@@ -44,8 +44,6 @@ async fn fetch_favorites() -> Result<(serde_json::Value, serde_json::Value, serd
     let client = crate::tidal::client();
     let albums = client.favorite_albums(0, 2000);
     let artists = client.favorite_artists(0, 2000);
-    // Favorite tracks come from the v1 offset-paged list: its track
-    // objects carry replayGain/peak (the v2 collection does not).
     let tracks = crate::tidal::client::TidalClient::favorite_tracks_parallel(client);
     let (albums, artists, tracks) = match tokio::try_join!(albums, artists, tracks) {
         Ok(v) => v,

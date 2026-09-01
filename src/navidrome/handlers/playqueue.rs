@@ -160,10 +160,6 @@ pub async fn get_play_queue(_q: QueryParams) -> Result<warp::reply::Json, warp::
 // the pre-current songs and the elapsed position), else Tidal's play
 // queue, which restores the queue across server restarts and from
 // other clients. A Tidal restore has no elapsed position.
-// The queue to serve: the local store when it has tracks (it carries
-// the pre-current songs and the elapsed position), else Tidal's play
-// queue, which restores the queue across server restarts and from
-// other clients. A Tidal restore has no elapsed position.
 async fn restore_queue(client: &TidalClient) -> play_state::PlayQueue {
     if let Some(q) = play_state::queue().filter(|q| !q.track_ids.is_empty()) {
         return q;

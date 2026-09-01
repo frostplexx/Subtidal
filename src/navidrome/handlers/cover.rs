@@ -29,6 +29,8 @@ pub async fn get_avatar(q: QueryParams) -> Result<warp::reply::Response, warp::R
 }
 
 // A 1x1 transparent PNG; the fallback avatar.
+// TODO: Replace this with a more neutral placeholder (e.g. a gray silhouette) to avoid
+// confusion with a missing image.
 const PLACEHOLDER_PNG: &[u8] = &[
     137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6,
     0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0,
