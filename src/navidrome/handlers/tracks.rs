@@ -8,6 +8,7 @@ use crate::navidrome::models::{
 };
 use crate::navidrome::params::QueryParams;
 use rand::seq::SliceRandom;
+use std::collections::HashSet;
 use super::{fail, ok, redirect};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{song_from_track, year_from};
@@ -84,8 +85,7 @@ fn pick_random(
 }
 
 // getSongsByGenre: favorite tracks filtered by genre, paginated by
-// offset/count. Tidal exposes no genre catalog (getGenres is empty), so
-// this matches whatever genre string the track JSON carries.
+// offset/count. The genre string is the label the track JSON carries.
 pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(genre) = q.genre.as_deref() else {
         return Ok(fail(10, "Required parameter missing"));
@@ -111,9 +111,11 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
 }
 
 // The core shared by getSimilarSongs and getSimilarSongs2: a random
-// collection from the given artist and similar artists. The seed's top
-// tracks plus the top tracks of the three closest similar artists are
-// shuffled and truncated to count. A similar artist's fetch failure
+// collection of songs similar to the artist. The primary source is
+// Tidal's own similar feed: the similarTracks relationship, seeded from
+// the artist's most popular track. A short or empty feed pads with the
+// old heuristic (top tracks of the seed and its three closest similar
+// artists), deduped against the feed. A similar artist's fetch failure
 // degrades to a warning; the seed's failure fails the request.
 async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'static str)> {
     let Some(id) = q.id.0.first() else {
@@ -124,42 +126,93 @@ async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'stati
     };
     let count = q.count.unwrap_or(50).min(500) as usize;
     let client = crate::tidal::client();
-    let similar = match client.artist_similar(artist_id, 3).await {
+
+    // The real feed first. On failure the heuristic below still runs, so
+    // a broken relationship endpoint degrades instead of failing.
+    let mut songs: Vec<Child> = match similar_feed_songs(client, artist_id).await {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("tidal similar artists fetch failed: {e}");
-            return Err((0, "Similar songs unavailable"));
+            tracing::warn!("tidal similar feed failed for artist {artist_id}: {e}");
+            Vec::new()
         }
     };
-    let mut artists: Vec<u64> = vec![artist_id];
-    artists.extend(
-        similar["items"]
-            .as_array()
-            .map(|items| items.iter().filter_map(|a| a["id"].as_u64()).collect::<Vec<_>>())
-            .unwrap_or_default(),
-    );
-    let per = (count / artists.len().max(1)).max(1) as u32;
-    let mut songs: Vec<Child> = Vec::new();
-    for (i, a) in artists.iter().enumerate() {
-        match client.artist_top_tracks(*a, per).await {
-            Ok(v) => songs.extend(
-                v["items"]
-                    .as_array()
-                    .map(|items| items.iter().filter_map(song_from_track).collect::<Vec<_>>())
-                    .unwrap_or_default(),
-            ),
+
+    if songs.len() < count {
+        let known: HashSet<u64> = songs
+            .iter()
+            .filter_map(|s| ids::parse_track_id(&s.id))
+            .collect();
+        let similar = match client.artist_similar(artist_id, 3).await {
+            Ok(v) => v,
             Err(e) => {
-                if i == 0 {
-                    tracing::error!("tidal top tracks fetch failed: {e}");
-                    return Err((0, "Similar songs unavailable"));
+                tracing::error!("tidal similar artists fetch failed: {e}");
+                return Err((0, "Similar songs unavailable"));
+            }
+        };
+        let mut artists: Vec<u64> = vec![artist_id];
+        artists.extend(
+            similar["items"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|a| a["id"].as_u64())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
+        // Per-artist slice targets the remaining slots, capped upward so
+        // a short feed still requests one track per artist.
+        let per = ((count - songs.len()) / artists.len().max(1)).max(1) as u32;
+        for (i, a) in artists.iter().enumerate() {
+            match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, *a, per).await {
+                Ok(v) => songs.extend(
+                    v["items"]
+                        .as_array()
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(song_from_track)
+                                .filter(|s| {
+                                    ids::parse_track_id(&s.id).is_none_or(|t| !known.contains(&t))
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default(),
+                ),
+                Err(e) => {
+                    if i == 0 {
+                        tracing::error!("tidal top tracks fetch failed: {e}");
+                        return Err((0, "Similar songs unavailable"));
+                    }
+                    tracing::warn!("tidal top tracks failed for artist {a}: {e}");
                 }
-                tracing::warn!("tidal top tracks failed for artist {a}: {e}");
             }
         }
     }
     songs.shuffle(&mut rand::rng());
     songs.truncate(count);
     Ok(songs)
+}
+
+// Tidal's similarTracks relationship for the artist's most popular
+// track. Songs derive from the flattened feed. An empty feed (no top
+// track or no mappable items) returns an empty list so the caller can
+// pad from the heuristic.
+async fn similar_feed_songs(
+    client: &'static crate::tidal::client::TidalClient,
+    artist_id: u64,
+) -> Result<Vec<Child>, Error> {
+    let top = crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, artist_id, 1)
+        .await?;
+    let Some(seed_id) = top["items"][0]["id"].as_u64() else {
+        return Ok(Vec::new());
+    };
+    let feed = client.track_similar(seed_id, 200).await?;
+    Ok(feed["items"]
+        .as_array()
+        .map(|items| items.iter().filter_map(song_from_track).collect())
+        .unwrap_or_default())
 }
 
 pub async fn get_similar_songs2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
@@ -182,12 +235,9 @@ pub async fn get_similar_songs(q: QueryParams) -> Result<warp::reply::Json, warp
     }
 }
 
-// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. Tidal has no
-// real transcoding; the tier selects the stream the account can play.
-// Bitrate wins when set: <=64 -> LOW (HE-AAC ~96k), <=320 -> HIGH (AAC
-// 320k), anything above -> LOSSLESS. Without a bitrate, a lossy format
-// hint caps at HIGH; flac or no format asks for LOSSLESS. Tidal cascades
-// downward when a track or the account lacks the tier.
+//TODO: turn tidal qualities into an enum.
+
+// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. 
 fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static str {
     match max_bit_rate {
         // 0 means "no limit" in Subsonic; only a positive bitrate caps.
@@ -195,7 +245,7 @@ fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static st
         Some(m) if (65..=320).contains(&m) => "HIGH",
         _ => match format {
             Some("flac") => "LOSSLESS",
-            Some(f) if !f.is_empty() => "HIGH",
+            Some(f) if !f.is_empty() => "LOSSLESS",
             _ => "LOSSLESS",
         },
     }
@@ -211,13 +261,11 @@ fn default_tier() -> &'static str {
     }
 }
 
-// stream: resolve a track to a Tidal CDN stream and serve it. Single-file
-// BTS streams (AAC) 302-redirect; the server never touches the audio
-// bytes. With format=hls the handler asks for HI_RES: hi-res tracks
-// answer segmented DASH (FLAC 24-bit), which is rewritten into an HLS
-// playlist pointing at Tidal's own init + segment URLs, so FLAC also
-// flows client-to-CDN without server egress. Tidal has no AAC HLS, so
-// hls requests ignore maxBitRate. Ids are t<id> or bare numbers.
+// stream: resolve a track to its v2 manifest and serve it as an HLS
+// playlist of Tidal's own CDN segment URLs (v2 has no BTS single-file
+// streams, so every request is segmented). The playlist points at the
+// init + numbered segments; no audio bytes cross this server. Ids are
+// t<id> or bare numbers.
 pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing").into_response());
@@ -226,60 +274,46 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
         return Ok(fail(70, "Song not found").into_response());
     };
     let client = crate::tidal::client();
-    let wants_hls = q.format.as_deref() == Some("hls");
-    let tier = if wants_hls {
-        "HI_RES"
-    } else if q.max_bit_rate.is_none() && q.format.is_none() {
+    let tier = if q.max_bit_rate.is_none() && q.format.is_none() {
         default_tier()
     } else {
         tidal_quality(q.max_bit_rate, q.format.as_deref())
     };
-    let mut tier: &str = tier;
-    loop {
-        match client.stream_info(track_id, tier, "STREAM").await {
-            Ok(info) => {
-                if let Some(url) = info.direct_url {
-                    tracing::debug!("stream {track_id} tier={tier} -> redirect");
-                    return Ok(redirect(url));
-                }
-                if wants_hls && let Some(dash) = &info.dash {
-                    tracing::debug!(
-                        "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
-                        dash.sample_rate, dash.bit_depth, dash.codec
-                    );
-                    return Ok(hls_reply(build_hls_playlist(dash)));
-                }
+    match client.stream_info(track_id, tier, "STREAM").await {
+        Ok(info) => {
+            // A direct url is not expected on v2 (uriScheme=DATA), but
+            // the parse defends against a manifest host change.
+            if let Some(url) = info.direct_url {
+                tracing::debug!("stream {track_id} tier={tier} -> redirect");
+                return Ok(redirect(url));
+            }
+            if let Some(dash) = &info.dash {
                 tracing::debug!(
-                    "tier {tier} returned {} for track {track_id}; retrying HIGH",
-                    info.mime_type
+                    "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
+                    dash.sample_rate, dash.bit_depth, dash.codec
                 );
-                if tier == "HIGH" {
-                    break;
-                }
-                tier = "HIGH";
+                return Ok(hls_reply(build_hls_playlist(dash)));
             }
-            Err(e) => {
-                if matches!(e, Error::RateLimited) {
-                    tracing::warn!("tidal stream limit hit for track {track_id}");
-                    break;
-                }
-                if e.is_unavailable_asset() {
-                    tracing::warn!("track {track_id} not playable on tidal: {e}");
-                    return Ok(fail(70, "Song not found").into_response());
-                }
-                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-                break;
+            tracing::debug!("manifest for track {track_id} carried no playable stream");
+        }
+        Err(e) => {
+            if matches!(e, Error::RateLimited) {
+                tracing::warn!("tidal stream limit hit for track {track_id}");
+                return Ok(fail(0, "Stream unavailable").into_response());
             }
+            if e.is_unavailable_asset() {
+                tracing::warn!("track {track_id} not playable on tidal: {e}");
+                return Ok(fail(70, "Song not found").into_response());
+            }
+            tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
         }
     }
     Ok(fail(0, "Stream unavailable").into_response())
 }
 
-// download: a song as a 302 to its Tidal CDN stream URL, like stream.
+// download: a song's manifest served as an HLS playlist, like stream.
 // Subsonic allows several ids (a zip archive); the server builds no zip,
-// so a multi-id request fails. Only direct single-file streams (BTS)
-// serve as downloads; segmented hi-res DASH has no single URL and
-// cascades a tier down to HIGH. The manifest is requested in offline
+// so a multi-id request fails. The manifest is requested in offline
 // mode, like the official app's downloader; a mode rejection falls back
 // to the streaming mode.
 pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
@@ -299,30 +333,25 @@ pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rej
     } else {
         tidal_quality(q.max_bit_rate, q.format.as_deref())
     };
-    let mut tier: &str = tier;
-    loop {
-        match client.download_info(track_id, tier).await {
-            Ok(info) => {
-                if let Some(url) = info.direct_url {
-                    return Ok(redirect(url));
-                }
-                if tier == "HIGH" {
-                    break;
-                }
-                tier = "HIGH";
+    match client.download_info(track_id, tier).await {
+        Ok(info) => {
+            if let Some(url) = info.direct_url {
+                return Ok(redirect(url));
             }
-            Err(e) => {
-                if matches!(e, Error::RateLimited) {
-                    tracing::warn!("tidal stream limit hit for track {track_id}");
-                    break;
-                }
-                if e.is_unavailable_asset() {
-                    tracing::warn!("track {track_id} not playable on tidal: {e}");
-                    return Ok(fail(70, "Song not found").into_response());
-                }
-                tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-                break;
+            if let Some(dash) = &info.dash {
+                return Ok(hls_reply(build_hls_playlist(dash)));
             }
+        }
+        Err(e) => {
+            if matches!(e, Error::RateLimited) {
+                tracing::warn!("tidal stream limit hit for track {track_id}");
+                return Ok(fail(0, "Stream unavailable").into_response());
+            }
+            if e.is_unavailable_asset() {
+                tracing::warn!("track {track_id} not playable on tidal: {e}");
+                return Ok(fail(70, "Song not found").into_response());
+            }
+            tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
         }
     }
     Ok(fail(0, "Stream unavailable").into_response())
@@ -367,7 +396,7 @@ fn build_hls_playlist(dash: &crate::tidal::client::DashInfo) -> String {
 #[cfg(test)]
 mod tests {
     use super::{pick_random, tidal_quality};
-    use crate::navidrome::models::Child;
+    use crate::navidrome::models::{Child, GenreItem};
     use crate::tidal::client::{DashInfo, Segment};
 
     // Fixture matching the live hi-res MPD: 52 segments of 176128
@@ -426,7 +455,7 @@ mod tests {
     #[test]
     fn format_hint_only_matters_without_bitrate() {
         assert_eq!(tidal_quality(None, Some("flac")), "LOSSLESS");
-        assert_eq!(tidal_quality(None, Some("mp3")), "HIGH");
+        assert_eq!(tidal_quality(None, Some("mp3")), "LOSSLESS");
         assert_eq!(tidal_quality(Some(128), Some("flac")), "HIGH");
         assert_eq!(tidal_quality(Some(64), Some("mp3")), "LOW");
     }
@@ -444,6 +473,7 @@ mod tests {
             track: 0,
             year,
             genre: genre.map(String::from),
+            genres: genre.map(|g| vec![GenreItem { name: g.to_string() }]),
             cover_art: None,
             duration: 0,
             disc_number: None,

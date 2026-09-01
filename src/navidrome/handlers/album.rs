@@ -10,7 +10,7 @@ use super::{fail, ok};
 use crate::tidal::mapping::{album_from_tidal, cover_url, song_from_track};
 
 // getAlbum: one album plus its tracks in track order. The album's year
-// fills in for tracks, which carry no release date of their own.
+// uses v1 api
 pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));
@@ -20,29 +20,44 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
         return Ok(fail(70, "Album not found"));
     };
     let client = crate::tidal::client();
-    let detail = match client.album(album_id).await {
-        Ok(v) => v,
+    let detail_v1 = match client.album_v1(album_id).await {
+        Ok(v) => Some(v),
         Err(e) => {
-            tracing::error!("tidal album fetch failed: {e}");
-            return Ok(fail(0, "Album unavailable"));
+            tracing::debug!("v1 album detail failed, falling back to v2: {e}");
+            None
         }
     };
-    let tracks = match client.album_tracks(album_id).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("tidal album tracks fetch failed: {e}");
-            return Ok(fail(0, "Album unavailable"));
+    let tracks_v1 = match &detail_v1 {
+        Some(_) => {
+            match crate::tidal::client::TidalClient::album_items_parallel(client, album_id).await {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::debug!("v1 album items failed, falling back to v2: {e}");
+                    None
+                }
+            }
         }
+        None => None,
+    };
+    let (detail, songs) = match (detail_v1, tracks_v1) {
+        (Some(d), Some(t)) => (d, t["items"].as_array().cloned().unwrap_or_default()),
+        _ => match client.album_with_items(album_id).await {
+            Ok(v) => (
+                v["album"].clone(),
+                v["items"].as_array().cloned().unwrap_or_default(),
+            ),
+            Err(e) => {
+                tracing::error!("tidal album fetch failed: {e}");
+                return Ok(fail(0, "Album unavailable"));
+            }
+        },
     };
     let album = match album_from_tidal(&detail) {
         Some(a) => a,
         None => return Ok(fail(70, "Album not found")),
     };
     let year = album.year;
-    let mut song: Vec<Child> = tracks["items"]
-        .as_array()
-        .map(|items| items.iter().filter_map(song_from_track).collect())
-        .unwrap_or_default();
+    let mut song: Vec<Child> = songs.iter().filter_map(song_from_track).collect();
     for s in &mut song {
         if s.year.is_none() {
             s.year = year;

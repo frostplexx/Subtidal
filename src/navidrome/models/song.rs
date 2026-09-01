@@ -23,6 +23,11 @@ pub struct Child {
     pub year: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    // OpenSubsonic genres array; the singular legacy string above stays
+    // for older clients, both serialize from the same value (Navidrome
+    // sends both too).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genres: Option<Vec<GenreItem>>,
     #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
     pub cover_art: Option<String>,
     pub duration: u32,
@@ -52,6 +57,13 @@ pub struct Child {
     // unknown (Navidrome convention).
     #[serde(rename = "replayGain")]
     pub replay_gain: ReplayGain,
+}
+
+// One entry of the OpenSubsonic genres array: just the name, matching
+// the documented response shape.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct GenreItem {
+    pub name: String,
 }
 
 // OpenSubsonic ReplayGain: track gain in dB, track peak a positive
@@ -321,6 +333,39 @@ mod tests {
         assert_eq!(json["replayGain"]["trackGain"], json!(-8.5));
         assert_eq!(json["replayGain"]["trackPeak"], json!(0.999));
         assert!(json["replayGain"].get("albumGain").is_none());
+    }
+
+    #[test]
+    fn child_emits_genre_and_genres_from_one_value() {
+        let song = crate::tidal::mapping::song_from_track(&json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "genre": "Rock",
+            "album": {"id": 456, "title": "Album One"}
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["genre"], json!("Rock"));
+        assert_eq!(json["genres"], json!([{ "name": "Rock" }]));
+    }
+
+    #[test]
+    fn child_omits_genre_keys_when_unknown() {
+        let song = crate::tidal::mapping::song_from_track(&json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        }))
+        .unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert!(json.get("genre").is_none());
+        assert!(json.get("genres").is_none());
     }
 
     #[test]

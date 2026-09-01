@@ -1,17 +1,17 @@
-// Stream metadata: playbackinfo manifest decoding. Backs the stream
-// endpoint, which 302-redirects to a single-file Tidal CDN URL, or, for
-// hi-res FLAC, rewrites the segmented DASH manifest into an HLS playlist.
-use std::collections::VecDeque;
+// Stream metadata: trackManifests decoding. Backs the stream endpoint,
+// which rewrites the DASH manifest into an HLS playlist of Tidal's own
+// CDN segment URLs. v2 always answers MPEG_DASH, so every stream is
+// served as HLS.
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::LazyLock;
+use std::time::Duration;
 
 use base64::Engine;
 use regex::Regex;
 use serde_json::Value;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use super::{Error, TidalClient, API_URL};
+use super::{Error, TidalClient, API_URL, OPENAPI_URL};
 
 // One run of equal-length segments from the DASH SegmentTimeline.
 // count is r+1: DASH repeats a duration r extra times.
@@ -37,6 +37,9 @@ pub struct DashInfo {
 
 // Stream metadata for one track.
 pub struct StreamInfo {
+    // Kept for shape parity and tests; the handlers no longer branch on
+    // mime type (v2 always answers DASH).
+    #[allow(dead_code)]
     pub mime_type: String,
     // Direct single-file URL when the manifest is playable as one file
     // (BTS). Segmented DASH (hi-res FLAC) has no such URL; the stream
@@ -45,43 +48,18 @@ pub struct StreamInfo {
     pub dash: Option<DashInfo>,
 }
 
-// Caps on playbackinfo fetches. A client bursting stream URLs (a
-// downloader fetches the whole queue at once) is throttled here
-// instead of spamming the Tidal API, which fails with decode errors
-// under parallel load. At most STREAM_LIMIT fetches run at once, and
-// at most STREAM_WINDOW_MAX start within STREAM_WINDOW; a start that
-// would exceed either waits up to STREAM_WAIT for a slot, then is
-// rejected with RateLimited.
-//
-// Tidal can also throttle the account for a while (non-JSON bodies,
-// 429, 5xx). The circuit breaker pauses all starts for
-// THROTTLE_COOLDOWN after THROTTLE_TRIGGER consecutive such failures,
-// so the account throttle clears instead of being re-armed by the
-// steady drain.
+// Cap on parallel playbackinfo fetches. A client bursting stream URLs
+// (a downloader fetches the whole queue at once) runs at most
+// STREAM_LIMIT fetches concurrently; the rest wait for a slot that
+// frees as soon as a fetch finishes.
 const STREAM_LIMIT: usize = 5;
-const STREAM_WINDOW: Duration = Duration::from_secs(5);
-const STREAM_WINDOW_MAX: usize = 5;
-// Bounded wait for a slot. Large enough that a downloader's whole
-// queue passes (12 starts per 5 s drains ~140 tracks in a minute);
-// the bound trips only on absurd bursts.
-const STREAM_WAIT: Duration = Duration::from_secs(60);
-// Circuit breaker: trigger and pause lengths.
-const THROTTLE_TRIGGER: u32 = 5;
-const THROTTLE_COOLDOWN: Duration = Duration::from_secs(30);
-
-// Outcome of one playbackinfo fetch, fed back to the limiter.
-#[derive(Clone, Copy, PartialEq)]
-enum FetchOutcome {
-    Success,
-    // Non-JSON body, 429, or 5xx: the account-level throttle signature.
-    Throttled,
-    // Any other error (auth, 403, 404, parse): not throttle evidence.
-    Other,
-}
+// Slot-wait bound. The bound only guards against a hung fetch holding
+// its permit forever; the wait otherwise ends as soon as a slot frees.
+const STREAM_WAIT: Duration = Duration::from_secs(600);
 
 // True for the account-throttle signature: a non-JSON body (decode
-// error), 429, or 5xx. Shared by the outcome classifier and the
-// download-mode fallback, which must not retry during a throttle.
+// error), 429, or 5xx. The download-mode fallback must not retry
+// during a throttle.
 fn throttle_signature(e: &Error) -> bool {
     match e {
         Error::Http(e) => e.is_decode(),
@@ -91,122 +69,26 @@ fn throttle_signature(e: &Error) -> bool {
     }
 }
 
-struct LimiterState {
-    consecutive_failures: u32,
-    cooldown_until: Option<Instant>,
-}
-
 pub(crate) struct StreamLimiter {
     semaphore: Semaphore,
-    recent: Mutex<VecDeque<Instant>>,
-    state: Mutex<LimiterState>,
 }
 
 impl StreamLimiter {
     pub(crate) fn new() -> Self {
         Self {
             semaphore: Semaphore::new(STREAM_LIMIT),
-            recent: Mutex::new(VecDeque::new()),
-            state: Mutex::new(LimiterState {
-                consecutive_failures: 0,
-                cooldown_until: None,
-            }),
         }
     }
 
-    // Wait for the concurrency permit and a window slot, bounded by
-    // STREAM_WAIT. The caller holds the permit across the fetch. A
-    // start that waited too long is rejected with RateLimited.
+    // Wait for a concurrency permit, bounded by STREAM_WAIT. The
+    // caller holds the permit across the fetch. A slot frees as soon
+    // as a fetch finishes; only a hung fetch makes the wait expire,
+    // and that is rejected with RateLimited.
     pub(crate) async fn acquire(&self) -> Result<SemaphorePermit<'_>, Error> {
-        let deadline = Instant::now() + STREAM_WAIT;
-        let permit = match tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline),
-            self.semaphore.acquire(),
-        )
-        .await
-        {
-            Ok(Ok(p)) => p,
-            _ => return Err(Error::RateLimited),
-        };
-        loop {
-            // An active throttle pause holds every start; the guard
-            // must end before the sleep below, so scope it.
-            let wait = {
-                let state = self.state.lock().unwrap();
-                match state.cooldown_until {
-                    Some(until) => until.saturating_duration_since(Instant::now()),
-                    None => Duration::ZERO,
-                }
-            };
-            if wait > Duration::ZERO {
-                if Instant::now() + wait >= deadline {
-                    return Err(Error::RateLimited);
-                }
-                tokio::time::sleep(wait).await;
-                continue;
-            }
-            // The window is full; wait until the oldest start ages out.
-            let wait = {
-                let mut recent = self.recent.lock().unwrap();
-                let now = Instant::now();
-                if window_allows(&mut recent, now) {
-                    return Ok(permit);
-                }
-                // The window is full; wait until the oldest start ages out.
-                recent
-                    .front()
-                    .map(|t| (*t + STREAM_WINDOW).saturating_duration_since(now))
-                    .unwrap_or_default()
-            };
-            if Instant::now() + wait >= deadline {
-                return Err(Error::RateLimited);
-            }
-            tokio::time::sleep(wait.max(Duration::from_millis(50))).await;
+        match tokio::time::timeout(STREAM_WAIT, self.semaphore.acquire()).await {
+            Ok(Ok(p)) => Ok(p),
+            _ => Err(Error::RateLimited),
         }
-    }
-
-    // Record one fetch outcome. Throttle-signature failures count
-    // toward the trigger; at THROTTLE_TRIGGER the pause starts. An
-    // active pause swallows every result: nothing new goes out, so an
-    // in-flight leftover must neither extend nor clear the pause. An
-    // expired pause is a clean slate for the next cycle.
-    fn note(&self, outcome: FetchOutcome) {
-        let mut state = self.state.lock().unwrap();
-        if state.cooldown_until.is_some_and(|until| Instant::now() < until) {
-            return;
-        }
-        state.cooldown_until = None;
-        match outcome {
-            FetchOutcome::Success => state.consecutive_failures = 0,
-            FetchOutcome::Throttled => {
-                state.consecutive_failures += 1;
-                if state.consecutive_failures >= THROTTLE_TRIGGER {
-                    tracing::warn!(
-                        "tidal is throttling stream requests; pausing for {}s",
-                        THROTTLE_COOLDOWN.as_secs()
-                    );
-                    state.cooldown_until = Some(Instant::now() + THROTTLE_COOLDOWN);
-                    state.consecutive_failures = 0;
-                }
-            }
-            FetchOutcome::Other => {}
-        }
-    }
-}
-
-// True when a new stream start fits the sliding window: fewer than
-// STREAM_WINDOW_MAX starts within the last STREAM_WINDOW. Expired
-// starts are pruned first; a passed start is recorded.
-fn window_allows(recent: &mut VecDeque<Instant>, now: Instant) -> bool {
-    let cutoff = now - STREAM_WINDOW;
-    while recent.front().is_some_and(|t| *t < cutoff) {
-        recent.pop_front();
-    }
-    if recent.len() >= STREAM_WINDOW_MAX {
-        false
-    } else {
-        recent.push_back(now);
-        true
     }
 }
 
@@ -227,33 +109,34 @@ fn new_session_id() -> String {
 }
 
 impl TidalClient {
-    // Fetch playbackinfo for one track at the given quality tier.
-    // Never cached: the CDN URLs carry short-lived signed tokens.
+    // Fetch a track manifest at the given quality tier. Never cached:
+    // the CDN URLs carry short-lived signed tokens. v2 has no BTS and no
+    // quality tiers: the manifest always answers MPEG_DASH, so the tiers
+    // only widen the format list. The tier-retry loop lives on in
+    // stream_info_v1 and is not needed here.
     pub async fn stream_info(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
         // Throttle: wait (bounded) for a concurrency and window slot.
         // The permit stays held across the HTTP call.
         let _permit = self.stream_limiter.acquire().await?;
         let token = self.access_token().await?;
-        let cc = self.country_code().await?;
         // One playback session per fetch, like the official app, which
         // sends X-Playback-Session-Id on every request of a download.
         let session_id = new_session_id();
-        let mut query = vec![
-            ("audioquality", quality),
-            ("playbackmode", mode),
-            ("assetpresentation", "FULL"),
-        ];
-        if let Some(cc) = &cc {
-            query.push(("countryCode", cc.as_str()));
-        }
-        let result = async {
+        let formats = audio_quality_to_formats(quality);
+        async {
             let resp = self
                 .http
-                .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
+                .get(format!("{}/trackManifests/{track_id}", OPENAPI_URL))
                 .bearer_auth(token)
                 .header("x-tidal-client-version", super::CLIENT_VERSION)
                 .header("X-Playback-Session-Id", session_id)
-                .query(&query)
+                .query(&[
+                    ("manifestType", "MPEG_DASH"),
+                    ("formats", formats),
+                    ("uriScheme", "DATA"),
+                    ("usage", if mode == "OFFLINE" { "DOWNLOAD" } else { "PLAYBACK" }),
+                    ("adaptive", "false"),
+                ])
                 .send()
                 .await?;
             let status = resp.status();
@@ -268,25 +151,16 @@ impl TidalClient {
             if !status.is_success() {
                 return Err(Error::Tidal(status.as_u16(), body.to_string()));
             }
-            parse_stream(body)
+            parse_manifest(body)
         }
-        .await;
-        // Feed the circuit breaker: non-JSON bodies, 429, and 5xx are
-        // the account-throttle signature. Everything else is neutral.
-        let outcome = match &result {
-            Ok(_) => FetchOutcome::Success,
-            Err(e) if throttle_signature(e) => FetchOutcome::Throttled,
-            _ => FetchOutcome::Other,
-        };
-        self.stream_limiter.note(outcome);
-        result
+        .await
     }
 
     // A download asks for the offline manifest first, like the official
     // app (its CDN URLs carry an info=DOWNLOAD tag). A mode rejection,
     // for example no offline entitlement, falls back to the streaming
-    // mode; a throttle-signature failure does not, because retrying the
-    // same token under an active throttle only re-arms it.
+    // mode; a throttle-signature or queue-full failure does not,
+    // because a retry under the same conditions fails the same way.
     pub(crate) async fn download_info(
         &self,
         track_id: u64,
@@ -294,7 +168,7 @@ impl TidalClient {
     ) -> Result<StreamInfo, Error> {
         match self.stream_info(track_id, quality, "OFFLINE").await {
             Ok(info) => Ok(info),
-            Err(e) if throttle_signature(&e) => Err(e),
+            Err(e) if throttle_signature(&e) || matches!(e, Error::RateLimited) => Err(e),
             Err(e) => {
                 tracing::debug!(
                     "offline mode unavailable for track {track_id} ({e}); retrying STREAM"
@@ -303,10 +177,90 @@ impl TidalClient {
             }
         }
     }
+
+    // --- v1 backup (dead code) -------------------------------------
+    #[allow(dead_code)]
+    pub async fn stream_info_v1(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
+        let _permit = self.stream_limiter.acquire().await?;
+        let token = self.access_token().await?;
+        let cc = self.country_code().await?;
+        let session_id = new_session_id();
+        let mut query = vec![
+            ("audioquality", quality),
+            ("playbackmode", mode),
+            ("assetpresentation", "FULL"),
+        ];
+        if let Some(cc) = &cc {
+            query.push(("countryCode", cc.as_str()));
+        }
+        async {
+            let resp = self
+                .http
+                .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
+                .bearer_auth(token)
+                .header("x-tidal-client-version", super::CLIENT_VERSION)
+                .header("X-Playback-Session-Id", session_id)
+                .query(&query)
+                .send()
+                .await?;
+            let status = resp.status();
+            let text = resp.text().await?;
+            let body: Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => return Err(Error::HttpDecode(status.as_u16(), text)),
+            };
+            if !status.is_success() {
+                return Err(Error::Tidal(status.as_u16(), body.to_string()));
+            }
+            parse_stream_v1(body)
+        }
+        .await
+    }
 }
 
-// Decode a playbackinfo manifest into StreamInfo.
-fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
+// The format set per quality tier, mirroring the SDK's audioQualityToFormats.
+fn audio_quality_to_formats(quality: &str) -> &'static str {
+    match quality {
+        "HI_RES" => "HEAACV1,AACLC,FLAC,FLAC_HIRES",
+        "LOSSLESS" => "HEAACV1,AACLC,FLAC",
+        "HIGH" => "HEAACV1,AACLC",
+        _ => "HEAACV1",
+    }
+}
+
+// Decode a v2 trackManifests document: attributes.uri is a base64 data
+// URI carrying the MPD. A plain https uri (uriScheme=DATA should prevent
+// it, but defensively) becomes a direct stream URL.
+fn parse_manifest(body: Value) -> Result<StreamInfo, Error> {
+    let attrs = &body["data"]["attributes"];
+    let uri = attrs["uri"]
+        .as_str()
+        .ok_or_else(|| Error::Auth("response missing manifest".into()))?;
+    if let Some(url) = uri.strip_prefix("https://") {
+        return Ok(StreamInfo {
+            mime_type: "application/vnd.tidal.bts".into(),
+            direct_url: Some(format!("https://{url}")),
+            dash: None,
+        });
+    }
+    let b64 = uri
+        .strip_prefix("data:application/dash+xml;base64,")
+        .ok_or_else(|| Error::Auth("unexpected manifest uri".into()))?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+        .map_err(|e| Error::Auth(format!("manifest decode failed: {e}")))?;
+    let manifest = String::from_utf8_lossy(&decoded).into_owned();
+    let dash = parse_dash(&manifest);
+    Ok(StreamInfo {
+        mime_type: "application/dash+xml".into(),
+        direct_url: None,
+        dash,
+    })
+}
+
+#[allow(dead_code)]
+fn parse_stream_v1(body: Value) -> Result<StreamInfo, Error> {
     let mime = body["manifestMimeType"].as_str().unwrap_or("").to_string();
     let manifest_b64 = body["manifest"]
         .as_str()
@@ -317,7 +271,6 @@ fn parse_stream(body: Value) -> Result<StreamInfo, Error> {
         .map_err(|e| Error::Auth(format!("manifest decode failed: {e}")))?;
     let manifest = String::from_utf8_lossy(&decoded).into_owned();
     let direct_url = if mime.contains("bts") {
-        // BTS: JSON with a direct single-file URL.
         serde_json::from_str::<Value>(&manifest)
             .ok()
             .and_then(|v| v["urls"].get(0).and_then(|u| u.as_str()).map(String::from))
@@ -416,8 +369,25 @@ fn parse_segments(block: &str) -> Vec<Segment> {
 fn tag_attrs(tag: &str) -> Vec<(String, String)> {
     RE_ATTR
         .captures_iter(tag)
-        .map(|c| (c[1].to_string(), c[2].to_string()))
+        .map(|c| (c[1].to_string(), xml_unescape(&c[2])))
         .collect()
+}
+
+// An MPD is XML, so '&' inside a URL attribute is written '&amp;'.
+// Segment URLs keep the raw text otherwise, and a player fetching
+// '...token=X&amp;info=Y' mangles the query string into 'amp;info=Y',
+// which the CDN signature check rejects with 403. Decode the small
+// entity set; '&amp;' last so '&amp;lt;' decodes to literal '&lt;'.
+fn xml_unescape(s: &str) -> String {
+    let mut out = s
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'");
+    if s.contains("&amp;") {
+        out = out.replace("&amp;", "&");
+    }
+    out
 }
 
 fn str_attr(attrs: &[(String, String)], name: &str) -> Option<String> {
@@ -498,6 +468,30 @@ mod tests {
     }
 
     #[test]
+    fn unescapes_xml_entities_in_segment_urls() {
+        // A real v2 MPD escapes '&' inside its URL attributes as '&amp;'.
+        // The served playlist must carry the decoded single '&', or the
+        // player mangles the query string and the CDN answers 403.
+        let mpd = r#"<MPD><Period><AdaptationSet mimeType="audio/mp4"><Representation id="AACLC,44100,16" codecs="mp4a.40.2" bandwidth="1234" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T&amp;info=UEx&amp;foo=1" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T&amp;info=UExWQ&amp;bar=2" startNumber="1"><SegmentTimeline><S d="176128" r="2"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
+        let d = parse_dash(mpd).expect("parses");
+        assert_eq!(
+            d.init_url,
+            "https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T&info=UEx&foo=1"
+        );
+        assert!(!d.media_url.contains("&amp;"));
+        assert!(d.media_url.contains("?token=T"));
+        assert!(d.media_url.contains("&info=UExWQ&bar=2"));
+    }
+
+    #[test]
+    fn unescapes_amp_last() {
+        // '&amp;lt;' is a literal '&lt;' after decoding, never '<'.
+        assert_eq!(xml_unescape("&amp;lt;"), "&lt;");
+        assert_eq!(xml_unescape("a&amp;b"), "a&b");
+        assert_eq!(xml_unescape("&lt;&amp;&quot;"), "<&\"");
+    }
+
+    #[test]
     fn parses_hires_dash() {
         let d = parse_dash(MPD).expect("parses");
         assert_eq!(d.bandwidth, 1616237);
@@ -532,28 +526,48 @@ mod tests {
             "manifestMimeType": "application/vnd.tidal.bts",
             "manifest": base64::engine::general_purpose::STANDARD.encode(r#"{"mimeType":"audio/mp4","codecs":"mp4a.40.2","encryptionType":"NONE","urls":["https://cdn/1.mp4?token=x"]}"#)
         });
-        let info = parse_stream(body).unwrap();
+        let info = parse_stream_v1(body).unwrap();
         assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
         assert!(info.dash.is_none());
     }
 
     #[test]
-    fn window_allows_five_per_five_seconds() {
-        let mut recent = VecDeque::new();
-        let t0 = Instant::now();
-        for i in 0..STREAM_WINDOW_MAX as u64 {
-            assert!(
-                window_allows(&mut recent, t0 + Duration::from_millis(i)),
-                "start {i} must pass"
-            );
-        }
-        // One more start inside the window is rejected.
-        assert!(!window_allows(&mut recent, t0 + Duration::from_secs(4)));
-        // Once the first start is older than the window, a new one passes.
-        assert!(window_allows(
-            &mut recent,
-            t0 + Duration::from_secs(5) + Duration::from_millis(1)
-        ));
+    fn parses_v2_manifest_document() {
+        let mpd = MPD;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(mpd);
+        let body: Value = serde_json::json!({
+            "data": {
+                "type": "trackManifests",
+                "id": "7",
+                "attributes": {
+                    "uri": format!("data:application/dash+xml;base64,{b64}"),
+                    "formats": ["HEAACV1", "AACLC", "FLAC", "FLAC_HIRES"],
+                },
+            },
+        });
+        let info = parse_manifest(body).unwrap();
+        assert_eq!(info.mime_type, "application/dash+xml");
+        assert!(info.direct_url.is_none());
+        let dash = info.dash.expect("dash parsed");
+        assert_eq!(dash.bandwidth, 1616237);
+    }
+
+    #[test]
+    fn parses_v2_https_uri_as_direct_url() {
+        let body: Value = serde_json::json!({
+            "data": { "attributes": { "uri": "https://cdn/1.mp4?token=x" } }
+        });
+        let info = parse_manifest(body).unwrap();
+        assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
+        assert!(info.dash.is_none());
+    }
+
+    #[test]
+    fn formats_follow_tier() {
+        assert_eq!(audio_quality_to_formats("HI_RES"), "HEAACV1,AACLC,FLAC,FLAC_HIRES");
+        assert_eq!(audio_quality_to_formats("LOSSLESS"), "HEAACV1,AACLC,FLAC");
+        assert_eq!(audio_quality_to_formats("HIGH"), "HEAACV1,AACLC");
+        assert_eq!(audio_quality_to_formats("LOW"), "HEAACV1");
     }
 
     #[test]
@@ -569,69 +583,5 @@ mod tests {
         );
         drop(permits);
         assert!(limiter.semaphore.try_acquire().is_ok());
-    }
-
-    #[test]
-    fn cooldown_triggers_after_consecutive_throttle_failures() {
-        let limiter = StreamLimiter::new();
-        for _ in 0..THROTTLE_TRIGGER - 1 {
-            limiter.note(FetchOutcome::Throttled);
-            assert!(
-                limiter.state.lock().unwrap().cooldown_until.is_none(),
-                "below the trigger the pause must not start"
-            );
-        }
-        limiter.note(FetchOutcome::Throttled);
-        assert!(limiter.state.lock().unwrap().cooldown_until.is_some());
-        // A success during an active pause cannot clear it.
-        limiter.note(FetchOutcome::Success);
-        assert!(limiter.state.lock().unwrap().cooldown_until.is_some());
-        // An expired pause is a clean slate for the next cycle.
-        {
-            let mut state = limiter.state.lock().unwrap();
-            state.cooldown_until = Some(Instant::now() - Duration::from_millis(1));
-        }
-        limiter.note(FetchOutcome::Success);
-        let state = limiter.state.lock().unwrap();
-        assert!(state.cooldown_until.is_none());
-        assert_eq!(state.consecutive_failures, 0);
-    }
-
-    #[test]
-    fn unrelated_errors_do_not_count_toward_throttle() {
-        let limiter = StreamLimiter::new();
-        for _ in 0..THROTTLE_TRIGGER * 2 {
-            limiter.note(FetchOutcome::Other);
-        }
-        let state = limiter.state.lock().unwrap();
-        assert!(state.cooldown_until.is_none());
-        assert_eq!(state.consecutive_failures, 0);
-    }
-
-    #[test]
-    fn in_flight_failures_do_not_extend_the_pause() {
-        let limiter = StreamLimiter::new();
-        for _ in 0..THROTTLE_TRIGGER {
-            limiter.note(FetchOutcome::Throttled);
-        }
-        let before = limiter.state.lock().unwrap().cooldown_until;
-        assert!(before.is_some());
-        // A failure recorded during the pause must not re-arm it.
-        limiter.note(FetchOutcome::Throttled);
-        let after = limiter.state.lock().unwrap().cooldown_until;
-        assert_eq!(before, after);
-    }
-
-    #[tokio::test]
-    async fn acquire_waits_out_an_active_pause() {
-        let limiter = StreamLimiter::new();
-        {
-            let mut state = limiter.state.lock().unwrap();
-            state.cooldown_until = Some(Instant::now() + Duration::from_millis(100));
-        }
-        let start = Instant::now();
-        let permit = limiter.acquire().await.expect("acquires after the pause");
-        assert!(start.elapsed() >= Duration::from_millis(80));
-        drop(permit);
     }
 }

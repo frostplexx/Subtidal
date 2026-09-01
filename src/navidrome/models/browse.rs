@@ -2,7 +2,7 @@
 // directory listing (getMusicDirectory).
 use serde::Serialize;
 
-use super::song::Child;
+use super::song::{Child, GenreItem};
 
 // getIndexes data: { indexes: Indexes }
 #[derive(Serialize)]
@@ -101,6 +101,8 @@ pub struct DirectoryChild {
     pub year: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genres: Option<Vec<GenreItem>>,
     #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
     pub cover_art: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +127,10 @@ pub struct DirectoryChild {
     pub created: Option<String>,
     #[serde(rename = "songCount", skip_serializing_if = "Option::is_none")]
     pub song_count: Option<u32>,
+    // OpenSubsonic ReplayGain, same shape as a song child so the player
+    // applies normalization also when the queue came from a directory.
+    #[serde(rename = "replayGain", skip_serializing_if = "Option::is_none")]
+    pub replay_gain: Option<crate::navidrome::models::ReplayGain>,
 }
 
 // A song fills every field; a directory stays minimal.
@@ -141,6 +147,7 @@ impl From<Child> for DirectoryChild {
             track: Some(s.track),
             year: s.year,
             genre: s.genre,
+            genres: s.genres,
             cover_art: s.cover_art,
             duration: Some(s.duration),
             disc_number: s.disc_number,
@@ -153,6 +160,7 @@ impl From<Child> for DirectoryChild {
             path: Some(s.path),
             created: Some(s.created),
             song_count: None,
+            replay_gain: Some(s.replay_gain),
         }
     }
 }
@@ -216,7 +224,6 @@ mod tests {
         let song = crate::tidal::mapping::song_from_track(&json!({
             "id": 123,
             "title": "Song One",
-            "audioQuality": "LOSSLESS",
             "duration": 220,
             "trackNumber": 3,
             "artists": [{"id": 9, "name": "Artist A"}],
@@ -229,7 +236,7 @@ mod tests {
         assert_eq!(json["isDir"], false);
         assert_eq!(json["isVideo"], false);
         assert_eq!(json["type"], "song");
-        assert_eq!(json["contentType"], "audio/flac");
+        assert_eq!(json["contentType"], "audio/mp4");
         assert_eq!(json["track"], 3);
         assert_eq!(json["albumId"], "al456");
         assert_eq!(json["artistId"], "ar9");

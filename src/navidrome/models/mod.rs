@@ -10,6 +10,7 @@ pub mod playlist;
 pub mod queue;
 pub mod search;
 pub mod song;
+pub use song::GenreItem;
 pub mod system;
 pub mod transcode;
 
@@ -43,7 +44,7 @@ pub use song::{
     StructuredLyrics, TopSongs, TopSongsResponse,
 };
 pub use system::{
-    GetOpenSubsonicExtensionsResponse, GetUserResponse, GetUsersResponse, Genres, GenresResponse,
+    GetOpenSubsonicExtensionsResponse, GetUserResponse, GetUsersResponse, Genre, Genres, GenresResponse,
     JukeboxControlResponse, JukeboxPlaylist, JukeboxStatus, License, LicenseResponse, MusicFolder,
     MusicFolders, MusicFoldersResponse, OpenSubsonicExtension, PingResponse, ScanStatus,
     ScanStatusResponse, SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse, User,

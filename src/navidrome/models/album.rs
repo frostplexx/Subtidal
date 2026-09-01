@@ -1,7 +1,7 @@
 // Album models: the ID3 album, its wrappers, and the song-ful variant.
 use serde::Serialize;
 
-use super::song::Child;
+use super::song::{Child, GenreItem};
 
 // getAlbumList2 data: { albumList2: { album: [ AlbumID3 ] } }
 // The wrapper object with the `album` array matches the Subsonic spec.
@@ -66,6 +66,8 @@ pub struct Album {
     pub year: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genres: Option<Vec<GenreItem>>,
 }
 
 impl From<&AlbumId3> for Album {
@@ -82,6 +84,7 @@ impl From<&AlbumId3> for Album {
             created: a.created.clone(),
             year: a.year,
             genre: a.genre.clone(),
+            genres: a.genres.clone(),
         }
     }
 }
@@ -142,6 +145,8 @@ pub struct AlbumId3 {
     pub year: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub genre: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub genres: Option<Vec<GenreItem>>,
     // OpenSubsonic extensions: releaseTypes carries Album/EP/Single, and
     // isCompilation marks guest-appearance compilations. Both omit when
     // unknown, matching the codebase's skip-when-none convention.
@@ -179,6 +184,7 @@ mod tests {
                     created: Some("2021-07-22T02:09:31+00:00".into()),
                     year: Some(2005),
                     genre: Some("Hip-Hop".into()),
+                    genres: Some(vec![GenreItem { name: "Hip-Hop".into() }]),
                     is_compilation: None,
                     release_types: None,
                     starred: None,
@@ -189,7 +195,7 @@ mod tests {
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(
             json,
-            r##"{"albumList2":{"album":[{"id":"al1","album":"A","title":"A","name":"A","artist":"X","artistId":"ar1","songCount":20,"duration":4248,"playCount":0,"created":"2021-07-22T02:09:31+00:00","year":2005,"genre":"Hip-Hop"}]}}"##
+            r##"{"albumList2":{"album":[{"id":"al1","album":"A","title":"A","name":"A","artist":"X","artistId":"ar1","songCount":20,"duration":4248,"playCount":0,"created":"2021-07-22T02:09:31+00:00","year":2005,"genre":"Hip-Hop","genres":[{"name":"Hip-Hop"}]}]}}"##
         );
     }
 
@@ -211,6 +217,7 @@ mod tests {
                     created: None,
                     year: Some(2020),
                     genre: None,
+                    genres: None,
                     is_compilation: None,
                     release_types: None,
                     starred: None,
@@ -227,6 +234,7 @@ mod tests {
                     track: 1,
                     year: Some(2020),
                     genre: None,
+                    genres: None,
                     cover_art: None,
                     duration: 200,
                     disc_number: None,
@@ -267,6 +275,7 @@ mod tests {
             created: None,
             year: None,
             genre: None,
+            genres: None,
             is_compilation: None,
             release_types: None,
             starred: None,

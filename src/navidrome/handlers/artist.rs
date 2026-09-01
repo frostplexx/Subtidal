@@ -80,7 +80,9 @@ pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Re
         },
     };
     let count = q.count.unwrap_or(50).min(500);
-    let result = match client.artist_top_tracks(artist_id, count).await {
+    let result = match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, artist_id, count)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal top tracks fetch failed: {e}");

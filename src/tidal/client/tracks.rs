@@ -3,11 +3,121 @@
 // JSON. Songs on search/playlist/mix pages share this shape, so the same
 // struct serves any Value that comes off a track-bearing endpoint.
 use serde::{Deserialize, Serialize};
+
 use serde_json::Value;
 
-use super::TidalClient;
+use super::{jsonapi, TidalClient};
 
 impl TidalClient {
+    // Walk the user collection items pages for one kind, flatten the
+    // entries, and slice by offset/limit. Kept here so tracks/albums/
+    // artists each expose the same (offset, limit) signature.
+    pub(crate) async fn favorite_pages(
+        &self,
+        collection: &str,
+        include: &str,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![
+                ("sort", "-addedAt"),
+                ("include", include),
+            ];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/userCollection{collection}/me/relationships/items"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            let page = jsonapi::flatten_item_entries(&doc, false)["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => {
+                    items.extend(page);
+                    break;
+                }
+            }
+            // Walking stops a page early once the whole slice is in hand.
+            items.extend(page);
+            if items.len() >= offset as usize + limit as usize {
+                break;
+            }
+        }
+        let total = items.len() as u64;
+        let start = offset as usize;
+        let end = start + limit as usize;
+        let items: Vec<Value> = items
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect();
+        Ok(serde_json::json!({
+            "items": items,
+            "totalNumberOfItems": total,
+        }))
+    }
+
+    // Favorited tracks, newest first. Backs getStarred/getStarred2.
+    // Same { items: [{ item, created }] } wrapper v1 used; pagination
+    // walks page[cursor] and slices to the requested offset/limit.
+    pub async fn favorite_tracks(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+        self.favorite_pages(
+            "Tracks",
+            "items,items.albums.coverArt,items.artists,items.genres",
+            offset,
+            limit,
+        )
+        .await
+    }
+
+    // Tracks similar to the given one, from Tidal's own similar feed
+    // (the relationships/similarTracks relationship). Backs
+    // getSimilarSongs. The relationship pages by cursor, like
+    // favorite_pages; walking stops once `limit` items are in hand.
+    pub async fn track_similar(&self, track_id: u64, limit: u32) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![(
+                "include",
+                "similarTracks,similarTracks.albums.coverArt,similarTracks.artists,similarTracks.genres",
+            )];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/tracks/{track_id}/relationships/similarTracks"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            items.extend(jsonapi::bare_items(&doc));
+            if items.len() as u32 >= limit {
+                break;
+            }
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        items.truncate(limit as usize);
+        Ok(serde_json::json!({ "items": items }))
+    }
+
+    // A track's detail page. The typed TidalTrack carries everything the
+    // handlers need (title, artists, duration, mixes) and serializes back
+    // to raw Tidal JSON for the legacy Value-based mappers.
     pub async fn track(&self, id: u64) -> Result<TidalTrack, super::Error> {
         let value = self
             .get_json(&format!("/tracks/{id}"), &self.meta_cache)
@@ -15,31 +125,53 @@ impl TidalClient {
         serde_json::from_value(value).map_err(super::Error::Json)
     }
 
-    // A track's lyrics: plain text plus an LRC subtitle track. Backs
-    // getLyricsBySongId. Tidal 404s tracks without lyrics.
+    // Tidal's built-in lyrics: plain text plus an LRC subtitle track.
+    // Tracks without lyrics return an empty lyrics relationship; the
+    // handlers treat the resulting 404 as "no lyrics".
     pub async fn track_lyrics(&self, track_id: u64) -> Result<Value, super::Error> {
+        let doc = self
+            .openapi_get(
+                &format!("/tracks/{track_id}"),
+                &[("include", "lyrics")],
+                &self.meta_cache,
+            )
+            .await?;
+        if doc["data"]["relationships"]["lyrics"]["data"]
+            .as_array()
+            .is_none_or(|a| a.is_empty())
+        {
+            return Err(super::Error::Tidal(404, "track has no lyrics".into()));
+        }
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
+    }
+
+    // --- v1 backups (dead code) ------------------------------------
+    #[allow(dead_code)]
+    pub async fn track_lyrics_v1(&self, track_id: u64) -> Result<Value, super::Error> {
         self.get_json(&format!("/tracks/{track_id}/lyrics"), &self.meta_cache)
             .await
     }
 
-    // Favorited tracks, newest first. Backs getStarred/getStarred2.
-    // Same { item, created } wrapper shape as favorite_albums.
-    pub async fn favorite_tracks(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
-        let user_id = self.user_id().await?;
-        let offset = offset.to_string();
-        let limit = limit.to_string();
+    // The user's favorite tracks as raw v1 entries ({created, item}),
+    // every offset page fetched concurrently. v1 track objects carry
+    // replayGain/peak, which the v2 collection never does; the v2
+    // collection keeps genres instead (see getSongsByGenre). Backs the
+    // favorites lists.
+    pub async fn favorite_tracks_parallel(
+        client: &'static TidalClient,
+    ) -> Result<Value, super::Error> {
+        let user_id = client.user_id().await?.to_string();
         let path = format!("/users/{user_id}/favorites/tracks");
-        self.get_json_q(
+        let items = super::v1_pages_parallel(
+            client,
             &path,
-            &[
-                ("limit", limit.as_str()),
-                ("offset", offset.as_str()),
-                ("order", "DATE"),
-                ("orderDirection", "DESC"),
-            ],
-            &self.meta_cache,
+            &client.meta_cache,
+            &[("order", "DATE"), ("orderDirection", "DESC")],
+            100,
+            6,
         )
-        .await
+        .await?;
+        Ok(serde_json::json!({ "items": items }))
     }
 }
 

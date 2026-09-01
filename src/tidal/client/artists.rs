@@ -1,25 +1,36 @@
-// Artist endpoints.
+// Artist endpoints. v1 bodies stay as dead-code backups under `_v1`
+// names where a v2 shape exists. The album list uses v1: three
+// requests cover the whole catalog, while the v2 relationship walk
+// paginates 20 items at a time. Album dedup and the compilation
+// stamping live on at the bottom.
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::TidalClient;
+use super::{jsonapi, TidalClient};
+
+const ARTIST_INCLUDE: &str = "profileArt";
 
 impl TidalClient {
     pub async fn artist(&self, id: u64) -> Result<Value, super::Error> {
-        self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
+        let doc = self
+            .openapi_get(
+                &format!("/artists/{id}"),
+                &[("include", ARTIST_INCLUDE)],
+                &self.meta_cache,
+            )
+            .await?;
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
     }
 
-    // One artist's releases. Backs getArtist. The v1 endpoint defaults to
-    // full albums only; EPs and singles need filter=EPSANDSINGLES and
-    // guest-appearance compilations filter=COMPILATIONS. Each page cap is
-    // far above any artist's catalog, so one call per list returns
-    // everything. Albums come first, then EPs and singles, then
-    // compilations. Each list is deduplicated on its own (see
-    // dedup_albums): a single and an album with the same title must never
-    // collapse. A failure on a secondary list only logs and the albums
-    // still render.
+    // One artist's releases: albums, then EPs and singles, then
+    // compilations. The v1 albums endpoint pages up to 1000 items and
+    // splits by section, so the whole list costs three requests; the
+    // v2 relationship walk would cost one cursor page per 20 albums
+    // (twelve round trips for Lady Gaga). The v1 index is partial:
+    // region-variant releases drop out of the list, but their direct
+    // album pages still resolve through the getAlbum v2 fallback.
     pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
         let mut albums = self
             .get_json_q(
@@ -44,18 +55,78 @@ impl TidalClient {
         Ok(albums)
     }
 
-    // Fetch one secondary release list (EPs/singles or compilations),
-    // deduplicated. None when the call fails; the caller keeps the
-    // albums list and only logs.
+    // An artist's most popular tracks. Backs getTopSongs/top tracks in
+    // getArtistInfo and similarSongs. Items come from the v1 toptracks
+    // endpoint, whose track objects carry replayGain/peak; the v2
+    // relationship never does. Fetching stops once `limit` items are in
+    // hand, so the small slices similarSongs asks for cost one page.
+    pub async fn artist_top_tracks_parallel(
+        client: &'static TidalClient,
+        artist_id: u64,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        let path = format!("/artists/{artist_id}/toptracks");
+        let items = super::v1_prefix(client, &path, &client.meta_cache, &[], 100, limit).await?;
+        Ok(serde_json::json!({ "items": items }))
+    }
+
+    // An artist's biography. Backs getArtistInfo2. The text carries
+    // [wimpLink ...] wiki markup; the handler strips it.
+    pub async fn artist_bio(&self, artist_id: u64) -> Result<Value, super::Error> {
+        let doc = self
+            .openapi_get(
+                &format!("/artists/{artist_id}"),
+                &[("include", "biography")],
+                &self.meta_cache,
+            )
+            .await?;
+        Ok(jsonapi::flatten_resource(&doc["data"], &doc))
+    }
+
+    // Artists similar to the given one. Backs getArtistInfo2.
+    pub async fn artist_similar(&self, artist_id: u64, _limit: u32) -> Result<Value, super::Error> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![
+                ("include", "similarArtists,similarArtists.profileArt"),
+            ];
+            if let Some(c) = &cursor {
+                params.push(("page[cursor]", c.as_str()));
+            }
+            let doc = self
+                .openapi_get(
+                    &format!("/artists/{artist_id}/relationships/similarArtists"),
+                    &params,
+                    &self.meta_cache,
+                )
+                .await?;
+            items.extend(jsonapi::bare_items(&doc));
+            match jsonapi::next_cursor(&doc) {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        Ok(serde_json::json!({ "items": items }))
+    }
+
+    // Favorited artists, newest first. Backs getStarred/getStarred2.
+    pub async fn favorite_artists(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+        self.favorite_pages("Artists", "items,items.profileArt", offset, limit)
+            .await
+    }
+
+    // --- v1 backups (dead code) ------------------------------------
+    #[allow(dead_code)]
+    pub async fn artist_v1(&self, id: u64) -> Result<Value, super::Error> {
+        self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
+    }
+
     async fn release_items(&self, artist_id: u64, filter: &str) -> Option<Vec<Value>> {
         let resp = match self
             .get_json_q(
                 &format!("/artists/{artist_id}/albums"),
-                &[
-                    ("limit", "1000"),
-                    ("offset", "0"),
-                    ("filter", filter),
-                ],
+                &[("limit", "1000"), ("offset", "0"), ("filter", filter)],
                 &self.meta_cache,
             )
             .await
@@ -71,8 +142,8 @@ impl TidalClient {
         Some(items)
     }
 
-    // An artist's most popular tracks. Backs getTopSongs.
-    pub async fn artist_top_tracks(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_top_tracks_v1(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
         let limit = limit.to_string();
         self.get_json_q(
             &format!("/artists/{artist_id}/toptracks"),
@@ -82,15 +153,14 @@ impl TidalClient {
         .await
     }
 
-    // An artist's biography. Backs getArtistInfo2. The text carries
-    // [wimpLink ...] wiki markup; the handler strips it.
-    pub async fn artist_bio(&self, artist_id: u64) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_bio_v1(&self, artist_id: u64) -> Result<Value, super::Error> {
         self.get_json(&format!("/artists/{artist_id}/bio"), &self.meta_cache)
             .await
     }
 
-    // Artists similar to the given one. Backs getArtistInfo2.
-    pub async fn artist_similar(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn artist_similar_v1(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
         let limit = limit.to_string();
         self.get_json_q(
             &format!("/artists/{artist_id}/similar"),
@@ -100,9 +170,8 @@ impl TidalClient {
         .await
     }
 
-    // Favorited artists, newest first. Backs getStarred/getStarred2.
-    // Same { item, created } wrapper shape as favorite_albums.
-    pub async fn favorite_artists(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+    #[allow(dead_code)]
+    pub async fn favorite_artists_v1(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         let user_id = self.user_id().await?;
         let offset = offset.to_string();
         let limit = limit.to_string();

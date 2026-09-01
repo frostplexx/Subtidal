@@ -2,7 +2,7 @@
 use serde_json::Value;
 
 use crate::navidrome::ids;
-use crate::navidrome::models::{Child, ReplayGain};
+use crate::navidrome::models::{Child, GenreItem, ReplayGain};
 
 use super::{cover_url, primary_artist, year_from};
 
@@ -15,7 +15,19 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     let (artist_id, artist_name) = primary_artist(v);
     let year = year_from(v["releaseDate"].as_str())
         .or_else(|| year_from(album.get("releaseDate").and_then(|r| r.as_str())));
-    let (content_type, suffix) = container(v["audioQuality"].as_str());
+    // v2 flatten writes the track's first genre onto `genre` (that data
+    // ships in the items.genres include); v1 track JSON embeds it on the
+    // album instead. Read both, prefer the track's own.
+    let genre = v["genre"]
+        .as_str()
+        .map(String::from)
+        .or_else(|| album.get("genre").and_then(|g| g.as_str()).map(String::from));
+    // The same value as the OpenSubsonic genres array.
+    let genres = genre
+        .as_ref()
+        .map(|g| vec![GenreItem { name: g.clone() }]);
+    // v2 tracks carry no audioQuality; every stream is served as an HLS
+    // playlist of MP4 segments, so the container is always m4a.
     Some(Child {
         id: ids::encode_track(id),
         parent: ids::encode_album(album_id),
@@ -26,10 +38,8 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         artist: artist_name,
         track: v["trackNumber"].as_u64().unwrap_or(0) as u32,
         year,
-        genre: album
-            .get("genre")
-            .and_then(|g| g.as_str())
-            .map(String::from),
+        genre,
+        genres,
         cover_art: album
             .get("cover")
             .and_then(|c| c.as_str())
@@ -39,8 +49,8 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
         kind: "song",
-        content_type,
-        suffix,
+        content_type: "audio/mp4",
+        suffix: "m4a",
         size: 0,
         path: String::new(),
         created: String::new(),
@@ -51,18 +61,6 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
             track_peak: v["peak"].as_f64(),
         },
     })
-}
-
-// The stream container follows the account's quality tier: lossless
-// tiers stream FLAC, the others AAC in an MP4 container. The tier in the
-// track JSON is the only signal available without a stream fetch; the
-// manifest mimeType (Sone reads it too) would be exact but costs one
-// playbackinfo call per track.
-fn container(quality: Option<&str>) -> (&'static str, &'static str) {
-    match quality {
-        Some("LOSSLESS") | Some("HIRES_LOSSLESS") => ("audio/flac", "flac"),
-        _ => ("audio/mp4", "m4a"),
-    }
 }
 
 #[cfg(test)]
@@ -97,12 +95,49 @@ mod tests {
     }
 
     #[test]
-    fn container_follows_quality_tier() {
-        assert_eq!(container(Some("LOSSLESS")), ("audio/flac", "flac"));
-        assert_eq!(container(Some("HIRES_LOSSLESS")), ("audio/flac", "flac"));
-        assert_eq!(container(Some("HIGH")), ("audio/mp4", "m4a"));
-        assert_eq!(container(Some("LOW")), ("audio/mp4", "m4a"));
-        assert_eq!(container(None), ("audio/mp4", "m4a"));
+    fn song_takes_genre_from_the_track_when_flattened() {
+        // The v2 flatten writes the track's own first genre onto `genre`;
+        // the embedded v1 album object carries album.genre instead.
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "genre": "Hip-Hop",
+            "album": {"id": 456, "title": "Album One", "genre": "Rock"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.genre.as_deref(), Some("Hip-Hop"));
+    }
+
+    #[test]
+    fn song_takes_genre_from_the_album_when_track_has_none() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One", "genre": "Rock"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.genre.as_deref(), Some("Rock"));
+    }
+
+    #[test]
+    fn song_maps_container_to_m4a() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.content_type, "audio/mp4");
+        assert_eq!(song.suffix, "m4a");
     }
 
     #[test]
@@ -135,21 +170,5 @@ mod tests {
         let song = song_from_track(&track).unwrap();
         assert_eq!(song.replay_gain.track_gain, None);
         assert_eq!(song.replay_gain.track_peak, None);
-    }
-
-    #[test]
-    fn song_maps_container_from_quality() {
-        let track = json!({
-            "id": 123,
-            "title": "Song One",
-            "audioQuality": "HIGH",
-            "duration": 220,
-            "trackNumber": 3,
-            "artists": [{"id": 9, "name": "Artist A"}],
-            "album": {"id": 456, "title": "Album One"}
-        });
-        let song = song_from_track(&track).unwrap();
-        assert_eq!(song.content_type, "audio/mp4");
-        assert_eq!(song.suffix, "m4a");
     }
 }

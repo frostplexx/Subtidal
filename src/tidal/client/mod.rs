@@ -19,7 +19,9 @@ mod artists;
 mod auth;
 mod favorites;
 mod feed;
-mod playlists;
+mod genres;
+mod jsonapi;mod playlists;
+mod playqueues;
 mod search;
 mod stream;
 pub use stream::DashInfo;
@@ -27,8 +29,11 @@ use stream::StreamLimiter;
 // Test fixtures construct Segment values directly.
 #[cfg(test)]
 pub(crate) use stream::Segment;
+pub(crate) use playlists::ItemAddr;
 mod tracks;
 mod users;
+
+pub use genres::genre_list;
 
 pub(crate) use feed::albums_from_page;
 pub use favorites::FavoriteKind;
@@ -118,8 +123,14 @@ pub struct TidalClient {
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
     playlist_cache: Cache<String, Value>,
-    // Hard cap on parallel playbackinfo fetches and on stream starts
-    // per window; see stream.rs. Excess stream requests are rejected.
+    // Play queue reads are mirrored onto Tidal's own queue, which the
+    // mobile clients churn constantly; a minute of staleness is fine.
+    queue_cache: Cache<String, Value>,
+    // The user's play queue id, resolved once and reused until the
+    // queue is deleted.
+    queue_id: Mutex<Option<String>>,
+    // Hard cap on parallel playbackinfo fetches; see stream.rs. A wait
+    // that exceeds the slot bound is rejected with RateLimited.
     stream_limiter: StreamLimiter,
 }
 
@@ -168,6 +179,12 @@ impl TidalClient {
                 .max_capacity(10_000)
                 .support_invalidation_closures()
                 .build(),
+            queue_cache: Cache::builder()
+                .time_to_live(Duration::from_secs(60))
+                .max_capacity(100)
+                .support_invalidation_closures()
+                .build(),
+            queue_id: Mutex::new(None),
             stream_limiter: StreamLimiter::new(),
         }
     }
@@ -251,8 +268,197 @@ impl TidalClient {
             .map(|(k, v)| format!("{}={}", k, percent_encode(v)))
             .collect::<Vec<_>>()
             .join("&");
-        self.get_json_base(base, &format!("{path}?{query}"), cache).await
+        self.get_json_base(base, &format!("{path}?{query}"), cache)
+            .await
     }
+
+    // --- OpenAPI (JSON:API) helpers --------------------------------
+    // The v2 host differs from v1 in three ways: no countryCode query
+    // param (it derives from the token; sending one errors), the
+    // mandatory x-tidal-client-version header, and query values that
+    // keep commas and brackets literal (the official SDK serializes
+    // with allowReserved, so `filter[query]` keys and comma-joined
+    // include lists pass through raw).
+    async fn openapi_get(
+        &self,
+        path: &str,
+        params: &[(&str, &str)],
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        let query: String = if params.is_empty() {
+            String::new()
+        } else {
+            let q = params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("&");
+            format!("?{q}")
+        };
+        self.openapi_get_raw(&format!("{path}{query}"), cache).await
+    }
+
+    // GET with an already-fully-formed path+query string. Pagination
+    // cursors come back opaque and must re-send verbatim, so walkers
+    // append them here rather than through percent-encoding.
+    async fn openapi_get_raw(
+        &self,
+        full_path: &str,
+        cache: &Cache<String, Value>,
+    ) -> Result<Value, Error> {
+        if let Some(v) = cache.get(full_path).await {
+            return Ok(v);
+        }
+        let token = self.access_token().await?;
+        let resp = self
+            .http
+            .get(format!("{OPENAPI_URL}{full_path}"))
+            .bearer_auth(token)
+            .header("x-tidal-client-version", CLIENT_VERSION)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body: Value = resp.json().await?;
+        if !status.is_success() {
+            return Err(Error::Tidal(status.as_u16(), body.to_string()));
+        }
+        cache.insert(full_path.to_string(), body.clone()).await;
+        Ok(body)
+    }
+
+    // Mutating JSON:API request (POST/PATCH/DELETE). Never cached.
+    // JSON:API errors read the `errors` array for the message.
+    async fn openapi_send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        payload: Option<&Value>,
+    ) -> Result<Value, Error> {
+        let token = self.access_token().await?;
+        let mut req = self
+            .http
+            .request(method, format!("{OPENAPI_URL}{path}"))
+            .bearer_auth(token)
+            .header("x-tidal-client-version", CLIENT_VERSION);
+        req = match payload {
+            Some(body) => req
+                .header("content-type", "application/vnd.api+json")
+                .json(body),
+            None => req,
+        };
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        let body: Value = serde_json::from_str(&text).unwrap_or(serde_json::json!(null));
+        if !status.is_success() {
+            // JSON:API errors read prettier than the raw document.
+            let message = body["errors"][0]["detail"]
+                .as_str()
+                .or_else(|| body["errors"][0]["title"].as_str())
+                .map(String::from)
+                .unwrap_or(text);
+            return Err(Error::Tidal(status.as_u16(), message));
+        }
+        Ok(body)
+    }
+}
+
+// Fetch one offset-paged page from a legacy v1 items endpoint.
+async fn v1_page(
+    client: &'static TidalClient,
+    path: &str,
+    cache: &'static Cache<String, Value>,
+    extra: &'static [(&'static str, &'static str)],
+    offset: u32,
+    limit: u32,
+) -> Result<Value, Error> {
+    let offset = offset.to_string();
+    let limit = limit.to_string();
+    let mut params: Vec<(&str, &str)> = Vec::with_capacity(extra.len() + 2);
+    params.extend_from_slice(extra);
+    params.push(("limit", limit.as_str()));
+    params.push(("offset", offset.as_str()));
+    client.get_json_q(path, &params, cache).await
+}
+
+// All offset pages of a legacy v1 items list, fetched concurrently and
+// reordered by offset on return. Page 0 learns totalNumberOfItems; a
+// missing total degrades to a sequential walk until a short page. The
+// v1 item lists carry replayGain/peak on every track and offset paging,
+// which the v2 relationships never do.
+pub(crate) async fn v1_pages_parallel(
+    client: &'static TidalClient,
+    path: &str,
+    cache: &'static Cache<String, Value>,
+    extra: &'static [(&'static str, &'static str)],
+    page_size: u32,
+    in_flight: usize,
+) -> Result<Vec<Value>, Error> {
+    let first = v1_page(client, path, cache, extra, 0, page_size).await?;
+    let mut items: Vec<Value> = first["items"].as_array().cloned().unwrap_or_default();
+    let total = match first["totalNumberOfItems"].as_u64() {
+        Some(t) => t,
+        None => {
+            let mut offset = page_size;
+            loop {
+                let page = v1_page(client, path, cache, extra, offset, page_size).await?;
+                let batch = page["items"].as_array().cloned().unwrap_or_default();
+                let n = batch.len();
+                items.extend(batch);
+                offset += page_size;
+                if n < page_size as usize || items.len() >= 10_000 {
+                    break;
+                }
+            }
+            return Ok(items);
+        }
+    };
+    let mut offset = page_size;
+    while offset < total as u32 {
+        let end = (offset as u64 + in_flight as u64 * page_size as u64).min(total);
+        let mut handles = Vec::with_capacity(in_flight);
+        for off in (offset..end as u32).step_by(page_size as usize) {
+            let path = path.to_string();
+            handles.push(tokio::spawn(async move {
+                v1_page(client, &path, cache, extra, off, page_size).await
+            }));
+        }
+        for handle in handles {
+            let page = handle
+                .await
+                .map_err(|e| Error::HttpDecode(500, format!("v1 page task failed: {e}")))??;
+            items.extend(page["items"].as_array().cloned().unwrap_or_default());
+        }
+        offset = end as u32;
+    }
+    Ok(items)
+}
+
+// Offset pages walked sequentially, stopping once limit items are in
+// hand or the server returns a short page. For bounded prefixes where
+// fetching everything would waste requests (top tracks).
+pub(crate) async fn v1_prefix(
+    client: &'static TidalClient,
+    path: &str,
+    cache: &'static Cache<String, Value>,
+    extra: &'static [(&'static str, &'static str)],
+    page_size: u32,
+    limit: u32,
+) -> Result<Vec<Value>, Error> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut offset = 0u32;
+    loop {
+        let page = v1_page(client, path, cache, extra, offset, page_size).await?;
+        let batch = page["items"].as_array().cloned().unwrap_or_default();
+        let n = batch.len();
+        items.extend(batch);
+        offset += page_size;
+        if items.len() >= limit as usize || n < page_size as usize {
+            break;
+        }
+    }
+    items.truncate(limit as usize);
+    Ok(items)
 }
 
 // Minimal percent-encoding for query strings. No new dependency needed.
