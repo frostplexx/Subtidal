@@ -29,27 +29,22 @@ pub async fn get_internet_radio_stations() -> Result<warp::reply::Json, warp::Re
 }
 
 pub async fn create_share(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    let Some(id) = q.id.0.first() else {
+        return Ok(fail(10, "Required parameter missing"));
+    };
 
-
-  let Some(id) = q.id.0.first() else {
-       return Ok(fail(10, "Required parameter missing"));
-   };
-
- let Some((kind, tidal_id)) = ids::parse(id) else {
-       return Ok(fail(10, "Invalid id"));
-   };
-
+    let Some((kind, tidal_id)) = ids::parse(id) else {
+        return Ok(fail(10, "Invalid id"));
+    };
 
     let path = match kind {
-           IdKind::Track => "track",
-           IdKind::Album => "album",
-           IdKind::Artist => "artist",
-           IdKind::Playlist => "playlist",
-       };
-
+        IdKind::Track => "track",
+        IdKind::Album => "album",
+        IdKind::Artist => "artist",
+        IdKind::Playlist => "playlist",
+    };
 
     let url = format!("https://tidal.com/browse/{path}/{tidal_id}");
-
 
     let share = Share {
         username: "user".to_string(),
@@ -65,12 +60,12 @@ pub async fn create_share(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
     }))
 }
 
+// Share management is not supported, as the create_share function uses tidal links
 pub async fn update_share(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    Ok(fail(0, "Sharing is not supported"))
+    Ok(fail(0, "Function is not supported"))
 }
-
 pub async fn delete_share(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    Ok(fail(0, "Sharing is not supported"))
+    Ok(fail(0, "Function is not supported"))
 }
 
 pub async fn create_internet_radio_station(
