@@ -20,6 +20,26 @@ pub use song::song_from_track;
 
 use serde_json::Value;
 
+// Content-label toggles ([labels] settings section). Both labels default
+// to on; tests run without SETTINGS and fall back to those defaults.
+pub(crate) fn content_labels() -> crate::settings::LabelsConfig {
+    crate::SETTINGS
+        .get()
+        .map(|s| s.labels.clone())
+        .unwrap_or_default()
+}
+
+// The OpenSubsonic explicitStatus value for a boolean Tidal flag:
+// "explicit" / "clean", omitted entirely when the [labels] setting is off.
+pub(crate) fn explicit_status(v: &Value, enabled: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    v["explicit"]
+        .as_bool()
+        .map(|e| if e { "explicit" } else { "clean" }.to_string())
+}
+
 // Tidal-owned image URLs pass through unchanged. Anything else that
 // starts with http is not trusted: treating it as a UUID keeps client
 // input from turning the 302 into an open redirect.

@@ -4,15 +4,13 @@ use serde_json::Value;
 use crate::navidrome::ids;
 use crate::navidrome::models::{Child, GenreItem, ReplayGain};
 
-use super::{cover_url, primary_artist, year_from};
+use super::{content_labels, cover_url, explicit_status, primary_artist, year_from};
 
 pub fn song_from_track(v: &Value) -> Option<Child> {
     let id = v["id"].as_u64()?;
+    let labels = content_labels();
     let mut title = v["title"].as_str()?.to_string();
-    if v["ai"].as_bool() == Some(true) {
-        // title.push_str("  ✦");
-        title.push_str(" • AI");
-    }
+    mark_ai(&mut title, v, labels.ai);
     let album = v["album"].as_object()?;
     let album_id = album["id"].as_u64()?;
     let album_name = album["title"].as_str().unwrap_or("").to_string();
@@ -61,14 +59,20 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         created: String::new(),
         starred: None,
         starred_at: None,
-        explicit_status: v["explicit"]
-            .as_bool()
-            .map(|e| if e { "explicit" } else { "clean" }.to_string()),
+        explicit_status: explicit_status(v, labels.explicit),
         replay_gain: ReplayGain {
             track_gain: v["replayGain"].as_f64(),
             track_peak: v["peak"].as_f64(),
         },
     })
+}
+
+// Appends the AI marker when the track is AI-generated and the [labels]
+// setting enables it.
+fn mark_ai(title: &mut String, v: &Value, enabled: bool) {
+    if enabled && v["ai"].as_bool() == Some(true) {
+        title.push_str(" • AI");
+    }
 }
 
 #[cfg(test)]
@@ -221,5 +225,30 @@ mod tests {
         assert_eq!(song.explicit_status, None);
         let json = serde_json::to_value(&song).unwrap();
         assert!(json.get("explicitStatus").is_none());
+    }
+
+    #[test]
+    fn ai_marker_obeys_label_setting() {
+        let ai = json!({"ai": true});
+        let mut title = "Song One".to_string();
+        mark_ai(&mut title, &ai, true);
+        assert_eq!(title, "Song One • AI");
+        let mut title = "Song One".to_string();
+        mark_ai(&mut title, &ai, false);
+        assert_eq!(title, "Song One");
+        let not_ai = json!({"ai": false});
+        let mut title = "Song One".to_string();
+        mark_ai(&mut title, &not_ai, true);
+        assert_eq!(title, "Song One");
+    }
+
+    #[test]
+    fn explicit_status_omitted_when_labels_off() {
+        let explicit = json!({"explicit": true});
+        assert_eq!(explicit_status(&explicit, false), None);
+        assert_eq!(
+            explicit_status(&explicit, true),
+            Some("explicit".to_string())
+        );
     }
 }

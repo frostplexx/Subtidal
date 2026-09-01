@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::navidrome::ids;
 use crate::navidrome::models::{AlbumId3, GenreItem};
 
-use super::{cover_url, primary_artist, year_from};
+use super::{content_labels, cover_url, explicit_status, primary_artist, year_from};
 
 pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
     let id = v["id"].as_u64()?;
@@ -39,9 +39,7 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
         year: year_from(v["releaseDate"].as_str()),
         genre: v["genre"].as_str().map(String::from),
         genres: v["genre"].as_str().map(|g| vec![GenreItem { name: g.to_string() }]),
-        explicit_status: v["explicit"]
-            .as_bool()
-            .map(|e| if e { "explicit" } else { "clean" }.to_string()),
+        explicit_status: explicit_status(v, content_labels().explicit),
         is_compilation: is_compilation.then_some(true),
         release_types: (!release_types.is_empty()).then_some(release_types),
         starred: None,

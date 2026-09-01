@@ -42,6 +42,10 @@ pub struct Settings {
     pub lastfm: Option<LastFmConfig>,
     #[serde(default)]
     pub listenbrainz: Option<ListenBrainzConfig>,
+    // Content labels sent to clients (see LabelsConfig below). Both
+    // default to on; set a value to false to stop sending that label.
+    #[serde(default)]
+    pub labels: LabelsConfig,
 }
 
 // Last.fm scrobble credentials. The session key (sk) lives in the OS
@@ -56,6 +60,27 @@ pub struct LastFmConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListenBrainzConfig {
     pub token: String,
+}
+
+// Content-label toggles ([labels] section in the settings file).
+// - ai:       the marker appended to titles of Tidal AI-generated songs
+// - explicit: the OpenSubsonic explicitStatus sent for songs and albums
+// Both default to on, preserving current behavior when the section is
+// missing or a key is absent.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct LabelsConfig {
+    pub ai: bool,
+    pub explicit: bool,
+}
+
+impl Default for LabelsConfig {
+    fn default() -> Self {
+        LabelsConfig {
+            ai: true,
+            explicit: true,
+        }
+    }
 }
 
 fn default_tidal_quality() -> String {
@@ -134,4 +159,49 @@ pub fn load_settings() -> Settings {
         .expect("failed to build settings")
         .try_deserialize()
         .expect("failed to deserialize settings: username, password and port are required")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(src: &str) -> Settings {
+        config::Config::builder()
+            .add_source(config::File::from_str(src, config::FileFormat::Toml))
+            .build()
+            .unwrap()
+            .try_deserialize()
+            .unwrap()
+    }
+
+    #[test]
+    fn labels_default_to_on_without_section() {
+        let s = parse("username = \"u\"\npassword = \"p\"\nport = 8000");
+        assert!(s.labels.ai);
+        assert!(s.labels.explicit);
+    }
+
+    #[test]
+    fn labels_can_turn_off_each_independently() {
+        let s = parse(
+            "username = \"u\"\npassword = \"p\"\nport = 8000\n\
+             [labels]\nai = false",
+        );
+        assert!(!s.labels.ai);
+        assert!(s.labels.explicit);
+
+        let s = parse(
+            "username = \"u\"\npassword = \"p\"\nport = 8000\n\
+             [labels]\nexplicit = false",
+        );
+        assert!(s.labels.ai);
+        assert!(!s.labels.explicit);
+
+        let s = parse(
+            "username = \"u\"\npassword = \"p\"\nport = 8000\n\
+             [labels]\nai = false\nexplicit = false",
+        );
+        assert!(!s.labels.ai);
+        assert!(!s.labels.explicit);
+    }
 }

@@ -30,6 +30,15 @@ show_mixes = true
 # Set to false to fall back to Tidal's built-in lyrics instead.
 # word_synced_lyrics = true
 
+# Content labels sent to clients. Both are on by default; set a value to
+# false to stop sending that label.
+[labels]
+#   # Mark titles of Tidal AI-generated songs (appended to the title).
+   ai = true
+#   # Send the OpenSubsonic explicitStatus ("explicit"/"clean") for songs
+#   # and albums. When off, the field is not sent at all.
+   explicit = true
+
 # Optional scrobble backends. Both are best-effort: a failing reporter
 # only logs, never fails the client request. When either block is present,
 # getUser reports scrobblingEnabled=true.
