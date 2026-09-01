@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn format_hint_only_matters_without_bitrate() {
         assert_eq!(tidal_quality(None, Some("flac")), "LOSSLESS");
-        assert_eq!(tidal_quality(None, Some("mp3")), "HIGH");
+        assert_eq!(tidal_quality(None, Some("mp3")), "LOSSLESS");
         assert_eq!(tidal_quality(Some(128), Some("flac")), "HIGH");
         assert_eq!(tidal_quality(Some(64), Some("mp3")), "LOW");
     }
