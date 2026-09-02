@@ -9,6 +9,8 @@ pub struct Settings {
     pub username: String,
     pub password: String,
     pub port: u16,
+    #[serde(default = "default_bind_addr")]
+    pub bind_addr: String,
     // Optional override for the embedded Tidal app credentials.
     // Leave empty to use the embedded defaults.
     #[serde(default)]
@@ -93,6 +95,10 @@ fn default_show_mixes() -> bool {
 
 fn default_word_synced_lyrics() -> bool {
     true
+}
+
+fn default_bind_addr() -> String {
+    "0.0.0.0".into()
 }
 
 // The settings file, in order of preference:
