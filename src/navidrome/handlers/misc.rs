@@ -50,7 +50,7 @@ pub async fn create_share(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
         description: None,
         created: Utc::now().to_rfc3339(),
         id: "0".to_string(),
-        url: url,
+        url,
         expires: None,
     };
 
