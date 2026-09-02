@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use qrcode::QrCode;
+use qrcode::render::unicode;
 use serde_json::Value;
 
 use crate::navidrome::auth::md5_hex;
@@ -186,7 +188,10 @@ pub(crate) async fn report_now_playing(track_id: u64) {
         if !np_due(track_id, now, &last) {
             return;
         }
-        *last = Some(LastNowPlaying { track_id, at_ms: now });
+        *last = Some(LastNowPlaying {
+            track_id,
+            at_ms: now,
+        });
     }
     let Some(client) = crate::tidal::client_opt() else {
         tracing::warn!("now-playing id={track_id}: tidal client unavailable; skipped");
@@ -403,7 +408,10 @@ impl PlayReporter for LastFmReporter {
         song: &'a ScrobbleSong,
         timestamp_ms: i64,
     ) -> futures_util::future::BoxFuture<'a, Result<(), String>> {
-        Box::pin(async move { self.submit("track.scrobble", song, Some(timestamp_ms)).await })
+        Box::pin(async move {
+            self.submit("track.scrobble", song, Some(timestamp_ms))
+                .await
+        })
     }
 
     fn now_playing<'a>(
@@ -437,8 +445,7 @@ fn trigger_reauthorization(api_key: &str, api_secret: &str) {
 // A keyring that errors (headless Linux has no Secret Service) falls
 // back to the file instead of failing.
 pub fn lastfm_session_key() -> Result<Option<String>, String> {
-    match keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.get_password())
-    {
+    match keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.get_password()) {
         Ok(sk) => Ok(Some(sk)),
         Err(keyring::Error::NoEntry) => read_key_file(),
         Err(e) => {
@@ -482,8 +489,19 @@ pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), Str
 
     let http = reqwest::Client::new();
     let token = lastfm_get_token(&http, api_key, api_secret).await?;
-    println!("Open this URL to authorize Subtidal on Last.fm:");
-    println!("{LASTFM_AUTH_URL}?api_key={api_key}&token={token}");
+    println!(
+        "Open {LASTFM_AUTH_URL}?api_key={api_key}&token={token} or scan the QR code below to authorize Subtidal with Last.fm."
+    );
+
+    let code = QrCode::new(format!("{LASTFM_AUTH_URL}?api_key={api_key}&token={token}"))
+        .map_err(|e| format!("QR code generation failed: {e}"))?;
+    let image = code
+        .render::<unicode::Dense1x2>()
+        .dark_color(unicode::Dense1x2::Dark)
+        .light_color(unicode::Dense1x2::Light)
+        .build();
+
+    println!("{}", image);
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
     let mut polls: u32 = 0;
@@ -1015,7 +1033,10 @@ mod tests {
             &format!("{base}/2.0/"),
             Box::new(|| Ok(Some("sk".into()))),
             Box::new(move |k, s| {
-                reauths2.lock().unwrap().push((k.to_string(), s.to_string()))
+                reauths2
+                    .lock()
+                    .unwrap()
+                    .push((k.to_string(), s.to_string()))
             }),
         );
         assert!(reporter.report(&scrobble_song(), 0).await.is_ok());
