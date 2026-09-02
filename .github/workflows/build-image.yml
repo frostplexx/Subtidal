@@ -145,3 +145,35 @@ jobs:
           docker buildx imagetools create "${args[@]}" \
             "${image}:latest-amd64" \
             "${image}:latest-arm64"
+
+  release:
+    # Publish the GitHub release for the pushed tag. gh fills the body
+    # with the commit log since the previous release; alpha/beta tags are
+    # marked as prereleases so they never show as the latest release.
+    needs: [merge]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out with full history
+        # generate-notes reads the git log, so the clone must not be
+        # shallow.
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists, keeping it."
+            exit 0
+          fi
+          args=(--generate-notes)
+          if [[ "${tag}" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${tag}" "${args[@]}"
