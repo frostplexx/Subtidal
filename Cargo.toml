@@ -25,3 +25,13 @@ qrcode = "0.14.1"
 
 [dev-dependencies]
 proptest = "1"
+
+# cargo release config. The pipeline bumps version, commits, tags vX, and
+# pushes; publish is off because this is a binary, not a crates.io crate.
+# The leading v and the {{version}} substitution match the existing
+# v0.1.0-alpha.N tag series. CI (build-image.yml) refuses image builds
+# when the pushed tag differs from this version.
+[workspace.metadata.release]
+publish = false
+tag-name = "v{{version}}"
+tag-message = "v{{version}}"
