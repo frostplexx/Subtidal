@@ -9,8 +9,6 @@ password = "admin"
 port = 8000
 
 # Exponential backoff on failed logins (2s, 4s, 8s, ... per client IP).
-# Off by default: behind a reverse proxy every client shares one IP, so
-# an attacker can lock out everyone.
 rate_limit = false
 
 # Optional: override the embedded Tidal app credentials.
