@@ -1,17 +1,37 @@
-This project is in an alpha state!
+<p align="center">    
+  <img width="256" alt="Subtdial" src="https://github.com/user-attachments/assets/7e0188f8-586d-40d6-bdca-fe8a6c0b73ed" />
+  <h1 align="center">Subtidal</h1>
+</p>
 
-# Subtidal
+> [!WARNING]
+> This project is in an beta state! Breaking changes might occur.
 
-A Subsonic API server that proxies Tidal.
+Subtidal exposes your Tidal library through the OpenSubsonic API, so you can use any Subsonic-compatible client to browse, search, and stream Tidal's catalog as if it were your own self-hosted music server.
 
-## Getting Started (Docker)
+Subtidal provides the following Subsonic features:
+- Allows you to search and play of the whole Tidal catalogue
+- Gives you access to your liked songs, artists, and albums
+- Allows to play, create, edit and delete your playlists
+- Play Tidal mixes (Daily Mix, My Mix, Discovery) as read-only playlists
+- Scrobbles to either last.fm or listenbrainz
+- Show AI labels on AI-generated music
+- Optional Word-by-word synced provided by [Radiant Lyrics](https://radiant-lyrics.org)
+
+
+## Getting Started 
+
+> [!WARNING]
+> A paid Tidal account is required!
 
 Prerequisites: Docker with Compose support.
 
 1. Copy `docker-compose.yml` and `settings.toml`
-2. Run `docker compose up -d`.
-3. The first start prints a Tidal device-code URL. Open `docker compose logs -f subtidal` and complete the login once. The session persists in the `subtidal-data` volume.
-4. Point a Subsonic client at `http://localhost:8000` and log in with `admin` / `admin`.
+2. Edit `settings.toml`
+   - Choose a username and password
+   - Optionally set up either last.fm or listenbrainz scrobbling
+4. Run `docker compose up -d`.
+5. The first start prints a Tidal device-code URL. Open `docker compose logs -f subtidal` and complete the login once. If you have last.fm set up, repeat this step for that service too.
+6. Point a Subsonic client at `http://localhost:8000` and log in with the username and password chosen in step 2.
 
 The server reads `./settings.toml` through the Compose mount. Edit the file and run `docker compose restart`, or map any other file:
 
@@ -32,8 +52,6 @@ docker run -d -p 8000:8000 \
 
 `APP_*` env vars are the settings for this path. The image stores the Tidal token at `/data/tokens.json`.
 
-If no image is published yet, clone the repo and run `docker compose up -d --build` from it.
-
 ## Local development
 
 Prerequisites: a recent Rust nightly toolchain (edition 2024). The Nix flake provides one via rustup, pinned in `rust-toolchain.toml`: `nix develop`.
@@ -41,21 +59,3 @@ Prerequisites: a recent Rust nightly toolchain (edition 2024). The Nix flake pro
 1. Run `just dev` or `cargo run`.
 2. Complete the device-code login on first start.
 3. Connect with `admin` / `admin` from `settings.toml`.
-
-Source layout:
-
-```
-src/
-├── main.rs            # startup, settings, login, server bind
-├── settings.rs        # settings file discovery + APP_* env overrides
-├── navidrome/         # Subsonic protocol layer
-│   ├── routes.rs      # /rest/* routes
-│   ├── auth.rs        # credential checks, body cap, rate limiting
-│   ├── params.rs      # query param structs
-│   ├── models/        # Subsonic DTOs
-│   └── handlers/      # one module per endpoint group
-└── tidal/
-    ├── client/        # Tidal API calls
-    ├── mapping/       # Tidal JSON -> Subsonic DTOs
-    └── embedded.rs    # Tidal app credentials
-```
