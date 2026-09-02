@@ -8,7 +8,7 @@
 
 Subtidal exposes your Tidal library through the OpenSubsonic API, so you can use any Subsonic-compatible client to browse, search, and stream Tidal's catalog as if it were your own self-hosted music server.
 
-Subtidal provides the following Subsonic features:
+Some highlighted features are:
 - Allows you to search and play of the whole Tidal catalogue
 - Gives you access to your liked songs, artists, and albums
 - Allows to play, create, edit and delete your playlists
