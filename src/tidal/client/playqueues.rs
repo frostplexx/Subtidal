@@ -1,3 +1,8 @@
+// Tidal play queue mirror: disabled. The feature is gated behind an
+// experiment flag that cannot be enabled on the API side. The queue
+// stays in the local play_state store. Re-enable by removing the
+// comment wrapper below.
+/*
 // Play queue sync. Tidal keeps one queue per user, populated through
 // relationship mutations. A Subsonic savePlayQueue maps onto one
 // future-relationship call with mode REPLACE_ALL_AND_CURRENT: data[0]
@@ -241,3 +246,4 @@ mod tests {
         assert!(queue_items(&[], 9, 10).is_none());
     }
 }
+*/

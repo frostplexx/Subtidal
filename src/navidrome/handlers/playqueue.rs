@@ -9,7 +9,7 @@ use crate::navidrome::models::{
     Child, PingResponse, PlayQueue, PlayQueueByIndex, PlayQueueByIndexResponse, PlayQueueResponse,
 };
 use crate::navidrome::now_playing::now_ms;
-use crate::navidrome::params::{IdList, QueryParams};
+use crate::navidrome::params::QueryParams;
 use crate::navidrome::play_state;
 use crate::tidal::client::TidalClient;
 use crate::tidal::mapping::song_from_track;
@@ -33,7 +33,7 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
             changed_by: q.c.clone().unwrap_or_default(),
             changed_ms: now_ms(),
         });
-        sync_saved_queue(None).await;
+        // sync_saved_queue(None).await;
         return Ok(ok(PingResponse {}));
     }
     let current = match q.current.as_deref() {
@@ -52,9 +52,9 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
         changed_ms: now_ms(),
     });
     tracing::info!("savePlayQueue {} songs", q.id.0.len());
-    if let Some(cur) = current {
-        sync_saved_queue(Some((q.id.clone(), cur))).await;
-    }
+    // if let Some(cur) = current {
+    //     sync_saved_queue(Some((q.id.clone(), cur))).await;
+    // }
     Ok(ok(PingResponse {}))
 }
 
@@ -76,7 +76,7 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
             changed_by: q.c.clone().unwrap_or_default(),
             changed_ms: now_ms(),
         });
-        sync_saved_queue(None).await;
+        // sync_saved_queue(None).await;
         return Ok(ok(PingResponse {}));
     }
     let current = q
@@ -92,9 +92,9 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
         changed_ms: now_ms(),
     });
     tracing::info!("savePlayQueueByIndex {} songs", q.id.0.len());
-    if let Some(cur) = current {
-        sync_saved_queue(Some((q.id.clone(), cur))).await;
-    }
+    // if let Some(cur) = current {
+    //     sync_saved_queue(Some((q.id.clone(), cur))).await;
+    // }
     Ok(ok(PingResponse {}))
 }
 
@@ -156,58 +156,51 @@ pub async fn get_play_queue(_q: QueryParams) -> Result<warp::reply::Json, warp::
     }))
 }
 
-// The queue to serve: the local store when it has tracks (it carries
-// the pre-current songs and the elapsed position), else Tidal's play
-// queue, which restores the queue across server restarts and from
-// other clients. A Tidal restore has no elapsed position.
-async fn restore_queue(client: &TidalClient) -> play_state::PlayQueue {
+// The queue to serve: the local store, shared by all Subsonic clients.
+// The Tidal mirror used to restore the queue here; it is disabled, so
+// a server restart clears the queue (see playqueues.rs).
+async fn restore_queue(_client: &TidalClient) -> play_state::PlayQueue {
     if let Some(q) = play_state::queue().filter(|q| !q.track_ids.is_empty()) {
         return q;
     }
-    let fresh = play_state::PlayQueue {
+    play_state::PlayQueue {
         track_ids: Vec::new(),
         current: None,
         position_ms: 0,
         username: String::new(),
         changed_by: String::new(),
         changed_ms: now_ms(),
-    };
-    match client.fetch_play_queue().await {
-        Ok((ids, current)) if !ids.is_empty() => play_state::PlayQueue { track_ids: ids, current, ..fresh },
-        _ => fresh,
     }
 }
 
-// Mirror the saved queue to Tidal. Best effort: a failure stays local
-// and only logs, so Subsonic clients never see an error for a synced
-// queue. Compiled out of the test build so the warp tests never touch
-// the network.
-#[cfg(not(test))]
-async fn sync_saved_queue(ids: Option<(IdList, u64)>) {
-    let client = crate::tidal::client();
-    let result = match ids {
-        Some((ids, current)) => {
-            let parsed = parse_song_ids(&ids);
-            match parsed {
-                Ok(v) => {
-                    if v.contains(&current) {
-                        client.push_play_queue(&v, current).await
-                    } else {
-                        return;
-                    }
-                }
-                Err(_) => return,
-            }
-        }
-        None => client.clear_play_queue().await,
-    };
-    if let Err(e) = result {
-        tracing::debug!("play queue sync to Tidal skipped: {e}");
-    }
-}
-
-#[cfg(test)]
-async fn sync_saved_queue(_ids: Option<(IdList, u64)>) {}
+// Mirror the saved queue to Tidal. Disabled: the feature is gated
+// behind an experiment flag that cannot be enabled on the API side.
+// #[cfg(not(test))]
+// async fn sync_saved_queue(ids: Option<(IdList, u64)>) {
+//     let client = crate::tidal::client();
+//     let result = match ids {
+//         Some((ids, current)) => {
+//             let parsed = parse_song_ids(&ids);
+//             match parsed {
+//                 Ok(v) => {
+//                     if v.contains(&current) {
+//                         client.push_play_queue(&v, current).await
+//                     } else {
+//                         return;
+//                     }
+//                 }
+//                 Err(_) => return,
+//             }
+//         }
+//         None => client.clear_play_queue().await,
+//     };
+//     if let Err(e) = result {
+//         tracing::debug!("play queue sync to Tidal skipped: {e}");
+//     }
+// }
+//
+// #[cfg(test)]
+// async fn sync_saved_queue(_ids: Option<(IdList, u64)>) {}
 
 #[cfg(test)]
 mod tests {
