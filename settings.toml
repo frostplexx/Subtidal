@@ -31,10 +31,10 @@ show_mixes = true
 # Content labels sent to clients. Both are on by default; set a value to
 # false to stop sending that label.
 [labels]
-#   # Mark titles of Tidal AI-generated songs (appended to the title).
+# Mark AI-generated songs.
    ai = true
-#   # Send the OpenSubsonic explicitStatus ("explicit"/"clean") for songs
-#   # and albums. When off, the field is not sent at all.
+# Send the OpenSubsonic explicitStatus ("explicit"/"clean") for songs
+# and albums. When off, the field is not sent at all.
    explicit = true
 
 # Optional scrobble backends. Both are best-effort: a failing reporter
