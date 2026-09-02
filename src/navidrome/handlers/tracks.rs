@@ -117,7 +117,8 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
 // old heuristic (top tracks of the seed and its three closest similar
 // artists), deduped against the feed. A similar artist's fetch failure
 // degrades to a warning; the seed's failure fails the request.
-async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'static str)> {
+fn similar_songs_core(q: QueryParams) -> super::BoxedTryFuture<Vec<Child>, (u32, &'static str)> {
+    Box::pin(async move {
     let Some(id) = q.id.0.first() else {
         return Err((10, "Required parameter missing"));
     };
@@ -193,6 +194,7 @@ async fn similar_songs_core(q: &QueryParams) -> Result<Vec<Child>, (u32, &'stati
     songs.shuffle(&mut rand::rng());
     songs.truncate(count);
     Ok(songs)
+    })
 }
 
 // Tidal's similarTracks relationship for the artist's most popular
@@ -216,7 +218,7 @@ async fn similar_feed_songs(
 }
 
 pub async fn get_similar_songs2(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    match similar_songs_core(&q).await {
+    match similar_songs_core(q).await {
         Ok(song) => Ok(ok(SimilarSongs2Response {
             similar_songs2: SimilarSongs2 { song },
         })),
@@ -227,7 +229,7 @@ pub async fn get_similar_songs2(q: QueryParams) -> Result<warp::reply::Json, war
 // getSimilarSongs v1: the same collection as v2 under the similarSongs
 // wrapper.
 pub async fn get_similar_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    match similar_songs_core(&q).await {
+    match similar_songs_core(q).await {
         Ok(song) => Ok(ok(SimilarSongsResponse {
             similar_songs: SimilarSongs { song },
         })),

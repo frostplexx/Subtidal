@@ -1,13 +1,12 @@
-// Auth: device-code login, token persistence (keyring or file), refresh,
-// and the cached access-token accessor used by every request.
+// Auth: device-code login, token persistence (shared credential file),
+// refresh, and the cached access-token accessor used by every request.
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use keyring::{Entry, Error as KeyringError};
 use qrcode::{QrCode, render::unicode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{Error, AUTH_URL, API_URL, KEYRING_SERVICE, KEYRING_USER, SCOPE};
+use super::{API_URL, AUTH_URL, Error, SCOPE};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,52 +64,38 @@ impl super::TidalClient {
         out
     }
 
-    // Tokens live in the OS keyring (macOS Keychain). Set SUBTIDAL_TOKEN_FILE
-    // during development to store them in a file instead, skipping the
-    // Keychain prompt that repeats on every rebuild.
-    fn token_file_override() -> Option<std::path::PathBuf> {
-        std::env::var_os("SUBTIDAL_TOKEN_FILE").map(std::path::PathBuf::from)
-    }
-
-    fn keyring_entry(&self) -> Result<Entry, Error> {
-        Entry::new(KEYRING_SERVICE, KEYRING_USER)
-            .map_err(|e| Error::Auth(format!("keyring init failed: {e}")))
-    }
-
+    // Tokens persist in the shared credential file (src/state.rs) under
+    // the "tidal" section. The Docker image points SUBTIDAL_TOKEN_FILE at
+    // a volume-backed file; without the override the file defaults to
+    // $XDG_STATE_HOME/subtidal/state.json.
     fn store_tokens(&self, tokens: &Tokens) -> Result<(), Error> {
-        let json = serde_json::to_string(tokens)?;
-        if let Some(path) = Self::token_file_override() {
-            std::fs::write(&path, &json)
-                .and_then(|_| {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                })
-                .map_err(|e| Error::Auth(format!("token file write failed: {e}")))?;
-            return Ok(());
-        }
-        self.keyring_entry()?
-            .set_password(&json)
-            .map_err(|e| Error::Auth(format!("keyring set failed: {e}")))
+        crate::state::store_section(crate::state::TIDAL, tokens).map_err(Error::Auth)
     }
 
     fn load_tokens(&self) -> Result<Option<Tokens>, Error> {
-        if let Some(path) = Self::token_file_override() {
-            let json = match std::fs::read_to_string(&path) {
-                Ok(j) => j,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(Error::Auth(format!("token file read failed: {e}"))),
-            };
-            return Ok(Some(serde_json::from_str(&json)?));
+        match crate::state::load_section::<Tokens>(crate::state::TIDAL) {
+            Ok(Some(t)) => Ok(Some(t)),
+            Ok(None) => Self::legacy_root_tokens(),
+            Err(e) => Err(Error::Auth(e)),
         }
-        match self.keyring_entry()?.get_password() {
-            Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
-            Err(KeyringError::NoEntry) => Ok(None),
-            Err(e) => Err(Error::Auth(format!("keyring get failed: {e}"))),
+    }
+
+    // Files written before the unified store kept the Tokens object at
+    // the document root. Read those so an upgrade does not force a
+    // re-login.
+    fn legacy_root_tokens() -> Result<Option<Tokens>, Error> {
+        let doc = crate::state::raw_doc().map_err(Error::Auth)?;
+        if doc.contains_key("access_token") {
+            serde_json::from_value(serde_json::Value::Object(doc))
+                .map(Some)
+                .map_err(Error::Json)
+        } else {
+            Ok(None)
         }
     }
 
     // Device-code login. Prints the code for the CLI, polls until the user
-    // authorizes, then persists the tokens to the OS keyring.
+    // authorizes, then persists the tokens to the shared credential file.
     pub async fn login(&self) -> Result<(), Error> {
         if self.client_id.starts_with("REPLACE_") {
             return Err(Error::Auth(
@@ -153,22 +138,27 @@ impl super::TidalClient {
                     .as_str()
                     .or_else(|| v["error"].as_str())
                     .unwrap_or("unknown error");
-                return Err(Error::Auth(format!(
-                    "device authorization refused: {msg}"
-                )));
+                return Err(Error::Auth(format!("device authorization refused: {msg}")));
             }
         }
         let auth: DeviceAuth = serde_json::from_str(&body)?;
 
-        println!("Open https://{}/{} in a browser or scan the QR code", auth.verification_uri, auth.user_code);
-        let code = QrCode::new(format!("https://{}/{}", auth.verification_uri, auth.user_code)).unwrap();
-        let image = code.render::<unicode::Dense1x2>()
+        println!(
+            "Open https://{}/{} in a browser or scan the QR code to log into Tidal.",
+            auth.verification_uri, auth.user_code
+        );
+        let code = QrCode::new(format!(
+            "https://{}/{}",
+            auth.verification_uri, auth.user_code
+        ))
+        .unwrap();
+        let image = code
+            .render::<unicode::Dense1x2>()
             .dark_color(unicode::Dense1x2::Dark)
             .light_color(unicode::Dense1x2::Light)
             .build();
 
         println!("{}", image);
-    
 
         let deadline = Instant::now() + Duration::from_secs(auth.expires_in);
         loop {
@@ -249,12 +239,26 @@ impl super::TidalClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    // True when no valid token exists in the keyring or the stored token is
-    // expired. The server calls login() at startup in that case.
-    pub fn needs_login(&self) -> bool {
-        match self.load_tokens() {
-            Ok(Some(t)) => t.expired(unix_now()),
-            _ => true,
+    // Restore a session at startup: use a stored token, refresh an expired
+    // one silently, and only fall back to the full device-code login when
+    // no token exists or Tidal rejects the refresh. HTTP 400/401 means the
+    // stored refresh token was revoked or expired.
+    pub async fn ensure_session(&self) -> Result<(), Error> {
+        let Some(tokens) = self.load_tokens()? else {
+            return self.login().await;
+        };
+        if !tokens.expired(unix_now()) {
+            return Ok(());
+        }
+        match self.refresh_and_store(&tokens).await {
+            Ok(_) => Ok(()),
+            Err(Error::Tidal(400 | 401, _)) => {
+                println!(
+                    "The stored Tidal session expired and could not be refreshed; logging in again."
+                );
+                self.login().await
+            }
+            Err(e) => Err(e),
         }
     }
 
@@ -274,17 +278,27 @@ impl super::TidalClient {
             *guard = Some(tokens);
             return Ok(access_token);
         }
+        let updated = self.refresh_and_store(&tokens).await?;
+        *guard = Some(updated);
+        Ok(guard.as_ref().unwrap().access_token.clone())
+    }
+
+    // Exchange a stored refresh token for fresh tokens and persist them.
+    // The in-memory cache is left untouched, so callers may hold the
+    // tokens lock across the await.
+    async fn refresh_and_store(&self, tokens: &Tokens) -> Result<Tokens, Error> {
         let auth = self.refresh(&tokens.refresh_token).await?;
         let updated = Tokens {
             access_token: auth.access_token,
-            refresh_token: auth.refresh_token.unwrap_or(tokens.refresh_token),
+            refresh_token: auth
+                .refresh_token
+                .unwrap_or_else(|| tokens.refresh_token.clone()),
             expires_at: unix_now() + auth.expires_in,
             user_id: tokens.user_id,
-            country_code: tokens.country_code,
+            country_code: tokens.country_code.clone(),
         };
         self.store_tokens(&updated)?;
-        *guard = Some(updated);
-        Ok(guard.as_ref().unwrap().access_token.clone())
+        Ok(updated)
     }
 
     // Resolve the logged-in user id: stored tokens, else the session.

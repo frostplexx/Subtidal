@@ -1,6 +1,7 @@
 // Tidal API client: cached authenticated GETs plus per-entity methods.
-// Auth (device-code login, token refresh, keyring) lives in auth.rs; each
-// endpoint family gets its own module with an `impl TidalClient` block.
+// Auth (device-code login, token refresh, credential file) lives in
+// auth.rs; each endpoint family gets its own module with an
+// `impl TidalClient` block.
 //   auth:   https://auth.tidal.com/v1/oauth2
 //   api:    https://api.tidal.com/v1
 //   stream: GET /tracks/{id}/playbackinfopostpaywall
@@ -44,8 +45,6 @@ const V2_URL: &str = "https://api.tidal.com/v2";
 // OpenAPI (JSON:API) host, distinct from the legacy V2_URL above.
 const OPENAPI_URL: &str = "https://openapi.tidal.com/v2";
 const CLIENT_VERSION: &str = "2025.11.3";
-const KEYRING_SERVICE: &str = "Subtidal";
-const KEYRING_USER: &str = "tidal";
 const SCOPE: &str = "r_usr w_usr w_sub";
 
 #[derive(Debug)]

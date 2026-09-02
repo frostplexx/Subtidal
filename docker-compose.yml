@@ -16,9 +16,9 @@ services:
       # APP_* env vars (APP_USERNAME, APP_PORT, ...) still work and
       # override the file; see settings.toml for all options.
       XDG_CONFIG_HOME: /config
-      # The Tidal session lives here. On first start the container runs
-      # the device-code login and prints a URL to the logs; complete it
-      # once and the token persists in the volume.
+      # The Tidal and Last.fm credentials share one file here. On first
+      # start the container runs the device-code login and prints a URL to
+      # the logs; complete it once and both persist in the volume.
       SUBTIDAL_TOKEN_FILE: /data/tokens.json
       # Tracing filter; falls back to info when unset. Override from the
       # shell: RUST_LOG=subtidal=debug docker compose up -d

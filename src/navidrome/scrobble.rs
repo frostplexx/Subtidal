@@ -48,52 +48,19 @@ pub trait PlayReporter: Send + Sync {
     }
 }
 
-const KEYRING_SERVICE: &str = "Subtidal";
-const LASTFM_KEYRING_USER: &str = "lastfm-session-key";
+// The Last.fm session key: from the "lastfm" section of the shared
+// credential file (src/state.rs).
 const LASTFM_API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 const LASTFM_AUTH_URL: &str = "https://www.last.fm/api/auth/";
 const LISTENBRAINZ_API_BASE: &str = "https://api.listenbrainz.org";
 
-// Where the fallback session key lives when the OS keyring is
-// unavailable (headless Linux without a Secret Service). Override with
-// SUBTIDAL_LASTFM_KEY_FILE; default is
-// $XDG_STATE_HOME/subtidal/lastfm-session-key.
-const LASTFM_KEY_FILE_ENV: &str = "SUBTIDAL_LASTFM_KEY_FILE";
-
-fn lastfm_key_file() -> Option<std::path::PathBuf> {
-    if let Some(p) = std::env::var_os(LASTFM_KEY_FILE_ENV) {
-        return Some(std::path::PathBuf::from(p));
-    }
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state"))
-        })?;
-    Some(base.join("subtidal").join(LASTFM_KEYRING_USER))
+pub fn lastfm_session_key() -> Result<Option<String>, String> {
+    crate::state::load_section(crate::state::LASTFM)
 }
 
-fn read_key_file_at(path: &std::path::Path) -> Result<Option<String>, String> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => Ok(Some(s.trim().to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("key file read failed ({}): {e}", path.display())),
-    }
-}
-
-fn read_key_file() -> Result<Option<String>, String> {
-    match lastfm_key_file() {
-        Some(path) => read_key_file_at(&path),
-        None => Ok(None),
-    }
-}
-
-fn write_key_file(path: &std::path::Path, key: &str) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(path, key)?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+// Store the Last.fm session key in the shared credential file.
+fn store_lastfm_session_key(key: &str) -> Result<(), String> {
+    crate::state::store_section(crate::state::LASTFM, key)
 }
 
 // The configured reporter list, swappable by tests. The Arc lets
@@ -107,8 +74,8 @@ fn registry() -> &'static ReporterRegistry {
 }
 
 // Build the reporter list from settings. The Last.fm reporter needs a
-// session key from the OS keychain; a missing key logs a warning and
-// skips that reporter. Tests replace the registry wholesale.
+// session key from the shared credential file; a missing key logs a
+// warning and skips that reporter. Tests replace the registry wholesale.
 pub fn init(settings: &Settings) {
     let mut reporters: Vec<Box<dyn PlayReporter>> = Vec::new();
     if let Some(cfg) = &settings.lastfm {
@@ -261,8 +228,8 @@ pub struct LastFmReporter {
     api_secret: String,
     api_url: String,
     http: reqwest::Client,
-    // Session key provider: the OS keychain in production, so a
-    // background re-authorization is picked up on the next report.
+    // Session key provider: the shared credential file in production, so
+    // a background re-authorization is picked up on the next report.
     // Tests inject a fake.
     session_key: Box<dyn Fn() -> Result<Option<String>, String> + Send + Sync>,
     // Re-authorization trigger: spawns the interactive flow in
@@ -424,7 +391,7 @@ impl PlayReporter for LastFmReporter {
 
 // One re-authorization flow at a time. Spawns the interactive flow
 // (prints the authorize URL, polls up to three minutes), which stores
-// the new session key in the keychain on success.
+// the new session key in the shared credential file on success.
 fn trigger_reauthorization(api_key: &str, api_secret: &str) {
     static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
     if IN_FLIGHT.swap(true, Ordering::SeqCst) {
@@ -441,46 +408,11 @@ fn trigger_reauthorization(api_key: &str, api_secret: &str) {
     });
 }
 
-// The Last.fm session key: OS keychain first, then the fallback file.
-// A keyring that errors (headless Linux has no Secret Service) falls
-// back to the file instead of failing.
-pub fn lastfm_session_key() -> Result<Option<String>, String> {
-    match keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.get_password()) {
-        Ok(sk) => Ok(Some(sk)),
-        Err(keyring::Error::NoEntry) => read_key_file(),
-        Err(e) => {
-            tracing::debug!("keyring unavailable ({e}); using the session-key file");
-            read_key_file()
-        }
-    }
-}
-
-// Store the Last.fm session key: OS keychain first, then the fallback
-// file. A keyring set that fails (headless Linux without a Secret
-// Service) writes the key file instead, so authorization still sticks.
-fn store_lastfm_session_key(key: &str) -> Result<(), String> {
-    let keyring =
-        keyring::Entry::new(KEYRING_SERVICE, LASTFM_KEYRING_USER).and_then(|e| e.set_password(key));
-    match keyring {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let Some(path) = lastfm_key_file() else {
-                return Err(format!("keyring set failed: {e}"));
-            };
-            tracing::warn!(
-                "keyring unavailable ({e}); storing the Last.fm session key at {}",
-                path.display()
-            );
-            write_key_file(&path, key).map_err(|e| format!("key file write failed: {e}"))
-        }
-    }
-}
-
 // Last.fm one-time auth, run automatically on startup when a [lastfm]
 // block exists without a session key (and on demand via --lastfm-auth):
 // getToken -> print the authorize URL -> poll getSession until the user
-// authorizes (or the timeout passes) -> store the session key (keychain
-// or fallback file). Never blocks forever: on timeout the caller
+// authorizes (or the timeout passes) -> store the session key in the
+// shared credential file. Never blocks forever: on timeout the caller
 // continues without Last.fm scrobbling.
 pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), String> {
     const POLL_SECS: u64 = 3;
@@ -807,21 +739,6 @@ mod tests {
         assert_eq!(classify_session_error(13), SessionPoll::Pending);
         assert_eq!(classify_session_error(14), SessionPoll::Pending);
         assert_eq!(classify_session_error(16), SessionPoll::Pending);
-    }
-
-    #[test]
-    fn session_key_file_roundtrips() {
-        let dir = std::env::temp_dir().join(format!("subtidal-key-test-{}", std::process::id()));
-        let path = dir.join("lastfm-session-key");
-        // A missing file reads as None.
-        assert_eq!(read_key_file_at(&path).unwrap(), None);
-        write_key_file(&path, "sk123").unwrap();
-        assert_eq!(read_key_file_at(&path).unwrap(), Some("sk123".to_string()));
-        // The file must be private to the user.
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     // A recording reporter for fan-out tests.

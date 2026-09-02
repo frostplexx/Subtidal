@@ -1,5 +1,12 @@
 // Subsonic endpoint handlers, one module per endpoint family. routes.rs
 // stays flat and calls the re-exports below.
+//
+// A boxed try-future. Boxing keeps every async state machine small enough
+// for the trait solver to prove Send without overflowing its recursion
+// limit; see routes.rs for the full explanation.
+pub(super) type BoxedTryFuture<T, E> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, E>> + Send>>;
+
 pub mod album;
 pub mod annotate;
 pub mod artist;

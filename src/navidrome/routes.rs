@@ -3,6 +3,7 @@ use super::handlers;
 use super::log::{logged, named, with_params};
 use super::params::QueryParams;
 use bytes::Bytes;
+use futures_util::TryFutureExt;
 use warp::Filter;
 use warp::Reply;
 
@@ -62,80 +63,90 @@ fn private() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clon
 //   4. handlers.rs: compose params -> client -> mapping -> ok().
 //   5. Add one arm here. The .view suffix, GET+POST and the log tag come
 //      from the generic matcher. Keep names out of public().
-async fn dispatch(
+//
+// dispatch is deliberately NOT async. A wrapper future containing every
+// arm would give the trait solver one giant async state machine to
+// normalize, which overflowed its recursion limit. Boxing each arm's
+// future individually keeps every Send/TryFuture proof shallow; the
+// common tail runs in one small boxed wrapper.
+fn dispatch(
     q: QueryParams,
     raw: String,
     name: String,
     body: Bytes,
-) -> Result<warp::reply::Response, warp::Rejection> {
-    let reply = match name.as_str() {
-        "getUser" => handlers::get_user().await?.into_response(),
-        "getUsers" => handlers::get_users().await?.into_response(),
-        "getLicense" => handlers::get_license().await?.into_response(),
-        "getMusicFolders" => handlers::get_music_folders().await?.into_response(),
-        "getScanStatus" => handlers::get_scan_status().await?.into_response(),
-        "startScan" => handlers::start_scan(q).await?.into_response(),
-        "scrobble" => handlers::scrobble(q).await?.into_response(),
-        "setRating" => handlers::set_rating(q).await?.into_response(),
-        "search2" => handlers::search2(q).await?.into_response(),
-        "search3" => handlers::search3(q).await?.into_response(),
-        "getCoverArt" => handlers::get_cover_art(q).await?.into_response(),
-        "getAvatar" => handlers::get_avatar(q).await?,
-        "getAlbum" => handlers::get_album(q).await?.into_response(),
-        "getAlbumList" => handlers::get_album_list(q).await?.into_response(),
-        "getAlbumList2" => handlers::get_album_list2(q).await?.into_response(),
-        "getAlbumInfo" => handlers::get_album_info(q).await?.into_response(),
-        "getAlbumInfo2" => handlers::get_album_info2(q).await?.into_response(),
-        "getArtist" => handlers::get_artist(q).await?.into_response(),
-        "getArtistInfo" => handlers::get_artist_info(q).await?.into_response(),
-        "getArtistInfo2" => handlers::get_artist_info2(q).await?.into_response(),
-        "getTopSongs" => handlers::get_top_songs(q).await?.into_response(),
-        "getSong" => handlers::get_song(q).await?.into_response(),
-        "getSimilarSongs" => handlers::get_similar_songs(q).await?.into_response(),
-        "getSimilarSongs2" => handlers::get_similar_songs2(q).await?.into_response(),
-        "getSongsByGenre" => handlers::get_songs_by_genre(q).await?.into_response(),
-        "getLyrics" => handlers::get_lyrics(q).await?.into_response(),
-        "getLyricsBySongId" => handlers::get_lyrics_by_song_id(q).await?.into_response(),
-        "getRandomSongs" => handlers::get_random_songs(q).await?.into_response(),
-        "stream" => handlers::stream(q).await?,
-        "updateNowPlaying" => handlers::update_now_playing(q).await?.into_response(),
-        "getNowPlaying" => handlers::get_now_playing(q).await?.into_response(),
-        "reportPlayback" => handlers::report_playback(q).await?.into_response(),
-        "getStarred" => handlers::get_starred().await?.into_response(),
-        "getStarred2" => handlers::get_starred2().await?.into_response(),
-        "star" => handlers::star(q).await?.into_response(),
-        "unstar" => handlers::unstar(q).await?.into_response(),
-        "getGenres" => handlers::get_genres().await?.into_response(),
-        "getPlaylists" => handlers::get_playlists().await?.into_response(),
-        "getPlaylist" => handlers::get_playlist(q).await?.into_response(),
-        "createPlaylist" => handlers::create_playlist(q).await?.into_response(),
-        "updatePlaylist" => handlers::update_playlist(q).await?.into_response(),
-        "deletePlaylist" => handlers::delete_playlist(q).await?.into_response(),
-        "getIndexes" => handlers::get_indexes(q).await?.into_response(),
-        "getArtists" => handlers::get_artists(q).await?.into_response(),
-        "getMusicDirectory" => handlers::get_music_directory(q).await?.into_response(),
-        "getPlayQueue" => handlers::get_play_queue(q).await?.into_response(),
-        "savePlayQueue" => handlers::save_play_queue(q).await?.into_response(),
-        "getPlayQueueByIndex" => handlers::get_play_queue_by_index(q).await?.into_response(),
-        "savePlayQueueByIndex" => handlers::save_play_queue_by_index(q).await?.into_response(),
-        "getBookmarks" => handlers::get_bookmarks(q).await?.into_response(),
-        "createBookmark" => handlers::create_bookmark(q).await?.into_response(),
-        "deleteBookmark" => handlers::delete_bookmark(q).await?.into_response(),
-        "jukeboxControl" => handlers::jukebox_control(q).await?.into_response(),
-        "getShares" => handlers::get_shares().await?.into_response(),
-        "createShare" => handlers::create_share(q).await?.into_response(),
-        "updateShare" => handlers::update_share(q).await?.into_response(),
-        "deleteShare" => handlers::delete_share(q).await?.into_response(),
-        "getInternetRadioStations" => handlers::get_internet_radio_stations().await?.into_response(),
-        "createInternetRadioStation" => handlers::create_internet_radio_station(q).await?.into_response(),
-        "updateInternetRadioStation" => handlers::update_internet_radio_station(q).await?.into_response(),
-        "deleteInternetRadioStation" => handlers::delete_internet_radio_station(q).await?.into_response(),
-        "download" => handlers::download(q).await?,
-        "getTranscodeDecision" => handlers::get_transcode_decision(q, body).await?.into_response(),
-        _ => return Err(warp::reject::not_found()),
-    };
-    let reply = with_params(&raw)(reply);
-    Ok(named(&name)(reply).into_response())
+) -> super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> {
+    let handler: super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> =
+        match name.as_str() {
+            "getUser" => Box::pin(handlers::get_user().map_ok(|r| r.into_response())),
+            "getUsers" => Box::pin(handlers::get_users().map_ok(|r| r.into_response())),
+            "getLicense" => Box::pin(handlers::get_license().map_ok(|r| r.into_response())),
+            "getMusicFolders" => Box::pin(handlers::get_music_folders().map_ok(|r| r.into_response())),
+            "getScanStatus" => Box::pin(handlers::get_scan_status().map_ok(|r| r.into_response())),
+            "startScan" => Box::pin(handlers::start_scan(q).map_ok(|r| r.into_response())),
+            "scrobble" => Box::pin(handlers::scrobble(q).map_ok(|r| r.into_response())),
+            "setRating" => Box::pin(handlers::set_rating(q).map_ok(|r| r.into_response())),
+            "search2" => Box::pin(handlers::search2(q).map_ok(|r| r.into_response())),
+            "search3" => Box::pin(handlers::search3(q).map_ok(|r| r.into_response())),
+            "getCoverArt" => Box::pin(handlers::get_cover_art(q).map_ok(|r| r.into_response())),
+            "getAvatar" => Box::pin(handlers::get_avatar(q).map_ok(|r| r)),
+            "getAlbum" => Box::pin(handlers::get_album(q).map_ok(|r| r.into_response())),
+            "getAlbumList" => Box::pin(handlers::get_album_list(q).map_ok(|r| r.into_response())),
+            "getAlbumList2" => Box::pin(handlers::get_album_list2(q).map_ok(|r| r.into_response())),
+            "getAlbumInfo" => Box::pin(handlers::get_album_info(q).map_ok(|r| r.into_response())),
+            "getAlbumInfo2" => Box::pin(handlers::get_album_info2(q).map_ok(|r| r.into_response())),
+            "getArtist" => Box::pin(handlers::get_artist(q).map_ok(|r| r.into_response())),
+            "getArtistInfo" => Box::pin(handlers::get_artist_info(q).map_ok(|r| r.into_response())),
+            "getArtistInfo2" => Box::pin(handlers::get_artist_info2(q).map_ok(|r| r.into_response())),
+            "getTopSongs" => Box::pin(handlers::get_top_songs(q).map_ok(|r| r.into_response())),
+            "getSong" => Box::pin(handlers::get_song(q).map_ok(|r| r.into_response())),
+            "getSimilarSongs" => Box::pin(handlers::get_similar_songs(q).map_ok(|r| r.into_response())),
+            "getSimilarSongs2" => Box::pin(handlers::get_similar_songs2(q).map_ok(|r| r.into_response())),
+            "getSongsByGenre" => Box::pin(handlers::get_songs_by_genre(q).map_ok(|r| r.into_response())),
+            "getLyrics" => Box::pin(handlers::get_lyrics(q).map_ok(|r| r.into_response())),
+            "getLyricsBySongId" => Box::pin(handlers::get_lyrics_by_song_id(q).map_ok(|r| r.into_response())),
+            "getRandomSongs" => Box::pin(handlers::get_random_songs(q).map_ok(|r| r.into_response())),
+            "stream" => Box::pin(handlers::stream(q).map_ok(|r| r)),
+            "updateNowPlaying" => Box::pin(handlers::update_now_playing(q).map_ok(|r| r.into_response())),
+            "getNowPlaying" => Box::pin(handlers::get_now_playing(q).map_ok(|r| r.into_response())),
+            "reportPlayback" => Box::pin(handlers::report_playback(q).map_ok(|r| r.into_response())),
+            "getStarred" => Box::pin(handlers::get_starred().map_ok(|r| r.into_response())),
+            "getStarred2" => Box::pin(handlers::get_starred2().map_ok(|r| r.into_response())),
+            "star" => Box::pin(handlers::star(q).map_ok(|r| r.into_response())),
+            "unstar" => Box::pin(handlers::unstar(q).map_ok(|r| r.into_response())),
+            "getGenres" => Box::pin(handlers::get_genres().map_ok(|r| r.into_response())),
+            "getPlaylists" => Box::pin(handlers::get_playlists().map_ok(|r| r.into_response())),
+            "getPlaylist" => Box::pin(handlers::get_playlist(q).map_ok(|r| r.into_response())),
+            "createPlaylist" => Box::pin(handlers::create_playlist(q).map_ok(|r| r.into_response())),
+            "updatePlaylist" => Box::pin(handlers::update_playlist(q).map_ok(|r| r.into_response())),
+            "deletePlaylist" => Box::pin(handlers::delete_playlist(q).map_ok(|r| r.into_response())),
+            "getIndexes" => Box::pin(handlers::get_indexes(q).map_ok(|r| r.into_response())),
+            "getArtists" => Box::pin(handlers::get_artists(q).map_ok(|r| r.into_response())),
+            "getMusicDirectory" => Box::pin(handlers::get_music_directory(q).map_ok(|r| r.into_response())),
+            "getPlayQueue" => Box::pin(handlers::get_play_queue(q).map_ok(|r| r.into_response())),
+            "savePlayQueue" => Box::pin(handlers::save_play_queue(q).map_ok(|r| r.into_response())),
+            "getPlayQueueByIndex" => Box::pin(handlers::get_play_queue_by_index(q).map_ok(|r| r.into_response())),
+            "savePlayQueueByIndex" => Box::pin(handlers::save_play_queue_by_index(q).map_ok(|r| r.into_response())),
+            "getBookmarks" => Box::pin(handlers::get_bookmarks(q).map_ok(|r| r.into_response())),
+            "createBookmark" => Box::pin(handlers::create_bookmark(q).map_ok(|r| r.into_response())),
+            "deleteBookmark" => Box::pin(handlers::delete_bookmark(q).map_ok(|r| r.into_response())),
+            "jukeboxControl" => Box::pin(handlers::jukebox_control(q).map_ok(|r| r.into_response())),
+            "getShares" => Box::pin(handlers::get_shares().map_ok(|r| r.into_response())),
+            "createShare" => Box::pin(handlers::create_share(q).map_ok(|r| r.into_response())),
+            "updateShare" => Box::pin(handlers::update_share(q).map_ok(|r| r.into_response())),
+            "deleteShare" => Box::pin(handlers::delete_share(q).map_ok(|r| r.into_response())),
+            "getInternetRadioStations" => Box::pin(handlers::get_internet_radio_stations().map_ok(|r| r.into_response())),
+            "createInternetRadioStation" => Box::pin(handlers::create_internet_radio_station(q).map_ok(|r| r.into_response())),
+            "updateInternetRadioStation" => Box::pin(handlers::update_internet_radio_station(q).map_ok(|r| r.into_response())),
+            "deleteInternetRadioStation" => Box::pin(handlers::delete_internet_radio_station(q).map_ok(|r| r.into_response())),
+            "download" => Box::pin(handlers::download(q).map_ok(|r| r)),
+            "getTranscodeDecision" => Box::pin(handlers::get_transcode_decision(q, body).map_ok(|r| r.into_response())),
+            _ => return Box::pin(async move { Err(warp::reject::not_found()) }),
+        };
+    Box::pin(async move {
+        let reply = handler.await?;
+        let reply = with_params(&raw)(reply);
+        Ok::<_, warp::Rejection>(named(&name)(reply).into_response())
+    })
 }
 
 // A route to handle the OpenSubsonic ping endpoint

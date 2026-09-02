@@ -38,8 +38,8 @@ pub struct Settings {
     pub rate_limit: bool,
     // Optional scrobble backends. Both are best-effort: a failing
     // reporter only logs, never fails the client request. The Last.fm
-    // session key comes from the OS keychain (run --lastfm-auth once);
-    // the ListenBrainz token is the plain API token.
+    // session key comes from the shared credential file (run
+    // --lastfm-auth once); the ListenBrainz token is the plain API token.
     #[serde(default)]
     pub lastfm: Option<LastFmConfig>,
     #[serde(default)]
@@ -50,8 +50,8 @@ pub struct Settings {
     pub labels: LabelsConfig,
 }
 
-// Last.fm scrobble credentials. The session key (sk) lives in the OS
-// keychain, not here.
+// Last.fm scrobble credentials. The session key (sk) lives in the
+// shared credential file, not here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LastFmConfig {
     pub api_key: String,

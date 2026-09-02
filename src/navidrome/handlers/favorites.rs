@@ -40,7 +40,11 @@ pub(crate) fn favorite_track_songs(result: &serde_json::Value) -> Vec<Child> {
         .unwrap_or_default()
 }
 
-async fn fetch_favorites() -> Result<(serde_json::Value, serde_json::Value, serde_json::Value), ()> {
+fn fetch_favorites() -> super::BoxedTryFuture<
+    (serde_json::Value, serde_json::Value, serde_json::Value),
+    (),
+> {
+    Box::pin(async move {
     let client = crate::tidal::client();
     let albums = client.favorite_albums(0, 2000);
     let artists = client.favorite_artists(0, 2000);
@@ -53,6 +57,7 @@ async fn fetch_favorites() -> Result<(serde_json::Value, serde_json::Value, serd
         }
     };
     Ok((albums, artists, tracks))
+    })
 }
 
 pub async fn get_starred() -> Result<warp::reply::Json, warp::Rejection> {
