@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use keyring::{Entry, Error as KeyringError};
+use qrcode::{QrCode, render::unicode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -159,7 +160,15 @@ impl super::TidalClient {
         }
         let auth: DeviceAuth = serde_json::from_str(&body)?;
 
-        println!("Open {}/{} in a browser", auth.verification_uri, auth.user_code);
+        println!("Open https://{}/{} in a browser or scan the QR code", auth.verification_uri, auth.user_code);
+        let code = QrCode::new(format!("https://{}/{}", auth.verification_uri, auth.user_code)).unwrap();
+        let image = code.render::<unicode::Dense1x2>()
+            .dark_color(unicode::Dense1x2::Dark)
+            .light_color(unicode::Dense1x2::Light)
+            .build();
+
+        println!("{}", image);
+    
 
         let deadline = Instant::now() + Duration::from_secs(auth.expires_in);
         loop {
