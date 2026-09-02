@@ -198,9 +198,9 @@ impl super::TidalClient {
             };
             self.store_tokens(&tokens)?;
             println!(
-                "Logged in. user_id={} country={:?}",
+                "Logged in.\nuser_id={} country={:?}",
                 tokens.user_id.unwrap_or(0),
-                tokens.country_code
+                tokens.country_code.unwrap_or("N/A".to_string())
             );
             return Ok(());
         }
