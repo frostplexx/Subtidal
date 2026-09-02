@@ -35,3 +35,6 @@ proptest = "1"
 publish = false
 tag-name = "v{{version}}"
 tag-message = "v{{version}}"
+# Never re-resolve Cargo.lock at release time: "upgrade" would bump
+# unrelated dependencies as a side effect of the version step.
+dependent-version = "fix"
