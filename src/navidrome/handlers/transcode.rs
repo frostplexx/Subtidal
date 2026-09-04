@@ -17,6 +17,16 @@ use super::{fail, ok};
 // and the decision itself never depends on them.
 fn source_stream(quality: Option<&str>) -> StreamDetails {
     match quality {
+        Some("ATMOS") => StreamDetails {
+            protocol: "http".into(),
+            container: "mp4".into(),
+            codec: "eac3".into(),
+            audio_channels: 6,
+            audio_bitrate: 768_000, 
+            audio_profile: "JOC".into(),
+            audio_samplerate: 48_000,
+            audio_bitdepth: 16,
+        },
         Some("HIRES_LOSSLESS") => StreamDetails {
             protocol: "http".into(),
             container: "flac".into(),
