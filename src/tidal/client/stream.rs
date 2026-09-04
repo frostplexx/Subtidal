@@ -221,6 +221,7 @@ impl TidalClient {
 // The format set per quality tier, mirroring the SDK's audioQualityToFormats.
 fn audio_quality_to_formats(quality: &str) -> &'static str {
     match quality {
+        "ATMOS" => "EAC3_JOC,FLAC_HIRES,FLAC",
         "HI_RES" => "HEAACV1,AACLC,FLAC,FLAC_HIRES",
         "LOSSLESS" => "HEAACV1,AACLC,FLAC",
         "HIGH" => "HEAACV1,AACLC",
