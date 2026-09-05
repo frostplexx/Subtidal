@@ -239,13 +239,20 @@ pub async fn get_similar_songs(q: QueryParams) -> Result<warp::reply::Json, warp
 
 //TODO: turn tidal qualities into an enum.
 
-// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. 
+// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. A client
+// requesting the "Dolby Atmos" transcode format (VeloSonic's
+// StreamFormat.EAC3) sends format=eac3 with no maxBitRate (its bitrate is
+// always ORIGINAL/unlimited for that format) — that must resolve to the
+// ATMOS tier specifically, not fall through to the generic non-empty-
+// format-means-LOSSLESS case below, or Tidal is never actually asked for
+// an Atmos-formatted manifest at all.
 fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static str {
     match max_bit_rate {
         // 0 means "no limit" in Subsonic; only a positive bitrate caps.
         Some(m) if (1..=64).contains(&m) => "LOW",
         Some(m) if (65..=320).contains(&m) => "HIGH",
         _ => match format {
+            Some("eac3") => "ATMOS",
             Some("flac") => "LOSSLESS",
             Some(f) if !f.is_empty() => "LOSSLESS",
             _ => "LOSSLESS",
@@ -257,6 +264,7 @@ fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static st
 // the tidal_quality setting, LOSSLESS when unset or unknown.
 fn default_tier() -> &'static str {
     match crate::SETTINGS.get().map(|s| s.tidal_quality.as_str()) {
+        Some("ATMOS") => "ATMOS",
         Some("HIGH") => "HIGH",
         Some("LOW") => "LOW",
         _ => "LOSSLESS",
@@ -460,6 +468,17 @@ mod tests {
         assert_eq!(tidal_quality(None, Some("mp3")), "LOSSLESS");
         assert_eq!(tidal_quality(Some(128), Some("flac")), "HIGH");
         assert_eq!(tidal_quality(Some(64), Some("mp3")), "LOW");
+    }
+
+    #[test]
+    fn eac3_format_hint_resolves_to_atmos_tier() {
+        // format=eac3 with no maxBitRate (VeloSonic's "Dolby Atmos" transcode
+        // option always sends ORIGINAL/unlimited bitrate for this format) must
+        // reach ATMOS specifically, not the generic non-empty-format-means-
+        // LOSSLESS fallback every other unrecognized format hits.
+        assert_eq!(tidal_quality(None, Some("eac3")), "ATMOS");
+        // A bitrate cap still wins over the eac3 hint, same as any other format.
+        assert_eq!(tidal_quality(Some(128), Some("eac3")), "HIGH");
     }
 
     // A minimal Child for pick_random tests.
