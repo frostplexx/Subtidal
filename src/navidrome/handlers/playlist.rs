@@ -272,11 +272,15 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
             Ok(v) => v,
             Err(e) => return Ok(mutation_error(e, "Playlist update failed")),
         };
+        // Count every track position, not only the removed ones: the
+        // counter must advance for each track entry so later indices
+        // still line up with the playlist the client sees.
         let mut addr: Vec<crate::tidal::client::ItemAddr> = Vec::new();
         let mut tracks_seen = 0u32;
         for e in &entries {
-            if e["type"].as_str() == Some("tracks") && indices.contains(&tracks_seen) {
-                if let (Some(id), Some(item_id)) = (entry_id(e), e["meta"]["itemId"].as_str())
+            if e["type"].as_str() == Some("tracks") {
+                if indices.contains(&tracks_seen)
+                    && let (Some(id), Some(item_id)) = (entry_id(e), e["meta"]["itemId"].as_str())
                 {
                     addr.push(("tracks".to_string(), id, item_id.to_string()));
                 }

@@ -35,6 +35,9 @@ impl TidalClient {
     // After any favorite change, drop the cached favorites lists so the
     // next getStarred/getAlbumList2 read fresh data. The cache key is the
     // full path plus query, so a prefix match covers all pages of a list.
+    // Album and artist reads walk the v2 userCollection endpoints; the
+    // track reads use the v1 /users/{id}/favorites/tracks endpoint (v1
+    // track objects carry replayGain), so three prefixes must be cleared.
     fn invalidate_favorites_cache(&self) {
         for prefix in [
             "/userCollectionTracks/me",
@@ -44,6 +47,14 @@ impl TidalClient {
             let _ = self
                 .meta_cache
                 .invalidate_entries_if(move |k, _| k.starts_with(prefix));
+        }
+        // The v1 favorite-tracks key embeds the user id. The mutation just
+        // ran with a valid token, so the stored id is available.
+        if let Some(uid) = self.user_id_from_tokens() {
+            let v1_tracks = format!("/users/{uid}/favorites/tracks");
+            let _ = self
+                .meta_cache
+                .invalidate_entries_if(move |k, _| k.starts_with(&v1_tracks));
         }
     }
 
