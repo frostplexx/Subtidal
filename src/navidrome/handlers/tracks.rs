@@ -482,6 +482,7 @@ mod tests {
             album_id: String::new(),
             artist_id: String::new(),
             artists: None,
+            isrc: None,
             kind: "song",
             content_type: "audio/flac",
             suffix: "flac",

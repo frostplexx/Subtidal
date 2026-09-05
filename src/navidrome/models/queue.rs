@@ -87,6 +87,7 @@ mod tests {
             album_id: "al1".into(),
             artist_id: "ar1".into(),
             artists: None,
+            isrc: None,
             kind: "song",
             content_type: "audio/flac",
             suffix: "flac",

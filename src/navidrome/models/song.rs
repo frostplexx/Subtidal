@@ -42,6 +42,11 @@ pub struct Child {
     // legacy singular fields above stay for older clients.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artists: Option<Vec<ArtistRef>>,
+    // Track ISRC(s). OpenSubsonic models the field as a list, so Tidal's
+    // single value wraps into a one-entry array. Omitted when the
+    // payload carries no ISRC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub isrc: Option<Vec<String>>,
     #[serde(rename = "type")]
     pub kind: &'static str,
     // Placeholder media metadata: no transcode or file probe yet.

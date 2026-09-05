@@ -69,6 +69,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
         artists,
+        isrc: v["isrc"].as_str().map(|s| vec![s.to_string()]),
         kind: "song",
         content_type: "audio/mp4",
         suffix: "m4a",
@@ -185,6 +186,35 @@ mod tests {
         });
         let song = song_from_track(&track).unwrap();
         assert_eq!(song.genre.as_deref(), Some("Rock"));
+    }
+
+    #[test]
+    fn song_maps_isrc() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "isrc": "USYT22100001"
+        });
+        let song = song_from_track(&track).unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["isrc"], json!(["USYT22100001"]));
+
+        // Payloads without an ISRC emit no isrc key at all.
+        let bare = json!({
+            "id": 124,
+            "title": "Song Two",
+            "duration": 220,
+            "trackNumber": 4,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&bare).unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert!(json.get("isrc").is_none());
     }
 
     #[test]
