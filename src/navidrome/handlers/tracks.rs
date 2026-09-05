@@ -7,8 +7,11 @@ use crate::navidrome::models::{
     SimilarSongs2Response, SimilarSongsResponse, SongsByGenre, SongsByGenreResponse,
 };
 use crate::navidrome::params::QueryParams;
+use crate::tidal::client::DashInfo;
 use rand::seq::SliceRandom;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use super::{fail, ok, redirect};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{song_from_track, year_from};
@@ -271,6 +274,30 @@ fn default_tier() -> &'static str {
     }
 }
 
+// The variant re-request must not re-fetch the manifest: a song would
+// cost two playbackinfo calls, and a client bursting a queue would
+// throttle at double speed. The master stores the parsed manifest here;
+// the variant request, milliseconds later, hits the cache. CDN URLs
+// carry short-lived signatures, so a stale entry degrades to a fresh
+// fetch.
+const DASH_TTL: Duration = Duration::from_secs(120);
+type DashCache = HashMap<(u64, String), (Instant, DashInfo)>;
+static DASH_CACHE: LazyLock<Mutex<DashCache>> = LazyLock::new(|| Mutex::new(DashCache::new()));
+
+fn cached_dash(track_id: u64, tier: &str) -> Option<DashInfo> {
+    let mut map = DASH_CACHE.lock().unwrap();
+    map.retain(|_, (at, _)| at.elapsed() < DASH_TTL);
+    map.get(&(track_id, tier.to_string())).map(|(_, d)| d.clone())
+}
+
+fn store_dash(track_id: u64, tier: &str, dash: &DashInfo) {
+    let mut map = DASH_CACHE.lock().unwrap();
+    map.retain(|_, (at, _)| at.elapsed() < DASH_TTL);
+    // A replay of the same song re-signs the URLs; a single slot keeps
+    // the cache small.
+    map.insert((track_id, tier.to_string()), (Instant::now(), dash.clone()));
+}
+
 // stream: resolve a track to its v2 manifest and serve it as an HLS
 // multivariant playlist on the first visit; the variant re-request (the
 // same URL plus variant=1) gets the media playlist of Tidal's own CDN
@@ -298,6 +325,17 @@ pub async fn stream(
     } else {
         tidal_quality(q.max_bit_rate, q.format.as_deref())
     };
+    // A variant re-request carries the exact query of the master; serve
+    // the manifest the master just stored instead of asking Tidal again.
+    if q.variant.is_some()
+        && let Some(dash) = cached_dash(track_id, tier)
+    {
+        tracing::debug!(
+            "stream {track_id} tier={tier} -> hls playlist (cached {} Hz, {}-bit {})",
+            dash.sample_rate, dash.bit_depth, dash.codec
+        );
+        return Ok(hls_reply(build_hls_playlist(&dash)));
+    }
     match client.stream_info(track_id, tier, "STREAM").await {
         Ok(info) => {
             // A direct url is not expected on v2 (uriScheme=DATA), but
@@ -311,6 +349,7 @@ pub async fn stream(
                     "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
                     dash.sample_rate, dash.bit_depth, dash.codec
                 );
+                store_dash(track_id, tier, dash);
                 return if q.variant.is_some() {
                     Ok(hls_reply(build_hls_playlist(dash)))
                 } else {

@@ -2,9 +2,10 @@
 // which rewrites the DASH manifest into an HLS playlist of Tidal's own
 // CDN segment URLs. v2 always answers MPEG_DASH, so every stream is
 // served as HLS.
+use std::collections::VecDeque;
 use std::str::FromStr;
-use std::sync::LazyLock;
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use regex::Regex;
@@ -15,6 +16,7 @@ use super::{Error, TidalClient, API_URL, OPENAPI_URL};
 
 // One run of equal-length segments from the DASH SegmentTimeline.
 // count is r+1: DASH repeats a duration r extra times.
+#[derive(Clone)]
 pub struct Segment {
     pub samples: u64,
     pub count: u32,
@@ -22,6 +24,7 @@ pub struct Segment {
 
 // Parsed hi-res DASH manifest. The CDN URLs carry short-lived tokens, so
 // nothing here is cached.
+#[derive(Clone)]
 pub struct DashInfo {
     pub bandwidth: u64,
     pub init_url: String,
@@ -48,14 +51,40 @@ pub struct StreamInfo {
     pub dash: Option<DashInfo>,
 }
 
-// Cap on parallel playbackinfo fetches. A client bursting stream URLs
-// (a downloader fetches the whole queue at once) runs at most
-// STREAM_LIMIT fetches concurrently; the rest wait for a slot that
-// frees as soon as a fetch finishes.
+// Caps on playbackinfo fetches. A client bursting stream URLs (a
+// downloader fetches the whole queue at once) is throttled here
+// instead of spamming the Tidal API, which fails with decode errors
+// under parallel load. At most STREAM_LIMIT fetches run at once, and
+// at most STREAM_WINDOW_MAX start within STREAM_WINDOW; a start that
+// would exceed either waits up to STREAM_WAIT for a slot, then is
+// rejected with RateLimited.
+//
+// Tidal can also throttle the account for a while (non-JSON bodies,
+// 429, 5xx). The circuit breaker pauses all starts for
+// THROTTLE_COOLDOWN after THROTTLE_TRIGGER consecutive such failures,
+// so the account throttle clears instead of being re-armed by the
+// steady drain.
 const STREAM_LIMIT: usize = 5;
-// Slot-wait bound. The bound only guards against a hung fetch holding
-// its permit forever; the wait otherwise ends as soon as a slot frees.
+const STREAM_WINDOW: Duration = Duration::from_secs(5);
+const STREAM_WINDOW_MAX: usize = 5;
+// Bounded wait for a slot. At the window pace a whole download queue
+// passes (5 starts per 5 s drain 60 tracks a minute); the bound trips
+// only on absurd bursts. It also guards against a hung fetch holding a
+// permit forever.
 const STREAM_WAIT: Duration = Duration::from_secs(600);
+// Circuit breaker: trigger and pause lengths.
+const THROTTLE_TRIGGER: u32 = 5;
+const THROTTLE_COOLDOWN: Duration = Duration::from_secs(30);
+
+// Outcome of one playbackinfo fetch, fed back to the limiter.
+#[derive(Clone, Copy, PartialEq)]
+enum FetchOutcome {
+    Success,
+    // Non-JSON body, 429, or 5xx: the account-level throttle signature.
+    Throttled,
+    // Any other error (auth, 403, 404, parse): not throttle evidence.
+    Other,
+}
 
 // True for the account-throttle signature: a non-JSON body (decode
 // error), 429, or 5xx. The download-mode fallback must not retry
@@ -69,26 +98,122 @@ fn throttle_signature(e: &Error) -> bool {
     }
 }
 
+struct LimiterState {
+    consecutive_failures: u32,
+    cooldown_until: Option<Instant>,
+}
+
 pub(crate) struct StreamLimiter {
     semaphore: Semaphore,
+    recent: Mutex<VecDeque<Instant>>,
+    state: Mutex<LimiterState>,
 }
 
 impl StreamLimiter {
     pub(crate) fn new() -> Self {
         Self {
             semaphore: Semaphore::new(STREAM_LIMIT),
+            recent: Mutex::new(VecDeque::new()),
+            state: Mutex::new(LimiterState {
+                consecutive_failures: 0,
+                cooldown_until: None,
+            }),
         }
     }
 
-    // Wait for a concurrency permit, bounded by STREAM_WAIT. The
-    // caller holds the permit across the fetch. A slot frees as soon
-    // as a fetch finishes; only a hung fetch makes the wait expire,
-    // and that is rejected with RateLimited.
+    // Wait for the concurrency permit and a window slot, bounded by
+    // STREAM_WAIT. The caller holds the permit across the fetch. A
+    // start that waited too long is rejected with RateLimited; only a
+    // hung fetch or an absurd burst makes the wait expire.
     pub(crate) async fn acquire(&self) -> Result<SemaphorePermit<'_>, Error> {
-        match tokio::time::timeout(STREAM_WAIT, self.semaphore.acquire()).await {
-            Ok(Ok(p)) => Ok(p),
-            _ => Err(Error::RateLimited),
+        let deadline = Instant::now() + STREAM_WAIT;
+        let permit = match tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            self.semaphore.acquire(),
+        )
+        .await
+        {
+            Ok(Ok(p)) => p,
+            _ => return Err(Error::RateLimited),
+        };
+        loop {
+            // An active throttle pause holds every start; the guard
+            // must end before the sleep below, so scope it.
+            let wait = {
+                let state = self.state.lock().unwrap();
+                match state.cooldown_until {
+                    Some(until) => until.saturating_duration_since(Instant::now()),
+                    None => Duration::ZERO,
+                }
+            };
+            if wait > Duration::ZERO {
+                if Instant::now() + wait >= deadline {
+                    return Err(Error::RateLimited);
+                }
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+            // The window is full; wait until the oldest start ages out.
+            let wait = {
+                let mut recent = self.recent.lock().unwrap();
+                let now = Instant::now();
+                if window_allows(&mut recent, now) {
+                    return Ok(permit);
+                }
+                recent
+                    .front()
+                    .map(|t| (*t + STREAM_WINDOW).saturating_duration_since(now))
+                    .unwrap_or_default()
+            };
+            if Instant::now() + wait >= deadline {
+                return Err(Error::RateLimited);
+            }
+            tokio::time::sleep(wait.max(Duration::from_millis(50))).await;
         }
+    }
+
+    // Record one fetch outcome. Throttle-signature failures count
+    // toward the trigger; at THROTTLE_TRIGGER the pause starts. An
+    // active pause swallows every result: nothing new goes out, so an
+    // in-flight leftover must neither extend nor clear the pause. An
+    // expired pause is a clean slate for the next cycle.
+    fn note(&self, outcome: FetchOutcome) {
+        let mut state = self.state.lock().unwrap();
+        if state.cooldown_until.is_some_and(|until| Instant::now() < until) {
+            return;
+        }
+        state.cooldown_until = None;
+        match outcome {
+            FetchOutcome::Success => state.consecutive_failures = 0,
+            FetchOutcome::Throttled => {
+                state.consecutive_failures += 1;
+                if state.consecutive_failures >= THROTTLE_TRIGGER {
+                    tracing::warn!(
+                        "tidal is throttling stream requests; pausing for {}s",
+                        THROTTLE_COOLDOWN.as_secs()
+                    );
+                    state.cooldown_until = Some(Instant::now() + THROTTLE_COOLDOWN);
+                    state.consecutive_failures = 0;
+                }
+            }
+            FetchOutcome::Other => {}
+        }
+    }
+}
+
+// True when a new stream start fits the sliding window: fewer than
+// STREAM_WINDOW_MAX starts within the last STREAM_WINDOW. Expired
+// starts are pruned first; a passed start is recorded.
+fn window_allows(recent: &mut VecDeque<Instant>, now: Instant) -> bool {
+    let cutoff = now - STREAM_WINDOW;
+    while recent.front().is_some_and(|t| *t < cutoff) {
+        recent.pop_front();
+    }
+    if recent.len() >= STREAM_WINDOW_MAX {
+        false
+    } else {
+        recent.push_back(now);
+        true
     }
 }
 
@@ -123,7 +248,7 @@ impl TidalClient {
         // sends X-Playback-Session-Id on every request of a download.
         let session_id = new_session_id();
         let formats = audio_quality_to_formats(quality);
-        async {
+        let result = async {
             let resp = self
                 .http
                 .get(format!("{}/trackManifests/{track_id}", OPENAPI_URL))
@@ -153,7 +278,16 @@ impl TidalClient {
             }
             parse_manifest(body)
         }
-        .await
+        .await;
+        // Feed the circuit breaker: non-JSON bodies, 429, and 5xx are
+        // the account-throttle signature. Everything else is neutral.
+        let outcome = match &result {
+            Ok(_) => FetchOutcome::Success,
+            Err(e) if throttle_signature(e) => FetchOutcome::Throttled,
+            _ => FetchOutcome::Other,
+        };
+        self.stream_limiter.note(outcome);
+        result
     }
 
     // A download asks for the offline manifest first, like the official
@@ -450,6 +584,51 @@ mod tests {
         assert!(!throttle_signature(&Error::Auth("x".into())));
         assert!(!throttle_signature(&Error::RateLimited));
         assert!(!throttle_signature(&Error::NotLoggedIn));
+    }
+
+    #[test]
+    fn window_allows_five_per_five_seconds() {
+        let mut recent = VecDeque::new();
+        let t0 = Instant::now();
+        for i in 0..STREAM_WINDOW_MAX as u64 {
+            assert!(
+                window_allows(&mut recent, t0 + Duration::from_millis(i)),
+                "start {i} must pass"
+            );
+        }
+        // One more start inside the window is rejected.
+        assert!(!window_allows(&mut recent, t0 + Duration::from_secs(4)));
+        // Once the first start is older than the window, a new one passes.
+        assert!(window_allows(
+            &mut recent,
+            t0 + Duration::from_secs(5) + Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn cooldown_triggers_after_consecutive_throttle_failures() {
+        let limiter = StreamLimiter::new();
+        for _ in 0..THROTTLE_TRIGGER - 1 {
+            limiter.note(FetchOutcome::Throttled);
+            assert!(
+                limiter.state.lock().unwrap().cooldown_until.is_none(),
+                "below the trigger the pause must not start"
+            );
+        }
+        limiter.note(FetchOutcome::Throttled);
+        assert!(limiter.state.lock().unwrap().cooldown_until.is_some());
+        // A success during an active pause cannot clear it.
+        limiter.note(FetchOutcome::Success);
+        assert!(limiter.state.lock().unwrap().cooldown_until.is_some());
+        // An expired pause is a clean slate for the next cycle.
+        {
+            let mut state = limiter.state.lock().unwrap();
+            state.cooldown_until = Some(Instant::now() - Duration::from_millis(1));
+        }
+        limiter.note(FetchOutcome::Success);
+        let state = limiter.state.lock().unwrap();
+        assert!(state.cooldown_until.is_none());
+        assert_eq!(state.consecutive_failures, 0);
     }
 
     #[test]
