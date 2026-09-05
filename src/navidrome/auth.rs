@@ -216,8 +216,9 @@ fn rate_limit_enabled() -> bool {
 // with Unauthorized on bad credentials. With the rate_limit setting on,
 // repeated failures from one IP double the lockout before the credential
 // check. Yields the merged params, the raw query string, the raw
-// body bytes, the x-forwarded-proto header, and the host header for
-// handlers that build absolute URLs (the HLS multivariant playlist).
+// body bytes, the x-forwarded-proto header, and the host header. The
+// last two outlive their only consumer (the dropped HLS multivariant
+// master) and stay extracted for a future host-dependent handler.
 pub fn require_auth() -> impl Filter<Extract = (QueryParams, String, Bytes, Option<String>, Option<String>), Error = Rejection> + Clone {
     warp::query::raw()
         .or_else(|_| async { Ok::<_, Infallible>((String::new(),)) })

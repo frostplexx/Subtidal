@@ -1,9 +1,8 @@
 // Stream metadata: trackManifests decoding. Backs the stream endpoint,
-// which rewrites the DASH manifest into an HLS playlist of Tidal's own
-// CDN segment URLs. v2 always answers MPEG_DASH, so every stream is
-// served as HLS.
+// which proxies Tidal's own HLS manifest: v2 answers manifestType=HLS
+// with the exact playlists the official app downloads from, so no DASH
+// translation happens here.
 use std::collections::VecDeque;
-use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,43 +11,30 @@ use regex::Regex;
 use serde_json::Value;
 use tokio::sync::{Semaphore, SemaphorePermit};
 
-use super::{Error, TidalClient, API_URL, OPENAPI_URL};
+use super::{Error, TidalClient, OPENAPI_URL};
 
-// One run of equal-length segments from the DASH SegmentTimeline.
-// count is r+1: DASH repeats a duration r extra times.
+// Tidal's native HLS manifest for one track: the media playlist text as
+// the API serves it, plus the format metadata this server logs. The CDN
+// URLs inside carry short-lived signed tokens, so nothing here is
+// cached.
 #[derive(Clone)]
-pub struct Segment {
-    pub samples: u64,
-    pub count: u32,
-}
-
-// Parsed hi-res DASH manifest. The CDN URLs carry short-lived tokens, so
-// nothing here is cached.
-#[derive(Clone)]
-pub struct DashInfo {
-    pub bandwidth: u64,
-    pub init_url: String,
-    // Segment URL with a $Number$ placeholder to substitute.
-    pub media_url: String,
-    pub timescale: u64,
-    pub start_number: u64,
-    pub segments: Vec<Segment>,
+pub struct HlsInfo {
     pub codec: String,
     pub sample_rate: u32,
     pub bit_depth: u8,
+    pub media_playlist: String,
 }
 
 // Stream metadata for one track.
 pub struct StreamInfo {
     // Kept for shape parity and tests; the handlers no longer branch on
-    // mime type (v2 always answers DASH).
+    // mime type (v2 always answers HLS).
     #[allow(dead_code)]
     pub mime_type: String,
-    // Direct single-file URL when the manifest is playable as one file
-    // (BTS). Segmented DASH (hi-res FLAC) has no such URL; the stream
-    // handler serves an HLS playlist instead, or falls back a tier.
+    // Direct single-file URL when the manifest is plain https
+    // (uriScheme=DATA should prevent it; defended anyway).
     pub direct_url: Option<String>,
-    pub dash: Option<DashInfo>,
+    pub hls: Option<HlsInfo>,
 }
 
 // Caps on playbackinfo fetches. A client bursting stream URLs (a
@@ -232,9 +218,8 @@ fn new_session_id() -> String {
 impl TidalClient {
     // Fetch a track manifest at the given quality tier. Never cached:
     // the CDN URLs carry short-lived signed tokens. v2 has no BTS and no
-    // quality tiers: the manifest always answers MPEG_DASH, so the tiers
-    // only widen the format list. The tier-retry loop lives on in
-    // stream_info_v1 and is not needed here.
+    // quality tiers: the manifest always answers HLS, so the tiers only
+    // widen the format list.
     pub async fn stream_info(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
         // Throttle: wait (bounded) for a concurrency and window slot.
         // The permit stays held across the HTTP call.
@@ -252,7 +237,7 @@ impl TidalClient {
                 .header("x-tidal-client-version", super::CLIENT_VERSION)
                 .header("X-Playback-Session-Id", session_id)
                 .query(&[
-                    ("manifestType", "MPEG_DASH"),
+                    ("manifestType", "HLS"),
                     ("formats", formats),
                     ("uriScheme", "DATA"),
                     ("usage", if mode == "OFFLINE" { "DOWNLOAD" } else { "PLAYBACK" }),
@@ -308,44 +293,6 @@ impl TidalClient {
         }
     }
 
-    // --- v1 backup (dead code) -------------------------------------
-    #[allow(dead_code)]
-    pub async fn stream_info_v1(&self, track_id: u64, quality: &str, mode: &str) -> Result<StreamInfo, Error> {
-        let _permit = self.stream_limiter.acquire().await?;
-        let token = self.access_token().await?;
-        let cc = self.country_code().await?;
-        let session_id = new_session_id();
-        let mut query = vec![
-            ("audioquality", quality),
-            ("playbackmode", mode),
-            ("assetpresentation", "FULL"),
-        ];
-        if let Some(cc) = &cc {
-            query.push(("countryCode", cc.as_str()));
-        }
-        async {
-            let resp = self
-                .http
-                .get(format!("{API_URL}/tracks/{track_id}/playbackinfopostpaywall"))
-                .bearer_auth(token)
-                .header("x-tidal-client-version", super::CLIENT_VERSION)
-                .header("X-Playback-Session-Id", session_id)
-                .query(&query)
-                .send()
-                .await?;
-            let status = resp.status();
-            let text = resp.text().await?;
-            let body: Value = match serde_json::from_str(&text) {
-                Ok(v) => v,
-                Err(_) => return Err(Error::HttpDecode(status.as_u16(), text)),
-            };
-            if !status.is_success() {
-                return Err(Error::Tidal(status.as_u16(), body.to_string()));
-            }
-            parse_stream_v1(body)
-        }
-        .await
-    }
 }
 
 // The format set per quality tier, mirroring the SDK's audioQualityToFormats.
@@ -360,8 +307,9 @@ fn audio_quality_to_formats(quality: &str) -> &'static str {
 }
 
 // Decode a v2 trackManifests document: attributes.uri is a base64 data
-// URI carrying the MPD. A plain https uri (uriScheme=DATA should prevent
-// it, but defensively) becomes a direct stream URL.
+// URI carrying Tidal's HLS master playlist, whose single variant is an
+// inline base64 media playlist (uriScheme=DATA). A plain https uri
+// (should not happen, but defended) becomes a direct stream URL.
 fn parse_manifest(body: Value) -> Result<StreamInfo, Error> {
     let attrs = &body["data"]["attributes"];
     let uri = attrs["uri"]
@@ -371,182 +319,109 @@ fn parse_manifest(body: Value) -> Result<StreamInfo, Error> {
         return Ok(StreamInfo {
             mime_type: "application/vnd.tidal.bts".into(),
             direct_url: Some(format!("https://{url}")),
-            dash: None,
+            hls: None,
         });
     }
     let b64 = uri
-        .strip_prefix("data:application/dash+xml;base64,")
+        .strip_prefix("data:application/vnd.apple.mpegurl;base64,")
         .ok_or_else(|| Error::Auth("unexpected manifest uri".into()))?;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
         .map_err(|e| Error::Auth(format!("manifest decode failed: {e}")))?;
-    let manifest = String::from_utf8_lossy(&decoded).into_owned();
-    let dash = parse_dash(&manifest);
+    let master = String::from_utf8_lossy(&decoded).into_owned();
+    let hls = parse_hls_master(&master)
+        .ok_or_else(|| Error::Auth("manifest carries no playable variant".into()))?;
     Ok(StreamInfo {
-        mime_type: "application/dash+xml".into(),
+        mime_type: "application/vnd.apple.mpegurl".into(),
         direct_url: None,
-        dash,
+        hls: Some(hls),
     })
 }
 
-#[allow(dead_code)]
-fn parse_stream_v1(body: Value) -> Result<StreamInfo, Error> {
-    let mime = body["manifestMimeType"].as_str().unwrap_or("").to_string();
-    let manifest_b64 = body["manifest"]
-        .as_str()
-        .ok_or_else(|| Error::Auth("response missing manifest".into()))?;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(manifest_b64)
-        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(manifest_b64))
-        .map_err(|e| Error::Auth(format!("manifest decode failed: {e}")))?;
-    let manifest = String::from_utf8_lossy(&decoded).into_owned();
-    let direct_url = if mime.contains("bts") {
-        serde_json::from_str::<Value>(&manifest)
-            .ok()
-            .and_then(|v| v["urls"].get(0).and_then(|u| u.as_str()).map(String::from))
-    } else {
-        None
-    };
-    let dash = if mime.contains("dash") {
-        parse_dash(&manifest)
-    } else {
-        None
-    };
-    Ok(StreamInfo {
-        mime_type: mime,
-        direct_url,
-        dash,
-    })
-}
+static RE_CODECS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"CODECS="([^"]*)""#).unwrap());
 
-static RE_REP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<Representation\b.*?</Representation>").unwrap());
-static RE_REP_OPEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<Representation\b[^>]*>").unwrap());
-static RE_TEMPLATE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"<SegmentTemplate\b[^>]*>").unwrap());
-static RE_TIMELINE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)<SegmentTimeline>(.*?)</SegmentTimeline>").unwrap());
-static RE_SEG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<S\b[^>]*>").unwrap());
-static RE_ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\w+)="([^"]*)""#).unwrap());
-static RE_DUR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"mediaPresentationDuration="PT(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?"#)
-        .unwrap()
-});
-
-// Parse the highest-bandwidth representation of a Tidal audio MPD. The
-// segment template lives inside the representation; a whole-doc fallback
-// covers a shared template above it.
-fn parse_dash(mpd: &str) -> Option<DashInfo> {
-    RE_REP
-        .find_iter(mpd)
-        .filter_map(|m| parse_rep(m.as_str(), mpd))
-        .max_by_key(|d| d.bandwidth)
-}
-
-fn parse_rep(block: &str, mpd: &str) -> Option<DashInfo> {
-    let open = RE_REP_OPEN.find(block).map(|m| m.as_str())?;
-    let rep_attrs = tag_attrs(open);
-    let template = RE_TEMPLATE
-        .find(block)
-        .or_else(|| RE_TEMPLATE.find(mpd))
-        .map(|m| m.as_str())?;
-    let tpl_attrs = tag_attrs(template);
-    let segments = parse_segments(block);
-    let (segments, timescale) = if segments.is_empty() {
-        // No timeline: one segment of the full duration, in seconds.
-        match duration_seconds(mpd) {
-            Some(secs) => (vec![Segment { samples: secs, count: 1 }], 1),
-            None => (segments, num_attr(&tpl_attrs, "timescale").unwrap_or(1)),
+// The v2 HLS master is a single-variant playlist: each STREAM-INF line
+// is followed directly by its playlist URI, a base64 data URI
+// (uriScheme=DATA). Tidal serves one variant, the first.
+fn parse_hls_master(master: &str) -> Option<HlsInfo> {
+    let mut lines = master.lines();
+    while let Some(line) = lines.next() {
+        if !line.starts_with("#EXT-X-STREAM-INF:") {
+            continue;
         }
-    } else {
-        (segments, num_attr(&tpl_attrs, "timescale").unwrap_or(1))
-    };
-    Some(DashInfo {
-        bandwidth: num_attr(&rep_attrs, "bandwidth")?,
-        init_url: str_attr(&tpl_attrs, "initialization")?,
-        media_url: str_attr(&tpl_attrs, "media")?,
-        timescale,
-        start_number: num_attr(&tpl_attrs, "startNumber").unwrap_or(1),
-        segments,
-        codec: str_attr(&rep_attrs, "codecs").unwrap_or_default(),
-        sample_rate: num_attr(&rep_attrs, "audioSamplingRate").unwrap_or(0),
-        bit_depth: str_attr(&rep_attrs, "id")
-            .and_then(|id| id.rsplit(',').next()?.parse().ok())
-            .unwrap_or(0),
-    })
-}
-
-// d="..." r="..." entries inside a SegmentTimeline.
-fn parse_segments(block: &str) -> Vec<Segment> {
-    let Some(tl) = RE_TIMELINE.captures(block) else {
-        return Vec::new();
-    };
-    RE_SEG
-        .find_iter(&tl[1])
-        .filter_map(|m| {
-            let attrs = tag_attrs(m.as_str());
-            let d: u64 = num_attr(&attrs, "d")?;
-            let r: u32 = num_attr(&attrs, "r").unwrap_or(0);
-            (d > 0).then_some(Segment {
-                samples: d,
-                count: r + 1,
-            })
-        })
-        .collect()
-}
-
-fn tag_attrs(tag: &str) -> Vec<(String, String)> {
-    RE_ATTR
-        .captures_iter(tag)
-        .map(|c| (c[1].to_string(), xml_unescape(&c[2])))
-        .collect()
-}
-
-// An MPD is XML, so '&' inside a URL attribute is written '&amp;'.
-// Segment URLs keep the raw text otherwise, and a player fetching
-// '...token=X&amp;info=Y' mangles the query string into 'amp;info=Y',
-// which the CDN signature check rejects with 403. Decode the small
-// entity set; '&amp;' last so '&amp;lt;' decodes to literal '&lt;'.
-fn xml_unescape(s: &str) -> String {
-    let mut out = s
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'");
-    if s.contains("&amp;") {
-        out = out.replace("&amp;", "&");
+        let codec = RE_CODECS
+            .captures(line)
+            .map(|c| c[1].to_string())
+            .unwrap_or_default();
+        let media = decode_playlist_uri(lines.next()?.trim())?;
+        let (sample_rate, bit_depth) = daterange_metadata(&media);
+        return Some(HlsInfo {
+            codec,
+            sample_rate,
+            bit_depth,
+            media_playlist: media,
+        });
     }
-    out
+    None
 }
 
-fn str_attr(attrs: &[(String, String)], name: &str) -> Option<String> {
-    attrs
-        .iter()
-        .find(|(k, _)| k == name)
-        .map(|(_, v)| v.clone())
+// Decode one inline playlist reference (a data URI). Any other scheme
+// means the manifest shape changed; treat it as absent.
+fn decode_playlist_uri(uri: &str) -> Option<String> {
+    let b64 = uri.strip_prefix("data:application/vnd.apple.mpegurl;base64,")?;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64))
+        .ok()?;
+    Some(String::from_utf8_lossy(&raw).into_owned())
 }
 
-fn num_attr<T: FromStr>(attrs: &[(String, String)], name: &str) -> Option<T> {
-    str_attr(attrs, name)?.parse().ok()
+// The media playlist's DATERANGE carries the format metadata
+// (X-COM-TIDAL-SAMPLE-RATE/DEPTH), which feeds the stream log line
+// only; a missing range yields zeros.
+fn daterange_metadata(media: &str) -> (u32, u8) {
+    let Some(line) = media.lines().find(|l| l.starts_with("#EXT-X-DATERANGE:")) else {
+        return (0, 0);
+    };
+    let (mut rate, mut depth) = (0, 0);
+    for attr in line.split(',') {
+        if let Some(v) = attr.strip_prefix("X-COM-TIDAL-SAMPLE-RATE=") {
+            rate = v.trim_matches('"').parse().unwrap_or(0);
+        } else if let Some(v) = attr.strip_prefix("X-COM-TIDAL-SAMPLE-DEPTH=") {
+            depth = v.trim_matches('"').parse().unwrap_or(0);
+        }
+    }
+    (rate, depth)
 }
 
-// PT3M30.373S -> 210 seconds. Only feeds the no-timeline fallback in
-// parse_rep; Tidal audio MPDs always carry a timeline.
-fn duration_seconds(mpd: &str) -> Option<u64> {
-    let caps = RE_DUR.captures(mpd)?;
-    let mins: f64 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
-    let secs: f64 = caps.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
-    Some((mins * 60.0 + secs) as u64)
-}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Real shape of a hi-res MPD (captured live), URLs shortened.
-    const MPD: &str = r#"<?xml version='1.0' encoding='UTF-8'?><MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT3M30.373S"><Period><AdaptationSet contentType="audio" mimeType="audio/mp4"><Representation id="FLAC_HIRES,44100,24" codecs="flac" bandwidth="1616237" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T" startNumber="1"><SegmentTimeline><S d="176128" r="51"/><S d="118808"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
+    // Real shape of the v2 HLS manifest (captured live), URLs shortened:
+    // a one-variant master whose media playlist is an inline data URI.
+    const MEDIA: &str = "#EXTM3U\n\
+#EXT-X-VERSION:7\n\
+#EXT-X-PLAYLIST-TYPE:VOD\n\
+#EXT-X-DATERANGE:ID=\"d\",START-DATE=\"2024-01-01T00:00:00.000Z\",X-COM-TIDAL-FORMAT=\"FLAC\",X-COM-TIDAL-SAMPLE-RATE=44100,X-COM-TIDAL-SAMPLE-DEPTH=16\n\
+#EXT-X-MAP:URI=\"https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T\"\n\
+#EXTINF:3.994,\n\
+https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/1.mp4?token=T\n\
+#EXT-X-ENDLIST\n";
+
+    // Same media playlist without the DATERANGE metadata block.
+    const MEDIA_NOMETA: &str = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI=\"u\"\n#EXTINF:4.0,\nv\n#EXT-X-ENDLIST\n";
+
+    fn hls_master_bytes() -> String {
+        let variant = base64::engine::general_purpose::STANDARD.encode(MEDIA);
+        format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=890170,AVERAGE-BANDWIDTH=711268,CODECS=\"fLaC\"\ndata:application/vnd.apple.mpegurl;base64,{variant}\n"
+        )
+    }
 
     #[test]
     fn unavailable_asset_is_definitive_and_not_throttle() {
@@ -644,88 +519,56 @@ mod tests {
     }
 
     #[test]
-    fn unescapes_xml_entities_in_segment_urls() {
-        // A real v2 MPD escapes '&' inside its URL attributes as '&amp;'.
-        // The served playlist must carry the decoded single '&', or the
-        // player mangles the query string and the CDN answers 403.
-        let mpd = r#"<MPD><Period><AdaptationSet mimeType="audio/mp4"><Representation id="AACLC,44100,16" codecs="mp4a.40.2" bandwidth="1234" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T&amp;info=UEx&amp;foo=1" media="https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/$Number$.mp4?token=T&amp;info=UExWQ&amp;bar=2" startNumber="1"><SegmentTimeline><S d="176128" r="2"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet></Period></MPD>"#;
-        let d = parse_dash(mpd).expect("parses");
-        assert_eq!(
-            d.init_url,
-            "https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T&info=UEx&foo=1"
-        );
-        assert!(!d.media_url.contains("&amp;"));
-        assert!(d.media_url.contains("?token=T"));
-        assert!(d.media_url.contains("&info=UExWQ&bar=2"));
-    }
-
-    #[test]
-    fn unescapes_amp_last() {
-        // '&amp;lt;' is a literal '&lt;' after decoding, never '<'.
-        assert_eq!(xml_unescape("&amp;lt;"), "&lt;");
-        assert_eq!(xml_unescape("a&amp;b"), "a&b");
-        assert_eq!(xml_unescape("&lt;&amp;&quot;"), "<&\"");
-    }
-
-    #[test]
-    fn parses_hires_dash() {
-        let d = parse_dash(MPD).expect("parses");
-        assert_eq!(d.bandwidth, 1616237);
-        assert_eq!(d.codec, "flac");
+    fn parses_hires_hls() {
+        let d = parse_hls_master(&hls_master_bytes()).expect("parses");
+        assert_eq!(d.codec, "fLaC");
         assert_eq!(d.sample_rate, 44100);
-        assert_eq!(d.bit_depth, 24);
-        assert_eq!(d.timescale, 44100);
-        assert!(d.init_url.contains("0.mp4"));
-        assert!(d.media_url.contains("$Number$"));
-        // 52 + 1 segments.
-        assert_eq!(d.segments.len(), 2);
-        assert_eq!(d.segments[0].samples, 176128);
-        assert_eq!(d.segments[0].count, 52);
-        assert_eq!(d.segments[1].samples, 118808);
-        assert_eq!(d.segments[1].count, 1);
+        assert_eq!(d.bit_depth, 16);
+        assert_eq!(d.media_playlist, MEDIA);
     }
 
     #[test]
-    fn picks_highest_bandwidth_representation() {
-        let m = MPD.replace(
-            "</Representation></AdaptationSet>",
-            r#"<Representation id="FLAC_LOSSLESS,44100,16" codecs="flac" bandwidth="800000" audioSamplingRate="44100"><SegmentTemplate timescale="44100" initialization="https://sp-ad-fa.audio.tidal.com/mediatracks/BBB/0.mp4?token=T" media="https://sp-ad-fa.audio.tidal.com/mediatracks/BBB/$Number$.mp4?token=T" startNumber="1"><SegmentTimeline><S d="176128" r="51"/><S d="118808"/></SegmentTimeline></SegmentTemplate></Representation></AdaptationSet>"#,
+    fn picks_the_first_stream_inf_line() {
+        // A second variant line follows the first's data URI; the first
+        // wins and its https variant ref is never followed.
+        let m = hls_master_bytes().replace(
+            "#EXT-X-STREAM-INF:BANDWIDTH=890170,AVERAGE-BANDWIDTH=711268,CODECS=\"fLaC\"\ndata:",
+            "#EXT-X-STREAM-INF:BANDWIDTH=111,CODECS=\"ec-3\"\ndata:",
         );
-        let d = parse_dash(&m).expect("parses");
-        assert_eq!(d.bandwidth, 1616237);
-        assert!(d.init_url.contains("AAA"));
+        let m = format!(
+            "{m}#EXT-X-STREAM-INF:BANDWIDTH=890170,CODECS=\"fLaC\"\nhttps://cdn/second.m3u8\n"
+        );
+        let d = parse_hls_master(&m).expect("parses");
+        assert_eq!(d.codec, "ec-3");
+        assert_eq!(d.media_playlist, MEDIA);
     }
 
     #[test]
-    fn bts_has_no_dash() {
-        let body: Value = serde_json::json!({
-            "manifestMimeType": "application/vnd.tidal.bts",
-            "manifest": base64::engine::general_purpose::STANDARD.encode(r#"{"mimeType":"audio/mp4","codecs":"mp4a.40.2","encryptionType":"NONE","urls":["https://cdn/1.mp4?token=x"]}"#)
-        });
-        let info = parse_stream_v1(body).unwrap();
-        assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
-        assert!(info.dash.is_none());
-    }
-
-    #[test]
-    fn parses_v2_manifest_document() {
-        let mpd = MPD;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(mpd);
+    fn parses_v2_hls_manifest_document() {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(hls_master_bytes());
         let body: Value = serde_json::json!({
             "data": {
                 "type": "trackManifests",
                 "id": "7",
                 "attributes": {
-                    "uri": format!("data:application/dash+xml;base64,{b64}"),
+                    "uri": format!("data:application/vnd.apple.mpegurl;base64,{b64}"),
                     "formats": ["HEAACV1", "AACLC", "FLAC", "FLAC_HIRES"],
                 },
             },
         });
         let info = parse_manifest(body).unwrap();
-        assert_eq!(info.mime_type, "application/dash+xml");
+        assert_eq!(info.mime_type, "application/vnd.apple.mpegurl");
         assert!(info.direct_url.is_none());
-        let dash = info.dash.expect("dash parsed");
-        assert_eq!(dash.bandwidth, 1616237);
+        let hls = info.hls.expect("hls parsed");
+        assert_eq!(hls.codec, "fLaC");
+        assert_eq!(hls.sample_rate, 44100);
+        assert_eq!(hls.bit_depth, 16);
+        // The media playlist passes through byte-for-byte.
+        assert_eq!(hls.media_playlist, MEDIA);
+        assert!(hls.media_playlist.contains("X-COM-TIDAL-FORMAT=\"FLAC\""));
+        assert!(hls.media_playlist.contains(
+            "#EXT-X-MAP:URI=\"https://sp-ad-fa.audio.tidal.com/mediatracks/AAA/0.mp4?token=T\""
+        ));
     }
 
     #[test]
@@ -735,7 +578,26 @@ mod tests {
         });
         let info = parse_manifest(body).unwrap();
         assert_eq!(info.direct_url.as_deref(), Some("https://cdn/1.mp4?token=x"));
-        assert!(info.dash.is_none());
+        assert!(info.hls.is_none());
+    }
+
+    #[test]
+    fn master_missing_codecs_or_daterange_still_parses() {
+        let variant = base64::engine::general_purpose::STANDARD.encode(MEDIA_NOMETA);
+        let master = format!(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=890170\ndata:application/vnd.apple.mpegurl;base64,{variant}\n"
+        );
+        let hls = parse_hls_master(&master).expect("parses");
+        assert_eq!(hls.codec, "");
+        assert_eq!(hls.sample_rate, 0);
+        assert_eq!(hls.bit_depth, 0);
+        assert_eq!(hls.media_playlist, MEDIA_NOMETA);
+    }
+
+    #[test]
+    fn non_data_playlist_refs_are_rejected() {
+        assert!(decode_playlist_uri("https://cdn/pl.m3u8?token=x").is_none());
+        assert!(decode_playlist_uri("data:application/dash+xml;base64,AAAA").is_none());
     }
 
     #[test]

@@ -25,11 +25,8 @@ mod jsonapi;mod playlists;
 mod playqueues;
 mod search;
 mod stream;
-pub use stream::DashInfo;
+pub use stream::HlsInfo;
 use stream::StreamLimiter;
-// Test fixtures construct Segment values directly.
-#[cfg(test)]
-pub(crate) use stream::Segment;
 pub(crate) use playlists::ItemAddr;
 mod tracks;
 mod users;
