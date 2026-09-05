@@ -64,17 +64,17 @@ pub struct StreamInfo {
 // THROTTLE_COOLDOWN after THROTTLE_TRIGGER consecutive such failures,
 // so the account throttle clears instead of being re-armed by the
 // steady drain.
-const STREAM_LIMIT: usize = 5;
-const STREAM_WINDOW: Duration = Duration::from_secs(5);
+const STREAM_LIMIT: usize = 3;
+const STREAM_WINDOW: Duration = Duration::from_secs(10);
 const STREAM_WINDOW_MAX: usize = 5;
 // Bounded wait for a slot. At the window pace a whole download queue
-// passes (5 starts per 5 s drain 60 tracks a minute); the bound trips
+// passes (5 starts per 10 s drain 30 tracks a minute); the bound trips
 // only on absurd bursts. It also guards against a hung fetch holding a
 // permit forever.
 const STREAM_WAIT: Duration = Duration::from_secs(600);
 // Circuit breaker: trigger and pause lengths.
-const THROTTLE_TRIGGER: u32 = 5;
-const THROTTLE_COOLDOWN: Duration = Duration::from_secs(30);
+const THROTTLE_TRIGGER: u32 = 3;
+const THROTTLE_COOLDOWN: Duration = Duration::from_secs(60);
 
 // Outcome of one playbackinfo fetch, fed back to the limiter.
 #[derive(Clone, Copy, PartialEq)]
@@ -147,11 +147,7 @@ impl StreamLimiter {
                 }
             };
             if wait > Duration::ZERO {
-                if Instant::now() + wait >= deadline {
-                    return Err(Error::RateLimited);
-                }
-                tokio::time::sleep(wait).await;
-                continue;
+                return Err(Error::RateLimited);
             }
             // The window is full; wait until the oldest start ages out.
             let wait = {
@@ -587,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn window_allows_five_per_five_seconds() {
+    fn window_allows_five_per_ten_seconds() {
         let mut recent = VecDeque::new();
         let t0 = Instant::now();
         for i in 0..STREAM_WINDOW_MAX as u64 {
@@ -597,11 +593,11 @@ mod tests {
             );
         }
         // One more start inside the window is rejected.
-        assert!(!window_allows(&mut recent, t0 + Duration::from_secs(4)));
+        assert!(!window_allows(&mut recent, t0 + Duration::from_secs(9)));
         // Once the first start is older than the window, a new one passes.
         assert!(window_allows(
             &mut recent,
-            t0 + Duration::from_secs(5) + Duration::from_millis(1)
+            t0 + STREAM_WINDOW + Duration::from_millis(1)
         ));
     }
 
