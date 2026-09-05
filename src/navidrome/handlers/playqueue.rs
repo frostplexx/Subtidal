@@ -3,7 +3,9 @@
 // restart clears it. Song ids are fetched one at a time; Tidal offers no
 // batch track endpoint. The ByIndex pair (OpenSubsonic indexBasedQueue)
 // shares the store and differs only in the wire shape: the current song
-// is a queue index (currentIndex) instead of a song id.
+// is a queue index (currentIndex) instead of a song id. The saved index
+// round-trips verbatim; dead tracks are dropped on serve, and the index
+// is shifted by the number of drops before it so the same song resumes.
 use crate::navidrome::ids;
 use crate::navidrome::models::{
     Child, PingResponse, PlayQueue, PlayQueueByIndex, PlayQueueByIndexResponse, PlayQueueResponse,
@@ -31,6 +33,7 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
         play_state::save_queue(play_state::PlayQueue {
             track_ids: vec![],
             current: None,
+            current_index: None,
             position_ms: 0,
             username: q.u.clone().unwrap_or_default(),
             changed_by: q.c.clone().unwrap_or_default(),
@@ -47,9 +50,11 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
             None => return Ok(fail(70, "Song not found")),
         },
     };
+    let current_index = current.and_then(|id| track_ids.iter().position(|t| *t == id));
     play_state::save_queue(play_state::PlayQueue {
         track_ids,
         current,
+        current_index,
         position_ms: q.position.unwrap_or(0),
         username: q.u.clone().unwrap_or_default(),
         changed_by: q.c.clone().unwrap_or_default(),
@@ -57,7 +62,9 @@ pub async fn save_play_queue(q: QueryParams) -> Result<warp::reply::Json, warp::
     });
     if let Some(client) = crate::tidal::client_opt() {
         tokio::spawn(async move {
-            resolve_queue(client).await;
+            if let Some(q) = play_state::queue() {
+                serve_queue(client, &q).await;
+            }
         });
     }
     tracing::info!("savePlayQueue {} songs", q.id.0.len());
@@ -80,6 +87,7 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
         play_state::save_queue(play_state::PlayQueue {
             track_ids: vec![],
             current: None,
+            current_index: None,
             position_ms: 0,
             username: q.u.clone().unwrap_or_default(),
             changed_by: q.c.clone().unwrap_or_default(),
@@ -89,13 +97,15 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
         play_state::save_resolved(None);
         return Ok(ok(PingResponse {}));
     }
-    let current = q
+    let current_index = q
         .current_index
-        .filter(|i| *i >= 0)
-        .and_then(|i| track_ids.get(i as usize).copied());
+        .filter(|i| *i >= 0 && (*i as usize) < track_ids.len())
+        .map(|i| i as usize);
+    let current = current_index.and_then(|i| track_ids.get(i).copied());
     play_state::save_queue(play_state::PlayQueue {
         track_ids,
         current,
+        current_index,
         position_ms: q.position.unwrap_or(0),
         username: q.u.clone().unwrap_or_default(),
         changed_by: q.c.clone().unwrap_or_default(),
@@ -103,7 +113,9 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
     });
     if let Some(client) = crate::tidal::client_opt() {
         tokio::spawn(async move {
-            resolve_queue(client).await;
+            if let Some(q) = play_state::queue() {
+                serve_queue(client, &q).await;
+            }
         });
     }
     tracing::info!("savePlayQueueByIndex {} songs", q.id.0.len());
@@ -118,11 +130,8 @@ pub async fn save_play_queue_by_index(q: QueryParams) -> Result<warp::reply::Jso
 pub async fn get_play_queue_by_index(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let client = crate::tidal::client();
     let saved = restore_queue(client).await;
-    let entry = resolve_queue(client).await;
-    let current_index = saved
-        .current
-        .and_then(|id| entry.iter().position(|e| e.id == format!("t{id}")))
-        .map(|i| i as u32);
+    let (served, entry) = serve_queue(client, &saved).await;
+    let current_index = served.current_index.map(|i| i as u32);
     Ok(ok(PlayQueueByIndexResponse {
         play_queue: PlayQueueByIndex {
             current_index,
@@ -142,56 +151,76 @@ fn render_lock() -> &'static AsyncMutex<()> {
     LOCK.get_or_init(|| AsyncMutex::new(()))
 }
 
-// The entries to serve: the cached resolution when the raw id list was
+// The queue to serve: the cached resolution when the raw id list was
 // already resolved, otherwise every track fetched in parallel. Tracks
-// that Tidal no longer serves are left out of the entries; the raw
-// queue is not changed. With the 6h meta_cache warm, most ids resolve
-// from memory; the first resolution after a restart is one bounded
-// parallel pass, not one per poll.
-async fn resolve_queue(client: &'static TidalClient) -> Vec<Child> {
-    let Some(q) = play_state::queue() else {
-        return Vec::new();
-    };
+// that Tidal no longer serves stay out of the entries, and their raw
+// positions feed the currentIndex adjustment so the saved song keeps
+// its place in the reply. The raw queue is not changed. With the 6h
+// meta_cache warm, most ids resolve from memory; the first resolution
+// after a restart is one bounded parallel pass, not one per poll.
+async fn serve_queue(
+    client: &'static TidalClient,
+    saved: &play_state::PlayQueue,
+) -> (play_state::PlayQueue, Vec<Child>) {
     let _guard = render_lock().lock().await;
-    if let Some(r) = play_state::resolved() {
-        if r.for_ids == q.track_ids {
-            return r.entries;
-        }
+    let cache_hit = play_state::resolved().is_some_and(|r| r.for_ids == saved.track_ids);
+    let (entries, dropped_positions) = if cache_hit {
+        let r = play_state::resolved().unwrap();
+        (r.entries, r.dropped_positions)
+    } else {
+        let (entries, dropped) = render_entries(client, &saved.track_ids).await;
+        play_state::save_resolved(Some(ResolvedQueue {
+            for_ids: saved.track_ids.clone(),
+            entries: entries.clone(),
+            dropped_positions: dropped.clone(),
+        }));
+        (entries, dropped)
+    };
+    let mut served = saved.clone();
+    if let Some(i) = served.current_index {
+        // Subtract the ids dropped before the current song so the index
+        // names the same song in the shorter entry list. A dropped
+        // current song resumes at the next entry.
+        let before = dropped_positions.iter().filter(|p| **p < i).count();
+        served.current_index = Some(i - before);
     }
-    let ids = q.track_ids.clone();
+    (served, entries)
+}
+
+// Fetch the queue ids' fresh detail, bounded concurrency. Returns the
+// servable entries in queue order plus the raw positions of ids that
+// Tidal no longer serves (ascending).
+async fn render_entries(client: &'static TidalClient, ids: &[u64]) -> (Vec<Child>, Vec<usize>) {
     let fetched: Vec<_> = stream::iter(ids.iter().copied())
         .map(|id| async move { (id, client.track(id).await) })
         .buffered(6)
         .collect()
         .await;
     let mut entries = Vec::new();
-    for (id, result) in fetched {
+    let mut dropped_positions = Vec::new();
+    for (pos, (id, result)) in fetched.into_iter().enumerate() {
         match result {
-            Ok(v) => {
-                if let Some(song) = song_from_track(&v.to_json()) {
-                    entries.push(song);
-                }
-            }
+            Ok(v) => match song_from_track(&v.to_json()) {
+                Some(song) => entries.push(song),
+                None => dropped_positions.push(pos),
+            },
             Err(e) => {
                 tracing::debug!("tidal track {id} fetch failed (dropped from queue): {e}");
+                dropped_positions.push(pos);
             }
         }
     }
-    play_state::save_resolved(Some(ResolvedQueue {
-        for_ids: ids,
-        entries: entries.clone(),
-    }));
-    entries
+    (entries, dropped_positions)
 }
 
 // getPlayQueue: the saved queue, or an empty one when nothing is saved.
 pub async fn get_play_queue(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let client = crate::tidal::client();
     let saved = restore_queue(client).await;
-    let entry = resolve_queue(client).await;
+    let (served, entry) = serve_queue(client, &saved).await;
     Ok(ok(PlayQueueResponse {
         play_queue: PlayQueue {
-            current: saved.current.map(|id| format!("t{id}")),
+            current: served.current.map(|id| format!("t{id}")),
             position: saved.position_ms,
             username: saved.username,
             changed: play_state::iso8601_z(saved.changed_ms),
@@ -211,6 +240,7 @@ async fn restore_queue(_client: &TidalClient) -> play_state::PlayQueue {
     play_state::PlayQueue {
         track_ids: Vec::new(),
         current: None,
+        current_index: None,
         position_ms: 0,
         username: String::new(),
         changed_by: String::new(),

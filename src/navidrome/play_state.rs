@@ -11,7 +11,13 @@ use std::sync::{Mutex, OnceLock};
 #[derive(Clone, Debug)]
 pub struct PlayQueue {
     pub track_ids: Vec<u64>,
+    // The current song as an id (plain savePlayQueue semantics) and as
+    // an index into track_ids (indexBasedQueue semantics). The index
+    // round-trips verbatim to the ByIndex endpoints; feeding clients
+    // the id and re-deriving the index shifts when dead tracks are
+    // dropped or ids repeat.
     pub current: Option<u64>,
+    pub current_index: Option<usize>,
     pub position_ms: u64,
     pub username: String,
     pub changed_by: String,
@@ -19,12 +25,14 @@ pub struct PlayQueue {
 }
 
 // The queue as served: the raw id list it was built from, plus the
-// resolved song detail. Rebuilt when the raw id list changes, so a
-// repeated poll never re-fetches Tidal.
+// resolved song detail and the raw positions of ids Tidal no longer
+// serves. Rebuilt when the raw id list changes, so a repeated poll
+// never re-fetches Tidal.
 #[derive(Clone)]
 pub struct ResolvedQueue {
     pub for_ids: Vec<u64>,
     pub entries: Vec<Child>,
+    pub dropped_positions: Vec<usize>,
 }
 
 // One bookmark: a position inside a track.
@@ -145,6 +153,7 @@ mod tests {
         save_queue(PlayQueue {
             track_ids: vec![10_001, 10_002],
             current: Some(10_002),
+            current_index: Some(1),
             position_ms: 5_000,
             username: "admin".into(),
             changed_by: "test".into(),
@@ -153,6 +162,7 @@ mod tests {
         let q = queue().unwrap();
         assert_eq!(q.track_ids, vec![10_001, 10_002]);
         assert_eq!(q.current, Some(10_002));
+        assert_eq!(q.current_index, Some(1));
         assert_eq!(q.position_ms, 5_000);
     }
 
@@ -163,13 +173,13 @@ mod tests {
         save_queue(PlayQueue {
             track_ids: vec![],
             current: None,
+            current_index: None,
             position_ms: 0,
             username: "admin".into(),
             changed_by: "test".into(),
             changed_ms: 100,
         });
-        assert!(queue().is_none());
-    }
+        assert!(queue().is_none());    }
 
     #[test]
     fn latest_save_wins() {
@@ -178,6 +188,7 @@ mod tests {
         save_queue(PlayQueue {
             track_ids: vec![10_001],
             current: Some(10_001),
+            current_index: Some(0),
             position_ms: 0,
             username: "a".into(),
             changed_by: "c".into(),
@@ -186,6 +197,7 @@ mod tests {
         save_queue(PlayQueue {
             track_ids: vec![10_003, 10_004],
             current: Some(10_004),
+            current_index: Some(1),
             position_ms: 9_000,
             username: "b".into(),
             changed_by: "d".into(),

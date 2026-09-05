@@ -14,13 +14,6 @@ use crate::settings::LabelsConfig;
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-// `subtidal --lastfm-auth`: one-time Last.fm authorization. Prints the
-// authorize URL, waits for Enter, then stores the session key in the
-// shared credential file and exits.
-fn lastfm_auth_flag() -> bool {
-    std::env::args().skip(1).any(|a| a == "--lastfm-auth")
-}
-
 // `subtidal --version`: print the version and exit. Anything else would
 // fall through to load_settings and start a server on the default port.
 fn version_flag() -> bool {
@@ -71,26 +64,10 @@ async fn main() {
     print_startup(&settings);
     println!();
 
-    if lastfm_auth_flag() {
-        match &settings.lastfm {
-            Some(cfg) => {
-                match navidrome::scrobble::lastfm_auth_flow(&cfg.api_key, &cfg.api_secret).await {
-                    Ok(()) => std::process::exit(0),
-                    Err(e) => {
-                        eprintln!("lastfm auth failed: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            None => {
-                eprintln!("lastfm auth needs a [lastfm] block in the settings file");
-                std::process::exit(1);
-            }
-        }
-    }
     // Automatic first-time authorization: a [lastfm] block without a
-    // session key starts the flow on startup. On failure the server
-    // still starts without Last.fm scrobbling.
+    // session key starts the flow on startup, which prints the authorize
+    // URL and QR code. On failure the server still starts without
+    // Last.fm scrobbling.
     if let Some(cfg) = &settings.lastfm
         && navidrome::scrobble::lastfm_session_key()
             .ok()
@@ -100,9 +77,7 @@ async fn main() {
         println!("Last.fm is configured but not authorized; starting authorization.");
         if let Err(e) = navidrome::scrobble::lastfm_auth_flow(&cfg.api_key, &cfg.api_secret).await {
             eprintln!("lastfm authorization failed: {e}");
-            eprintln!(
-                "continuing without Last.fm scrobbling; run `subtidal --lastfm-auth` to retry"
-            );
+            eprintln!("continuing without Last.fm scrobbling.");
         }
     }
     let client = TidalClient::new(&settings);

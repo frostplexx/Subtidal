@@ -9,12 +9,12 @@ use super::{fail, ok};
 use crate::navidrome::ids;
 use crate::navidrome::params::QueryParams;
 
-// scrobble: accept one or more playback reports. submission=false is a
-// now-playing notification, submission=true (the default) a real
-// scrobble. Missing id is a client error (code 10). Any id counts;
-// Tidal tracks are fetched only for real scrobbles. The latest
-// now-playing report feeds getNowPlaying; the entry expires after ten
-// minutes. Reporter failures never fail the request.
+// scrobble: accept one or more playback reports. Every id is scrobbled,
+// submission flag or not: submission=false is also a real scrobble
+// (Arpeggi sends only submission=false with ignoreScrobble=true). The
+// submission=false notification still feeds getNowPlaying; the entry
+// expires after ten minutes. Missing id is a client error (code 10).
+// Reporter failures never fail the request.
 pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     if q.id.0.is_empty() {
         return Ok(fail(10, "Required parameter missing"));
@@ -35,9 +35,10 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
             now_playing::report(track_id, q.u.clone().unwrap_or_default());
             tokio::spawn(scrobble::report_now_playing(track_id));
         }
-        return Ok(ok(PingResponse {}));
     }
-    // Real scrobble: report every id. Track metadata is fetched through
+    // Real scrobble for every id, submission flag or not: clients such
+    // as Arpeggi send only submission=false with ignoreScrobble=true,
+    // so such plays must still count. Track metadata is fetched through
     // the Tidal client; when it is unavailable (or a track is unknown),
     // that scrobble is skipped and logged, never a client error.
     let time_ms = q.time.unwrap_or_else(now_playing::now_ms);

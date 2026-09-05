@@ -409,7 +409,7 @@ fn trigger_reauthorization(api_key: &str, api_secret: &str) {
 }
 
 // Last.fm one-time auth, run automatically on startup when a [lastfm]
-// block exists without a session key (and on demand via --lastfm-auth):
+// block exists without a session key:
 // getToken -> print the authorize URL -> poll getSession until the user
 // authorizes (or the timeout passes) -> store the session key in the
 // shared credential file. Never blocks forever: on timeout the caller
@@ -498,6 +498,14 @@ async fn lastfm_get_token(
     params.insert("method", "auth.getToken".into());
     params.insert("api_key", api_key.into());
     let body = lastfm_post(http, &mut params, api_secret).await?;
+    if let Some(code) = body.get("error").and_then(|e| e.as_u64()) {
+        let msg = body
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error")
+            .to_string();
+        return Err(format!("auth.getToken: error {code}: {msg}"));
+    }
     body.get("token")
         .and_then(|t| t.as_str())
         .map(String::from)
