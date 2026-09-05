@@ -310,7 +310,7 @@ impl super::TidalClient {
         }
     }
 
-    fn user_id_from_tokens(&self) -> Option<u64> {
+    pub(crate) fn user_id_from_tokens(&self) -> Option<u64> {
         self.load_tokens().ok().flatten().and_then(|t| t.user_id)
     }
 
