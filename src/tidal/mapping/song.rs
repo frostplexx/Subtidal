@@ -46,8 +46,8 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     // The same value as the OpenSubsonic genres array.
     let genres = genre.as_ref().map(|g| vec![GenreItem { name: g.clone() }]);
 
-    // v2 tracks carry no audioQuality; every stream is served as an HLS
-    // playlist of MP4 segments, so the container is always m4a.
+    let (content_type, suffix) = format_from_track(v);
+
     Some(Child {
         id: ids::encode_track(id),
         parent: ids::encode_album(album_id),
@@ -71,8 +71,8 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         artists,
         isrc: v["isrc"].as_str().map(|s| vec![s.to_string()]),
         kind: "song",
-        content_type: "audio/mp4",
-        suffix: "m4a",
+        content_type,
+        suffix,
         size: 0,
         path: String::new(),
         created: String::new(),
@@ -84,6 +84,36 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
             track_peak: v["peak"].as_f64(),
         },
     })
+}
+
+// The track's own source format, from Tidal's `mediaMetadata.tags` (badge
+// tags: e.g. "DOLBY_ATMOS", "HIRES_LOSSLESS", "LOSSLESS") and/or
+// `audioQuality`. Both come free on a track object already fetched for
+// `song_from_track` (no extra Tidal call) *when present* — the v1-sourced
+// track objects backing most album/song listings (see
+// `TidalClient::album_items_parallel`) carry them, but a v2-flattened
+// jsonapi track (the `album_with_items` fallback path, and some search/
+// mix feeds) does not, so an absent field falls back to the same lossy
+// "m4a" guess this always reported before, rather than claiming a source
+// format Tidal never actually told us. This mirrors a real Subsonic
+// server reporting the file's own tags, not whatever a client's current
+// transcode setting happens to request — so a track tagged DOLBY_ATMOS
+// here still shows/streams as Atmos even for a client whose own format
+// setting is plain FLAC/Off; the requested transcode format is a
+// separate, later decision (see `tidal_quality` in the tracks handler).
+fn format_from_track(v: &Value) -> (&'static str, &'static str) {
+    let tags: &[Value] = v["mediaMetadata"]["tags"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let has_tag = |t: &str| tags.iter().any(|x| x.as_str() == Some(t));
+    if has_tag("DOLBY_ATMOS") {
+        return ("audio/eac3", "eac3");
+    }
+    if has_tag("HIRES_LOSSLESS") || v["audioQuality"].as_str() == Some("HIRES_LOSSLESS") {
+        return ("audio/flac", "flac");
+    }
+    if has_tag("LOSSLESS") || v["audioQuality"].as_str() == Some("LOSSLESS") {
+        return ("audio/flac", "flac");
+    }
+    ("audio/mp4", "m4a")
 }
 
 // Appends the AI marker when the track is AI-generated and the [labels]
@@ -218,7 +248,11 @@ mod tests {
     }
 
     #[test]
-    fn song_maps_container_to_m4a() {
+    fn song_falls_back_to_m4a_when_no_quality_metadata_present() {
+        // A v2-flattened track (the album_with_items fallback, some search/
+        // mix feeds) carries neither mediaMetadata.tags nor audioQuality —
+        // keep the old lossy-container guess rather than claiming a format
+        // Tidal never actually told us.
         let track = json!({
             "id": 123,
             "title": "Song One",
@@ -228,6 +262,59 @@ mod tests {
             "album": {"id": 456, "title": "Album One"}
         });
         let song = song_from_track(&track).unwrap();
+        assert_eq!(song.content_type, "audio/mp4");
+        assert_eq!(song.suffix, "m4a");
+    }
+
+    #[test]
+    fn song_maps_dolby_atmos_tag_to_eac3() {
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "LOSSLESS",
+            "mediaMetadata": {"tags": ["LOSSLESS", "DOLBY_ATMOS"]}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.content_type, "audio/eac3");
+        assert_eq!(song.suffix, "eac3");
+    }
+
+    #[test]
+    fn song_maps_hires_lossless_and_lossless_tags_to_flac() {
+        let hires = json!({
+            "id": 123, "title": "Song One", "duration": 220, "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "mediaMetadata": {"tags": ["HIRES_LOSSLESS"]}
+        });
+        let song = song_from_track(&hires).unwrap();
+        assert_eq!(song.content_type, "audio/flac");
+        assert_eq!(song.suffix, "flac");
+
+        let lossless_via_audio_quality = json!({
+            "id": 124, "title": "Song Two", "duration": 220, "trackNumber": 4,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "LOSSLESS"
+        });
+        let song = song_from_track(&lossless_via_audio_quality).unwrap();
+        assert_eq!(song.content_type, "audio/flac");
+        assert_eq!(song.suffix, "flac");
+    }
+
+    #[test]
+    fn song_keeps_lossy_container_for_high_and_low_quality() {
+        let high = json!({
+            "id": 123, "title": "Song One", "duration": 220, "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "HIGH"
+        });
+        let song = song_from_track(&high).unwrap();
         assert_eq!(song.content_type, "audio/mp4");
         assert_eq!(song.suffix, "m4a");
     }
