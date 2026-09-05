@@ -481,6 +481,7 @@ mod tests {
             disc_number: None,
             album_id: String::new(),
             artist_id: String::new(),
+            artists: None,
             kind: "song",
             content_type: "audio/flac",
             suffix: "flac",

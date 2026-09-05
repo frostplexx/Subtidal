@@ -1,13 +1,7 @@
 // Map Tidal v1 JSON responses to Subsonic models.
 // Tidal returns camelCase fields (confirmed against sone and live testing).
 // One module per entity; shared helpers stay here, visible to submodules.
-//
-// Where an endpoint's pieces live:
-//   tidal/client.rs      the HTTP call, returns raw serde_json::Value
-//   tidal/mapping/       Value -> Subsonic struct (this directory)
-//   navidrome/models.rs  the Subsonic response structs
-//   navidrome/handlers.rs composes the three, wraps in the envelope
-//   navidrome/routes.rs  one dispatch arm per endpoint name
+
 pub mod album;
 pub mod artist;
 pub mod playlist;
@@ -112,32 +106,52 @@ pub(crate) fn year_from(s: Option<&str>) -> Option<u32> {
     s.get(..4)?.parse().ok()
 }
 
-// First artist from `artists`, or the single `artist` object.
-// Multi-artist names join as "A feat. B, C".
-fn primary_artist(v: &Value) -> (u64, String) {
+// Every artist credit on an entity: the full `artists` array, or the
+// single `artist` object when sparse JSON carries only that. The first
+// entry is the lead artist.
+pub(crate) fn artist_credits(v: &Value) -> Vec<(u64, String)> {
     if let Some(artists) = v["artists"].as_array() {
-        let id = artists
-            .first()
-            .and_then(|a| a["id"].as_u64())
-            .unwrap_or(0);
-        let names: Vec<&str> = artists.iter().filter_map(|a| a["name"].as_str()).collect();
-        let name = match names.split_first() {
-            Some((first, rest)) => {
-                let mut joined = first.to_string();
-                if !rest.is_empty() {
-                    joined.push_str(" feat. ");
-                    joined.push_str(&rest.join(", "));
-                }
-                joined
-            }
-            None => String::new(),
-        };
-        (id, name)
-    } else {
-        let id = v["artist"]["id"].as_u64().unwrap_or(0);
-        let name = v["artist"]["name"].as_str().unwrap_or("").to_string();
-        (id, name)
+        let list: Vec<(u64, String)> = artists
+            .iter()
+            .filter_map(|a| {
+                let id = a["id"].as_u64()?;
+                let name = a["name"].as_str()?.to_string();
+                Some((id, name))
+            })
+            .collect();
+        if !list.is_empty() {
+            return list;
+        }
     }
+    let id = v["artist"]["id"].as_u64();
+    let name = v["artist"]["name"].as_str();
+    match (id, name) {
+        (Some(id), Some(name)) => vec![(id, name.to_string())],
+        _ => Vec::new(),
+    }
+}
+
+// The primary artist on an entity: the entry tagged MAIN when Tidal
+// marks one, else the first entry. OpenAPI-flattened artist lists carry
+// no type, so those fall back to the first entry. Sparse JSON with only
+// the single `artist` object uses that.
+pub(crate) fn lead_artist(v: &Value) -> (u64, String) {
+    if let Some(artists) = v["artists"].as_array() {
+        let pick = artists
+            .iter()
+            .find(|a| a["type"].as_str() == Some("MAIN"))
+            .or_else(|| artists.first());
+        if let Some(a) = pick {
+            let id = a["id"].as_u64();
+            let name = a["name"].as_str();
+            if let (Some(id), Some(name)) = (id, name) {
+                return (id, name.to_string());
+            }
+        }
+    }
+    let id = v["artist"]["id"].as_u64().unwrap_or(0);
+    let name = v["artist"]["name"].as_str().unwrap_or("").to_string();
+    (id, name)
 }
 
 // First page of a Tidal search section: { artists: { items: [...] } }

@@ -4,15 +4,12 @@ use serde_json::Value;
 use crate::navidrome::ids;
 use crate::navidrome::models::{AlbumId3, GenreItem};
 
-use super::{content_labels, cover_url, explicit_status, primary_artist, year_from};
+use super::{content_labels, cover_url, explicit_status, lead_artist, year_from};
 
 pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
     let id = v["id"].as_u64()?;
     let name = v["title"].as_str()?.to_string();
-    let (artist_id, artist_name) = primary_artist(v);
-    // Compilations are stamped by the artist client (Tidal's own item
-    // type cannot distinguish them); everything else maps its release
-    // type from Tidal's `type` field.
+    let (artist_id, artist_name) = lead_artist(v);
     let is_compilation = v["isCompilation"].as_bool().unwrap_or(false);
     let release_types = if is_compilation {
         vec!["Compilation".to_string()]

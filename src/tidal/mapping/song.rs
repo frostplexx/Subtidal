@@ -2,9 +2,11 @@
 use serde_json::Value;
 
 use crate::navidrome::ids;
-use crate::navidrome::models::{Child, GenreItem, ReplayGain};
+use crate::navidrome::models::{ArtistRef, Child, GenreItem, ReplayGain};
 
-use super::{content_labels, cover_url, explicit_status, primary_artist, year_from};
+use super::{
+    artist_credits, content_labels, cover_url, explicit_status, lead_artist, year_from,
+};
 
 pub fn song_from_track(v: &Value) -> Option<Child> {
     let id = v["id"].as_u64()?;
@@ -14,7 +16,22 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     let album = v["album"].as_object()?;
     let album_id = album["id"].as_u64()?;
     let album_name = album["title"].as_str().unwrap_or("").to_string();
-    let (artist_id, artist_name) = primary_artist(v);
+    // The legacy singular artist string and artistId carry the primary
+    // artist only: the MAIN-tagged entry when Tidal marks one, else the
+    // first. The OpenSubsonic artists array carries every artist.
+    let (artist_id, artist_name) = lead_artist(v);
+    let artists = {
+        let credits = artist_credits(v);
+        (!credits.is_empty()).then(|| {
+            credits
+                .iter()
+                .map(|(id, name)| ArtistRef {
+                    id: ids::encode_artist(*id),
+                    name: name.clone(),
+                })
+                .collect()
+        })
+    };
     let year = year_from(v["releaseDate"].as_str())
         .or_else(|| year_from(album.get("releaseDate").and_then(|r| r.as_str())));
     // v2 flatten writes the track's first genre onto `genre` (that data
@@ -51,6 +68,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         disc_number: v["volumeNumber"].as_u64().map(|n| n as u32),
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
+        artists,
         kind: "song",
         content_type: "audio/mp4",
         suffix: "m4a",
@@ -96,7 +114,15 @@ mod tests {
         assert_eq!(song.id, "t123");
         assert_eq!(song.album_id, "al456");
         assert_eq!(song.artist_id, "ar9");
-        assert_eq!(song.artist, "Artist A feat. Artist B");
+        assert_eq!(song.artist, "Artist A");
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(
+            json["artists"],
+            json!([
+                {"id": "ar9", "name": "Artist A"},
+                {"id": "ar10", "name": "Artist B"}
+            ])
+        );
         assert_eq!(song.year, Some(2021));
         assert_eq!(song.track, 3);
         assert_eq!(song.disc_number, Some(2));
@@ -104,6 +130,30 @@ mod tests {
             song.cover_art.unwrap(),
             "https://resources.tidal.com/images/abc/123/640x640.jpg"
         );
+    }
+
+    #[test]
+    fn primary_artist_wins_over_array_order() {
+        // v1 track JSON tags artists MAIN/FEATURED; the primary is the
+        // MAIN entry even when it is not first in the array.
+        let track = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [
+                {"id": 10, "name": "Feat. Artist", "type": "FEATURED"},
+                {"id": 9, "name": "Artist A", "type": "MAIN"}
+            ],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.artist, "Artist A");
+        assert_eq!(song.artist_id, "ar9");
+        // The artists array keeps the original order, not the primary.
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["artists"][0]["id"], "ar10");
+        assert_eq!(json["artists"][1]["id"], "ar9");
     }
 
     #[test]

@@ -37,6 +37,11 @@ pub struct Child {
     pub album_id: String,
     #[serde(rename = "artistId")]
     pub artist_id: String,
+    // OpenSubsonic artists array: one {id, name} per credit, lead
+    // first. Omitted when Tidal returns no artist data at all; the
+    // legacy singular fields above stay for older clients.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artists: Option<Vec<ArtistRef>>,
     #[serde(rename = "type")]
     pub kind: &'static str,
     // Placeholder media metadata: no transcode or file probe yet.
@@ -67,6 +72,13 @@ pub struct Child {
 // the documented response shape.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct GenreItem {
+    pub name: String,
+}
+
+// OpenSubsonic artist reference: {id, name}.
+#[derive(Serialize)]
+pub struct ArtistRef {
+    pub id: String,
     pub name: String,
 }
 
