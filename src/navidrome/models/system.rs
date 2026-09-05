@@ -3,6 +3,10 @@ use serde::Serialize;
 
 use super::song::Child;
 
+// Version reported to clients. It comes from Cargo.toml at compile time so
+// it always matches the crate the server binary was built from.
+pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // Root of every response: { "subsonic-response": { ... } }
 #[derive(Serialize)]
 pub struct SubsonicResponse<T: Serialize> {
@@ -213,7 +217,7 @@ mod tests {
                 status: "ok",
                 version: "1.16.1",
                 server_type: "Subtidal",
-                server_version: "0.1.0",
+                server_version: SERVER_VERSION,
                 open_subsonic: true,
                 data: PingResponse {},
             },
