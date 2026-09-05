@@ -286,13 +286,17 @@ impl TidalClient {
     }
 
     // After any playlist change, drop the cached playlist objects and
-    // item pages so the next read fetches fresh data. Every v2 playlist
-    // key starts with /playlists (the list query, the detail, the item
-    // pages), so one prefix covers them all.
+    // item pages so the next read fetches fresh data. The v2 playlist
+    // keys start with /playlists (the list query, the detail, the item
+    // pages), and the owned-playlist list query lives at
+    // /userCollectionPlaylists/me/relationships/items; without clearing
+    // both, create/delete results stay hidden for the cache lifetime.
     fn invalidate_playlist_caches(&self) {
-        let _ = self
-            .playlist_cache
-            .invalidate_entries_if(|k, _| k.starts_with("/playlists"));
+        for prefix in ["/playlists", "/userCollectionPlaylists/me"] {
+            let _ = self
+                .playlist_cache
+                .invalidate_entries_if(move |k, _| k.starts_with(prefix));
+        }
     }
 
     // Create a playlist. Backs createPlaylist. The response is the new
