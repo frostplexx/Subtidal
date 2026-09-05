@@ -32,6 +32,18 @@ pub struct Child {
     #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
     pub cover_art: Option<String>,
     pub duration: u32,
+    // OpenSubsonic bitRate, kilobits per second. Omitted when the track
+    // carries no quality metadata to estimate from.
+    #[serde(rename = "bitRate", skip_serializing_if = "Option::is_none")]
+    pub bit_rate: Option<u32>,
+    // OpenSubsonic bitDepth and samplingRate, same derivation as
+    // bitRate; omitted when the track carries no quality metadata.
+    #[serde(rename = "bitDepth", skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u32>,
+    #[serde(rename = "samplingRate", skip_serializing_if = "Option::is_none")]
+    pub sampling_rate: Option<u32>,
+    #[serde(rename = "channelCount", skip_serializing_if = "Option::is_none")]
+    pub channel_count: Option<u32>,
     #[serde(rename = "discNumber", skip_serializing_if = "Option::is_none")]
     pub disc_number: Option<u32>,
     #[serde(rename = "albumId")]

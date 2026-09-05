@@ -215,14 +215,17 @@ fn rate_limit_enabled() -> bool {
 // POST, the OpenSubsonic formPost extension), authenticate, and reject
 // with Unauthorized on bad credentials. With the rate_limit setting on,
 // repeated failures from one IP double the lockout before the credential
-// check. Yields the merged params, the raw query string, and the raw
-// body bytes for the handler.
-pub fn require_auth() -> impl Filter<Extract = (QueryParams, String, Bytes), Error = Rejection> + Clone {
+// check. Yields the merged params, the raw query string, the raw
+// body bytes, the x-forwarded-proto header, and the host header for
+// handlers that build absolute URLs (the HLS multivariant playlist).
+pub fn require_auth() -> impl Filter<Extract = (QueryParams, String, Bytes, Option<String>, Option<String>), Error = Rejection> + Clone {
     warp::query::raw()
         .or_else(|_| async { Ok::<_, Infallible>((String::new(),)) })
         .and(warp::addr::remote())
+        .and(warp::header::optional::<String>("x-forwarded-proto"))
+        .and(warp::header::optional::<String>("host"))
         .and(bounded_body(MAX_BODY_BYTES))
-        .and_then(|query: String, remote: Option<SocketAddr>, body: Bytes| async move {
+        .and_then(|query: String, remote: Option<SocketAddr>, proto: Option<String>, host: Option<String>, body: Bytes| async move {
             let merged = QueryParams::merge_raw(&query, &body);
             let params = QueryParams::from_merged(&merged).map_err(|_| warp::reject::reject())?;
             let ip = remote.map(|a| a.ip());
@@ -233,13 +236,13 @@ pub fn require_auth() -> impl Filter<Extract = (QueryParams, String, Bytes), Err
                 }
                 if authenticate(&params) {
                     limiter.record_success(ip);
-                    Ok((params, merged, body))
+                    Ok((params, merged, body, proto, host))
                 } else {
                     limiter.record_failure(ip);
                     Err(warp::reject::custom(Unauthorized))
                 }
             } else if authenticate(&params) {
-                Ok((params, merged, body))
+                Ok((params, merged, body, proto, host))
             } else {
                 Err(warp::reject::custom(Unauthorized))
             }

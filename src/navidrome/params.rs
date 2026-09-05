@@ -57,6 +57,10 @@ pub struct QueryParams {
     // quality tier; format is only a hint (flac lifts to LOSSLESS).
     pub max_bit_rate: Option<u32>,
     pub format: Option<String>,
+    // stream: variant=1 marks the media-playlist re-request behind an
+    // HLS multivariant playlist. The stream handler serves the master
+    // playlist on the first visit and the media playlist on this marker.
+    pub variant: Option<String>,
     // scrobble: playback report; time is ms since epoch, submission is
     // true for a real scrobble, false for a now-playing notification.
     pub time: Option<i64>,
@@ -159,6 +163,7 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "toYear" => q.to_year = Some(v.parse().map_err(|_| E::custom("invalid toYear"))?),
         "maxBitRate" => q.max_bit_rate = Some(v.parse().map_err(|_| E::custom("invalid maxBitRate"))?),
         "format" => q.format = Some(v),
+        "variant" => q.variant = Some(v),
         "time" => q.time = Some(v.parse().map_err(|_| E::custom("invalid time"))?),
         "submission" => q.submission = Some(v.parse().map_err(|_| E::custom("invalid submission"))?),
         "genre" => q.genre = Some(v),

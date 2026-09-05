@@ -272,11 +272,20 @@ fn default_tier() -> &'static str {
 }
 
 // stream: resolve a track to its v2 manifest and serve it as an HLS
-// playlist of Tidal's own CDN segment URLs (v2 has no BTS single-file
-// streams, so every request is segmented). The playlist points at the
-// init + numbered segments; no audio bytes cross this server. Ids are
-// t<id> or bare numbers.
-pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
+// multivariant playlist on the first visit; the variant re-request (the
+// same URL plus variant=1) gets the media playlist of Tidal's own CDN
+// segment URLs (v2 has no BTS single-file streams, so every request is
+// segmented). The playlist points at the init + numbered segments; no
+// audio bytes cross this server. Ids are t<id> or bare numbers. The
+// variant URL is absolute (scheme from x-forwarded-proto, host from the
+// Host header) per the HLS multivariant spec; it falls back to a
+// relative path when the host header is absent.
+pub async fn stream(
+    q: QueryParams,
+    raw: String,
+    proto: Option<String>,
+    host: Option<String>,
+) -> Result<warp::reply::Response, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing").into_response());
     };
@@ -302,7 +311,17 @@ pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejec
                     "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
                     dash.sample_rate, dash.bit_depth, dash.codec
                 );
-                return Ok(hls_reply(build_hls_playlist(dash)));
+                return if q.variant.is_some() {
+                    Ok(hls_reply(build_hls_playlist(dash)))
+                } else {
+                    let variant = variant_url(
+                        &raw,
+                        &q,
+                        proto.as_deref(),
+                        host.as_deref(),
+                    );
+                    Ok(hls_reply(build_hls_master(dash, &variant)))
+                };
             }
             tracing::debug!("manifest for track {track_id} carried no playable stream");
         }
@@ -370,6 +389,90 @@ pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rej
 fn hls_reply(playlist: String) -> warp::reply::Response {
     let reply = warp::reply::with_header(playlist, "Content-Type", "application/vnd.apple.mpegurl");
     warp::reply::with_header(reply, "Cache-Control", "no-store").into_response()
+}
+
+// Absolute URL for the media-playlist re-request. The raw query string
+// carries the client's exact auth and tier params; variant=1 marks the
+// re-request so the handler serves the media playlist instead of another
+// master. When the raw query is empty (a formPost request), rebuild the
+// auth/tier subset from the typed params so the variant still resolves.
+fn variant_url(raw: &str, q: &QueryParams, proto: Option<&str>, host: Option<&str>) -> String {
+    let query = if raw.is_empty() {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        if let Some(u) = &q.u {
+            pairs.push(("u".into(), u.clone()));
+        }
+        if let Some(t) = &q.t {
+            pairs.push(("t".into(), t.clone()));
+        }
+        if let Some(s) = &q.s {
+            pairs.push(("s".into(), s.clone()));
+        }
+        if let Some(v) = &q.v {
+            pairs.push(("v".into(), v.clone()));
+        }
+        if let Some(id) = q.id.0.first() {
+            pairs.push(("id".into(), id.clone()));
+        }
+        if let Some(f) = &q.format {
+            pairs.push(("format".into(), f.clone()));
+        }
+        if let Some(m) = &q.max_bit_rate {
+            pairs.push(("maxBitRate".into(), m.to_string()));
+        }
+        pairs.push(("variant".into(), "1".into()));
+        serde_urlencoded::to_string(&pairs).unwrap_or_default()
+    } else {
+        format!("{raw}&variant=1")
+    };
+    match host {
+        Some(h) => {
+            let proto = proto
+                .and_then(|p| p.split(',').next())
+                .map(str::trim)
+                .filter(|p| *p == "http" || *p == "https")
+                .unwrap_or("http");
+            format!("{proto}://{h}/rest/stream?{query}")
+        }
+        None => format!("/rest/stream?{query}"),
+    }
+}
+
+// RFC 6381 codec identifier for one DASH codec id. The ISO-BMFF
+// fourcc for FLAC is "fLaC"; a lowercase "flac" fails AVFoundation's
+// HLS loader with Cannot Open (-11848), which kills the whole
+// multivariant playlist. Unknown codecs drop CODECS entirely: the
+// attribute is optional and its absence plays cleanly.
+fn hls_codecs(codec: &str) -> Option<&str> {
+    match codec {
+        "flac" => Some("fLaC"),
+        // E-AC-3 / Dolby Atmos JOC: the MPD writes the RFC 6381 form
+        // directly ("ec-3"), Apple's own HLS examples use it too.
+        "ec-3" => Some("ec-3"),
+        "eac3" => Some("ec-3"),
+        "ac-3" => Some("ac-3"),
+        "ac3" => Some("ac-3"),
+        "mp4a" => Some("mp4a.40.2"),
+        _ if codec.starts_with("mp4a.") => Some(codec),
+        _ => None,
+    }
+}
+
+// A one-variant HLS multivariant playlist: the required BANDWIDTH plus
+// the recommended AVERAGE-BANDWIDTH and CODECS (RFC 6381, from the
+// DASH representation), then the variant playlist as a full URL.
+fn build_hls_master(dash: &crate::tidal::client::DashInfo, variant: &str) -> String {
+    let stream_inf = match hls_codecs(&dash.codec) {
+        Some(codecs) => format!(
+            "#EXT-X-STREAM-INF:BANDWIDTH={},AVERAGE-BANDWIDTH={},CODECS=\"{}\"",
+            dash.bandwidth, dash.bandwidth, codecs
+        ),
+        None => format!(
+            "#EXT-X-STREAM-INF:BANDWIDTH={},AVERAGE-BANDWIDTH={}",
+            dash.bandwidth, dash.bandwidth
+        ),
+    };
+    format!("#EXTM3U\n#EXT-X-VERSION:6\n{stream_inf}\n{variant}\n")
 }
 
 // Rewrite a parsed DASH manifest into a VOD HLS media playlist. The init
@@ -453,6 +556,94 @@ mod tests {
     }
 
     #[test]
+    fn variant_url_builds_absolute_with_host_and_proto() {
+        let q = crate::navidrome::params::QueryParams {
+            u: Some("admin".into()),
+            t: Some("abc123".into()),
+            s: Some("salt".into()),
+            id: crate::navidrome::params::IdList(vec!["t123".into()]),
+            ..Default::default()
+        };
+        let url = super::variant_url(
+            "u=admin&t=abc123&s=salt&id=t123&v=1.16.1&c=Arpeggi",
+            &q,
+            Some("https"),
+            Some("music.example.com:8443"),
+        );
+        assert_eq!(
+            url,
+            "https://music.example.com:8443/rest/stream?u=admin&t=abc123&s=salt&id=t123&v=1.16.1&c=Arpeggi&variant=1"
+        );
+    }
+
+    #[test]
+    fn variant_url_falls_back_to_relative_and_rebuilds_empties() {
+        let q = crate::navidrome::params::QueryParams {
+            u: Some("admin".into()),
+            t: Some("abc123".into()),
+            s: Some("salt".into()),
+            v: Some("1.16.1".into()),
+            id: crate::navidrome::params::IdList(vec!["t123".into()]),
+            format: Some("flac".into()),
+            max_bit_rate: Some(0),
+            ..Default::default()
+        };
+        let url = super::variant_url("", &q, Some("https"), None);
+        assert_eq!(
+            url,
+            "/rest/stream?u=admin&t=abc123&s=salt&v=1.16.1&id=t123&format=flac&maxBitRate=0&variant=1"
+        );
+        let url = super::variant_url("", &q, Some("https"), Some("localhost:8000"));
+        assert_eq!(
+            url,
+            "https://localhost:8000/rest/stream?u=admin&t=abc123&s=salt&v=1.16.1&id=t123&format=flac&maxBitRate=0&variant=1"
+        );
+    }
+
+    #[test]
+    fn hls_master_has_bandwidth_and_codec_and_variant_url() {
+        let master = super::build_hls_master(&dash_fixture(), "https://h/rest/stream?a=1&variant=1");
+        let lines: Vec<&str> = master.lines().collect();
+        assert_eq!(lines[0], "#EXTM3U");
+        assert!(master.contains("#EXT-X-VERSION:6\n"));
+        // Flac must use the RFC 6381 form: lowercase "flac" fails
+        // AVFoundation's loader with Cannot Open (-11848).
+        assert!(
+            master.contains(
+                "#EXT-X-STREAM-INF:BANDWIDTH=1616237,AVERAGE-BANDWIDTH=1616237,CODECS=\"fLaC\"\n"
+            )
+        );
+        assert!(!master.contains("CODECS=\"flac\""));
+        assert_eq!(lines[3], "https://h/rest/stream?a=1&variant=1");
+        // No media tags in the multivariant playlist.
+        assert!(!master.contains("EXTINF"));
+        assert!(!master.contains("EXT-X-MAP"));
+    }
+
+    #[test]
+    fn hls_codecs_maps_dash_ids_to_rfc6381() {
+        assert_eq!(super::hls_codecs("flac"), Some("fLaC"));
+        assert_eq!(super::hls_codecs("ec-3"), Some("ec-3"));
+        assert_eq!(super::hls_codecs("eac3"), Some("ec-3"));
+        assert_eq!(super::hls_codecs("ac-3"), Some("ac-3"));
+        assert_eq!(super::hls_codecs("ac3"), Some("ac-3"));
+        assert_eq!(super::hls_codecs("mp4a"), Some("mp4a.40.2"));
+        assert_eq!(super::hls_codecs("mp4a.40.2"), Some("mp4a.40.2"));
+        // Unknown codecs drop the CODECS attribute rather than risk
+        // another loader rejection.
+        assert_eq!(super::hls_codecs("weird"), None);
+    }
+
+    #[test]
+    fn hls_master_omits_codecs_for_unknown_identifiers() {
+        let mut dash = dash_fixture();
+        dash.codec = "weird".into();
+        let master = super::build_hls_master(&dash, "https://h/rest/stream?variant=1");
+        assert!(master.contains("#EXT-X-STREAM-INF:BANDWIDTH=1616237,AVERAGE-BANDWIDTH=1616237\n"));
+        assert!(!master.contains("CODECS"));
+    }
+
+    #[test]
     fn bitrate_picks_tier() {
         assert_eq!(tidal_quality(None, None), "LOSSLESS");
         assert_eq!(tidal_quality(Some(0), None), "LOSSLESS");
@@ -497,6 +688,10 @@ mod tests {
             genres: genre.map(|g| vec![GenreItem { name: g.to_string() }]),
             cover_art: None,
             duration: 0,
+            bit_rate: None,
+            bit_depth: None,
+            sampling_rate: None,
+            channel_count: None,
             disc_number: None,
             album_id: String::new(),
             artist_id: String::new(),

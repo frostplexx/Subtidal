@@ -22,8 +22,8 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
             .boxed()
             .or(auth::require_auth()
                 .and(private())
-                .and_then(|q: QueryParams, raw: String, body: Bytes, name: String| {
-                    dispatch(q, raw, name, body)
+                .and_then(|q: QueryParams, raw: String, body: Bytes, proto: Option<String>, host: Option<String>, name: String| {
+                    dispatch(q, raw, name, body, proto, host)
                 })
                 .boxed())
             .unify()
@@ -74,6 +74,8 @@ fn dispatch(
     raw: String,
     name: String,
     body: Bytes,
+    proto: Option<String>,
+    host: Option<String>,
 ) -> super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> {
     let handler: super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> =
         match name.as_str() {
@@ -105,7 +107,7 @@ fn dispatch(
             "getLyrics" => Box::pin(handlers::get_lyrics(q).map_ok(|r| r.into_response())),
             "getLyricsBySongId" => Box::pin(handlers::get_lyrics_by_song_id(q).map_ok(|r| r.into_response())),
             "getRandomSongs" => Box::pin(handlers::get_random_songs(q).map_ok(|r| r.into_response())),
-            "stream" => Box::pin(handlers::stream(q).map_ok(|r| r)),
+            "stream" => Box::pin(handlers::stream(q, raw.clone(), proto, host).map_ok(|r| r)),
             "updateNowPlaying" => Box::pin(handlers::update_now_playing(q).map_ok(|r| r.into_response())),
             "getNowPlaying" => Box::pin(handlers::get_now_playing(q).map_ok(|r| r.into_response())),
             "reportPlayback" => Box::pin(handlers::report_playback(q).map_ok(|r| r.into_response())),
@@ -303,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_endpoint_name_rejects() {
         let q = QueryParams::from_merged("").unwrap();
-        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new()).await.is_err());
+        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new(), None, None).await.is_err());
     }
 
     // A POST body over the 1 MiB cap must be rejected before it is read

@@ -65,6 +65,10 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
             .and_then(|c| c.as_str())
             .map(|c| cover_url(c, 640)),
         duration: v["duration"].as_u64().unwrap_or(0) as u32,
+        bit_rate: bitrate_from_track(v),
+        bit_depth: bit_depth_from_track(v),
+        sampling_rate: sample_rate_from_track(v),
+        channel_count: channel_count_from_track(v),
         disc_number: v["volumeNumber"].as_u64().map(|n| n as u32),
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
@@ -102,18 +106,95 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
 // setting is plain FLAC/Off; the requested transcode format is a
 // separate, later decision (see `tidal_quality` in the tracks handler).
 fn format_from_track(v: &Value) -> (&'static str, &'static str) {
-    let tags: &[Value] = v["mediaMetadata"]["tags"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    match quality_from_track(v) {
+        Quality::Atmos => ("audio/eac3", "eac3"),
+        Quality::HiRes | Quality::Lossless => ("audio/flac", "flac"),
+        // HIGH, LOW and unknown tiers all fall back to the lossy
+        // container guess (see the function-level comment).
+        _ => ("audio/mp4", "m4a"),
+    }
+}
+
+// The track's quality tier, derived from the same Tidal metadata as
+// `format_from_track`. ATMOS wins over HIRES_LOSSLESS wins over LOSSLESS
+// (each via `mediaMetadata.tags` or `audioQuality`); HIGH and LOW are the
+// lossy tiers. Unknown means the payload carried no quality metadata.
+fn quality_from_track(v: &Value) -> Quality {
+    let tags: &[Value] = v["mediaMetadata"]["tags"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     let has_tag = |t: &str| tags.iter().any(|x| x.as_str() == Some(t));
     if has_tag("DOLBY_ATMOS") {
-        return ("audio/eac3", "eac3");
+        return Quality::Atmos;
     }
     if has_tag("HIRES_LOSSLESS") || v["audioQuality"].as_str() == Some("HIRES_LOSSLESS") {
-        return ("audio/flac", "flac");
+        return Quality::HiRes;
     }
     if has_tag("LOSSLESS") || v["audioQuality"].as_str() == Some("LOSSLESS") {
-        return ("audio/flac", "flac");
+        return Quality::Lossless;
     }
-    ("audio/mp4", "m4a")
+    match v["audioQuality"].as_str() {
+        Some("HIGH") => Quality::High,
+        Some("LOW") => Quality::Low,
+        _ => Quality::Unknown,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Quality {
+    Atmos,
+    HiRes,
+    Lossless,
+    High,
+    Low,
+    Unknown,
+}
+
+// The source bitrate in kilobits per second for the track's quality tier.
+// The values are the tier's typical rates, not per-track truth (the track
+// JSON carries no sample rate or bitrate); Unknown yields None so an
+// absent quality field omits bitRate rather than guessing.
+fn bitrate_from_track(v: &Value) -> Option<u32> {
+    match quality_from_track(v) {
+        Quality::Atmos => Some(768),
+        Quality::HiRes => Some(3000),
+        Quality::Lossless => Some(1411),
+        Quality::High => Some(320),
+        Quality::Low => Some(96),
+        Quality::Unknown => None,
+    }
+}
+
+// The source bit depth for the track's quality tier, same caveat as
+// `bitrate_from_track`: tier-typical, not per-track truth.
+fn bit_depth_from_track(v: &Value) -> Option<u32> {
+    match quality_from_track(v) {
+        Quality::HiRes => Some(24),
+        Quality::Atmos | Quality::Lossless | Quality::High | Quality::Low => Some(16),
+        Quality::Unknown => None,
+    }
+}
+
+// The source sample rate in Hz for the track's quality tier, same caveat
+// as `bitrate_from_track`: tier-typical, not per-track truth.
+fn sample_rate_from_track(v: &Value) -> Option<u32> {
+    match quality_from_track(v) {
+        Quality::Atmos => Some(48_000),
+        Quality::HiRes => Some(96_000),
+        Quality::Lossless | Quality::High | Quality::Low => Some(44_100),
+        Quality::Unknown => None,
+    }
+}
+
+// The source channel count for the track's quality tier, same caveat as
+// `bitrate_from_track`: Atmos carries 6 channels, everything else stereo.
+fn channel_count_from_track(v: &Value) -> Option<u32> {
+    match quality_from_track(v) {
+        Quality::Atmos => Some(6),
+        Quality::HiRes | Quality::Lossless | Quality::High | Quality::Low => Some(2),
+        Quality::Unknown => None,
+    }
 }
 
 // Appends the AI marker when the track is AI-generated and the [labels]
@@ -317,6 +398,111 @@ mod tests {
         let song = song_from_track(&high).unwrap();
         assert_eq!(song.content_type, "audio/mp4");
         assert_eq!(song.suffix, "m4a");
+    }
+
+    #[test]
+    fn song_maps_bitrate_from_quality() {
+        // LOSSLESS via audioQuality.
+        let lossless = json!({
+            "id": 123, "title": "Song One", "duration": 220, "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "LOSSLESS"
+        });
+        let song = song_from_track(&lossless).unwrap();
+        assert_eq!(song.bit_rate, Some(1411));
+        assert_eq!(song.bit_depth, Some(16));
+        assert_eq!(song.sampling_rate, Some(44_100));
+        assert_eq!(song.channel_count, Some(2));
+
+        // HIRES_LOSSLESS.
+        let hires = json!({
+            "id": 124, "title": "Song Two", "duration": 220, "trackNumber": 4,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "mediaMetadata": {"tags": ["HIRES_LOSSLESS"]}
+        });
+        let song = song_from_track(&hires).unwrap();
+        assert_eq!(song.bit_rate, Some(3000));
+        assert_eq!(song.bit_depth, Some(24));
+        assert_eq!(song.sampling_rate, Some(96_000));
+        assert_eq!(song.channel_count, Some(2));
+
+        // ATMOS tag wins over LOSSLESS metadata.
+        let atmos = json!({
+            "id": 125, "title": "Song Three", "duration": 220, "trackNumber": 5,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "LOSSLESS",
+            "mediaMetadata": {"tags": ["DOLBY_ATMOS"]}
+        });
+        let song = song_from_track(&atmos).unwrap();
+        assert_eq!(song.bit_rate, Some(768));
+        assert_eq!(song.bit_depth, Some(16));
+        assert_eq!(song.sampling_rate, Some(48_000));
+        assert_eq!(song.channel_count, Some(6));
+
+        // HIGH and LOW are lossy tiers.
+        let high = json!({
+            "id": 126, "title": "Song Four", "duration": 220, "trackNumber": 6,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "HIGH"
+        });
+        let song = song_from_track(&high).unwrap();
+        assert_eq!(song.bit_rate, Some(320));
+        assert_eq!(song.bit_depth, Some(16));
+        assert_eq!(song.sampling_rate, Some(44_100));
+        assert_eq!(song.channel_count, Some(2));
+
+        let low = json!({
+            "id": 127, "title": "Song Five", "duration": 220, "trackNumber": 7,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "LOW"
+        });
+        let song = song_from_track(&low).unwrap();
+        assert_eq!(song.bit_rate, Some(96));
+        assert_eq!(song.bit_depth, Some(16));
+        assert_eq!(song.sampling_rate, Some(44_100));
+        assert_eq!(song.channel_count, Some(2));
+    }
+
+    #[test]
+    fn song_omits_bitrate_when_quality_unknown() {
+        // No quality metadata at all: the field is omitted from JSON.
+        let bare = json!({
+            "id": 123,
+            "title": "Song One",
+            "duration": 220,
+            "trackNumber": 3,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"}
+        });
+        let song = song_from_track(&bare).unwrap();
+        assert_eq!(song.bit_rate, None);
+        let json = serde_json::to_value(&song).unwrap();
+        assert!(json.get("bitRate").is_none());
+        assert!(json.get("bitDepth").is_none());
+        assert!(json.get("samplingRate").is_none());
+        assert!(json.get("channelCount").is_none());
+
+        // A known tier serializes as bitRate/bitDepth/samplingRate.
+        let lossless = json!({
+            "id": 124,
+            "title": "Song Two",
+            "duration": 220,
+            "trackNumber": 4,
+            "artists": [{"id": 9, "name": "Artist A"}],
+            "album": {"id": 456, "title": "Album One"},
+            "audioQuality": "LOSSLESS"
+        });
+        let song = song_from_track(&lossless).unwrap();
+        let json = serde_json::to_value(&song).unwrap();
+        assert_eq!(json["bitRate"], 1411);
+        assert_eq!(json["bitDepth"], 16);
+        assert_eq!(json["samplingRate"], 44100);
+        assert_eq!(json["channelCount"], 2);
     }
 
     #[test]

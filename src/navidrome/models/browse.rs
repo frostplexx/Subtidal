@@ -109,6 +109,14 @@ pub struct DirectoryChild {
     pub cover_art: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<u32>,
+    #[serde(rename = "bitRate", skip_serializing_if = "Option::is_none")]
+    pub bit_rate: Option<u32>,
+    #[serde(rename = "bitDepth", skip_serializing_if = "Option::is_none")]
+    pub bit_depth: Option<u32>,
+    #[serde(rename = "samplingRate", skip_serializing_if = "Option::is_none")]
+    pub sampling_rate: Option<u32>,
+    #[serde(rename = "channelCount", skip_serializing_if = "Option::is_none")]
+    pub channel_count: Option<u32>,
     #[serde(rename = "discNumber", skip_serializing_if = "Option::is_none")]
     pub disc_number: Option<u32>,
     #[serde(rename = "albumId", skip_serializing_if = "Option::is_none")]
@@ -153,6 +161,10 @@ impl From<Child> for DirectoryChild {
             explicit_status: s.explicit_status,
             cover_art: s.cover_art,
             duration: Some(s.duration),
+            bit_rate: s.bit_rate,
+            bit_depth: s.bit_depth,
+            sampling_rate: s.sampling_rate,
+            channel_count: s.channel_count,
             disc_number: s.disc_number,
             album_id: Some(s.album_id),
             artist_id: Some(s.artist_id),
