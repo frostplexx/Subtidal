@@ -2,6 +2,7 @@
 // Single-user server, in memory; both are per-user by construction. All
 // functions take the wall clock as a parameter, so tests run without a
 // chrono dependency or timing flakiness.
+use crate::navidrome::models::Child;
 use chrono::{DateTime, SecondsFormat};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -17,6 +18,15 @@ pub struct PlayQueue {
     pub changed_ms: i64,
 }
 
+// The queue as served: the raw id list it was built from, plus the
+// resolved song detail. Rebuilt when the raw id list changes, so a
+// repeated poll never re-fetches Tidal.
+#[derive(Clone)]
+pub struct ResolvedQueue {
+    pub for_ids: Vec<u64>,
+    pub entries: Vec<Child>,
+}
+
 // One bookmark: a position inside a track.
 #[derive(Clone, Debug)]
 pub struct Bookmark {
@@ -30,6 +40,11 @@ pub struct Bookmark {
 
 fn queue_slot() -> &'static Mutex<Option<PlayQueue>> {
     static SLOT: OnceLock<Mutex<Option<PlayQueue>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn resolved_slot() -> &'static Mutex<Option<ResolvedQueue>> {
+    static SLOT: OnceLock<Mutex<Option<ResolvedQueue>>> = OnceLock::new();
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
@@ -51,6 +66,16 @@ pub fn save_queue(state: PlayQueue) {
 // The saved queue, if any.
 pub fn queue() -> Option<PlayQueue> {
     queue_slot().lock().unwrap().clone()
+}
+
+// Replace the resolved queue. A cleared store resolves to None.
+pub fn save_resolved(state: Option<ResolvedQueue>) {
+    *resolved_slot().lock().unwrap() = state;
+}
+
+// The resolved queue, if any.
+pub fn resolved() -> Option<ResolvedQueue> {
+    resolved_slot().lock().unwrap().clone()
 }
 
 // Upsert a bookmark; an update keeps the original created time.
@@ -87,6 +112,7 @@ pub fn bookmarks() -> Vec<Bookmark> {
 #[cfg(test)]
 pub fn reset() {
     *queue_slot().lock().unwrap() = None;
+    *resolved_slot().lock().unwrap() = None;
     bookmark_map().lock().unwrap().clear();
 }
 

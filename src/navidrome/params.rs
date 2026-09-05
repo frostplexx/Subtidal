@@ -122,9 +122,12 @@ impl<'de> Deserialize<'de> for QueryParams {
     }
 }
 
-// Assign one pair to the matching field. Unknown params are ignored, so
-// new client fields cannot break the server. Numeric fields reject
-// non-numeric values, mirroring serde's derived behavior.
+// Milliseconds may arrive as a float: Feishin multiplies the audio
+// element's currentTime (a double) by 1000, which is only sometimes an
+// integral value. Parse as f64 and round to the nearest millisecond.
+fn parse_ms(s: &str) -> Option<u64> {
+    s.parse::<f64>().ok().map(|f| f.round() as u64)
+}
 fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Result<(), E> {
     match k {
         "u" => q.u = Some(v),
@@ -162,7 +165,9 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "enhanced" => q.enhanced = Some(v.parse().map_err(|_| E::custom("invalid enhanced"))?),
         "mediaId" => q.media_id = Some(v),
         "mediaType" => q.media_type = Some(v),
-        "positionMs" => q.position_ms = Some(v.parse().map_err(|_| E::custom("invalid positionMs"))?),
+        "positionMs" => q.position_ms = Some(
+            parse_ms(&v).ok_or_else(|| E::custom("invalid positionMs"))?,
+        ),
         "state" => q.state = Some(v),
         "playbackRate" => q.playback_rate = Some(v.parse().map_err(|_| E::custom("invalid playbackRate"))?),
         "ignoreScrobble" => q.ignore_scrobble = Some(v.parse().map_err(|_| E::custom("invalid ignoreScrobble"))?),
@@ -180,11 +185,15 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "currentIndex" => {
             q.current_index = Some(v.parse().map_err(|_| E::custom("invalid currentIndex"))?)
         }
-        "position" => q.position = Some(v.parse().map_err(|_| E::custom("invalid position"))?),
+        "position" => q.position = Some(parse_ms(&v).ok_or_else(|| E::custom("invalid position"))?),
         _ => {}
     }
     Ok(())
 }
+
+// Assign one pair to the matching field. Unknown params are ignored, so
+// new client fields cannot break the server. Numeric fields reject
+// non-numeric values, mirroring serde's derived behavior.
 
 impl QueryParams {
     // Merge the URL query string and a form-encoded body, then parse.
@@ -242,6 +251,19 @@ mod tests {
     fn rejects_type_mismatch() {
         // size is u32; a non-numeric value must fail to parse.
         assert!(parse("size=abc", b"").is_err());
+    }
+
+    #[test]
+    fn rounds_fractional_position() {
+        // Feishin multiplies the audio currentTime (a f64) by 1000, so
+        // position can carry a fractional part. It must round, not reject.
+        let p = parse("position=12345.6000001", b"").unwrap();
+        assert_eq!(p.position, Some(12346));
+        let p = parse("position=12345.4", b"").unwrap();
+        assert_eq!(p.position, Some(12345));
+        let p = parse("positionMs=123.9", b"").unwrap();
+        assert_eq!(p.position_ms, Some(124));
+        assert!(parse("position=abc", b"").is_err());
     }
 
     #[test]

@@ -5,7 +5,8 @@ use serde::Serialize;
 // The OpenSubsonic schema marks contentType, suffix, size, path, created
 // and isVideo as required; Feishin's song normalizer dereferences
 // contentType directly, so omitting it crashes the album view.
-#[derive(Serialize)]
+// Clone backs the play queue resolution cache (see playqueue.rs).
+#[derive(Serialize, Clone)]
 pub struct Child {
     pub id: String,
     #[serde(rename = "parent")]
@@ -81,7 +82,7 @@ pub struct GenreItem {
 }
 
 // OpenSubsonic artist reference: {id, name}.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ArtistRef {
     pub id: String,
     pub name: String,
@@ -90,7 +91,7 @@ pub struct ArtistRef {
 // OpenSubsonic ReplayGain: track gain in dB, track peak a positive
 // amplitude. Tidal supplies both on the track object; album gain lives on
 // playbackinfo only, so it is not sent. Empty fields are omitted.
-#[derive(Serialize, Default)]
+#[derive(Serialize, Default, Clone)]
 pub struct ReplayGain {
     #[serde(rename = "trackGain", skip_serializing_if = "Option::is_none")]
     pub track_gain: Option<f64>,
