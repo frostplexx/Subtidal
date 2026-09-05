@@ -21,6 +21,12 @@ fn lastfm_auth_flag() -> bool {
     std::env::args().skip(1).any(|a| a == "--lastfm-auth")
 }
 
+// `subtidal --version`: print the version and exit. Anything else would
+// fall through to load_settings and start a server on the default port.
+fn version_flag() -> bool {
+    std::env::args().skip(1).any(|a| a == "--version" || a == "-V")
+}
+
 fn print_startup(s: &Settings) {
     println!("Subtidal v{}", env!("CARGO_PKG_VERSION"));
     println!();
@@ -53,6 +59,13 @@ fn labels_str(l: &LabelsConfig) -> String {
 
 #[tokio::main]
 async fn main() {
+    // --version/-V print and exit before settings load, so the flag
+    // cannot start a server on the default port by accident.
+    if version_flag() {
+        println!("Subtidal v{}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     let settings = load_settings();
 
     print_startup(&settings);
