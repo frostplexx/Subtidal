@@ -368,19 +368,6 @@ pub const SEGMENT_CONCURRENCY: usize = 16;
 const HEAD_CONCURRENCY: usize = 48;
 
 impl TidalClient {
-    // Fetch an init segment plus its media segments and concatenate them
-    // into one fragmented-MP4 body.
-    //
-    // Only /download uses this. Streaming hands the client a playlist so
-    // the CDN serves the audio directly; a download cannot, because a
-    // playlist is not a file — saving one yields a few KB of text
-    // pointing at URLs that expire within the hour.
-    //
-    // Fetched with bounded concurrency: sequential would put a
-    // multi-second stall in front of every play, while unbounded would
-    // open one connection per segment, which is exactly the burst the
-    // stream limiter exists to prevent. `buffered` preserves order, so
-    // the concatenation stays correct regardless of completion order.
     // The byte length of every part, in order, via HEAD.
     //
     // This is what makes progressive serving possible: knowing the sizes
@@ -457,6 +444,16 @@ impl TidalClient {
         Ok(resp.bytes().await?)
     }
 
+    // Fetch an init segment plus its media segments and concatenate them
+    // into one fragmented-MP4 body, for a caller that must buffer the
+    // whole track. Used when the sizes could not be measured cheaply, so
+    // progressive serving is off the table.
+    //
+    // Fetched with bounded concurrency: sequential would put a
+    // multi-second stall in front of every play, while unbounded would
+    // open one connection per segment, which is exactly the burst the
+    // stream limiter exists to prevent. `buffered` preserves order, so
+    // the concatenation stays correct regardless of completion order.
     pub(crate) async fn fetch_segments(
         &self,
         init: String,
@@ -607,12 +604,11 @@ fn attr(attrs: &str, name: &str) -> Option<String> {
 // segment; five figures is already far past anything real.
 const MAX_SEGMENTS: usize = 50_000;
 
-// Convert a Tidal DASH manifest into an HLS media playlist.
+// Convert a Tidal DASH manifest into the list of segments it names.
 //
-// The point of the conversion is that it stays a *pointer*: the segment
-// URLs are Tidal's own CDN URLs with their signed tokens intact, so the
-// client fetches audio directly and no bytes pass through this server —
-// the same property the whole-file redirect has.
+// The segment URLs are Tidal's own CDN URLs with their signed tokens
+// intact; the server fetches them here and rewraps the bytes, so the
+// tokens are never exposed to the client.
 //
 // Only the first Representation is read. Tidal sends exactly one for
 // audio (`adaptive=false` behaviour); a second would be an alternative

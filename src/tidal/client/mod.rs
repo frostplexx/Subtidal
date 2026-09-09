@@ -53,6 +53,11 @@ pub enum Error {
     Tidal(u16, String),
     Json(serde_json::Error),
     Auth(String),
+    // A CDN asset whose bytes contradict its advertised size or shape
+    // (a segment shorter than its header claimed). This is not an auth
+    // failure, and no retry can fix it — the manifest lies, so the
+    // whole track is suspect.
+    Malformed(String),
     RateLimited,
     NotLoggedIn,
 }
@@ -73,6 +78,7 @@ impl std::fmt::Display for Error {
             Error::Tidal(code, body) => write!(f, "tidal api error {code}: {body}"),
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Auth(msg) => write!(f, "auth error: {msg}"),
+            Error::Malformed(msg) => write!(f, "malformed asset: {msg}"),
             Error::RateLimited => write!(f, "stream limit exceeded"),
             Error::NotLoggedIn => {
                 write!(f, "not logged in. run `subtidal login` first")

@@ -11,7 +11,7 @@ serde_urlencoded = "0.7"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 md-5 = "0.11"
 config = "0.15.25"
-moka = { version = "0.12.16", features = ["future"] }
+moka = { version = "0.12.16", features = ["future", "sync"] }
 reqwest = { version = "0.13", features = ["json", "form", "query"] }
 base64 = "0.23"
 regex = "1.13.1"
