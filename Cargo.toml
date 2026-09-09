@@ -15,7 +15,7 @@ moka = { version = "0.12.16", features = ["future", "sync"] }
 reqwest = { version = "0.13", features = ["json", "form", "query"] }
 base64 = "0.23"
 regex = "1.13.1"
-sha2 = "0.10"
+sha2 = "0.11"
 serde_json = "1.0.151"
 tracing = "0.1"
 rand = { version = "0.10", features = ["thread_rng"] }
