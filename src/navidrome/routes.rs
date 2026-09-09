@@ -22,8 +22,9 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
             .boxed()
             .or(auth::require_auth()
                 .and(private())
-                .and_then(|q: QueryParams, raw: String, body: Bytes, _proto: Option<String>, _host: Option<String>, name: String| {
-                    dispatch(q, raw, name, body)
+                .and(warp::header::optional::<String>("range"))
+                .and_then(|q: QueryParams, raw: String, body: Bytes, _proto: Option<String>, _host: Option<String>, name: String, range: Option<String>| {
+                    dispatch(q, raw, name, body, range)
                 })
                 .boxed())
             .unify()
@@ -74,6 +75,8 @@ fn dispatch(
     raw: String,
     name: String,
     body: Bytes,
+    // Only the audio endpoints read this; every other arm ignores it.
+    range: Option<String>,
 ) -> super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> {
     let handler: super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> =
         match name.as_str() {
@@ -105,7 +108,7 @@ fn dispatch(
             "getLyrics" => Box::pin(handlers::get_lyrics(q).map_ok(|r| r.into_response())),
             "getLyricsBySongId" => Box::pin(handlers::get_lyrics_by_song_id(q).map_ok(|r| r.into_response())),
             "getRandomSongs" => Box::pin(handlers::get_random_songs(q).map_ok(|r| r.into_response())),
-            "stream" => Box::pin(handlers::stream(q).map_ok(|r| r)),
+            "stream" => Box::pin(handlers::stream(q, range).map_ok(|r| r)),
             "updateNowPlaying" => Box::pin(handlers::update_now_playing(q).map_ok(|r| r.into_response())),
             "getNowPlaying" => Box::pin(handlers::get_now_playing(q).map_ok(|r| r.into_response())),
             "reportPlayback" => Box::pin(handlers::report_playback(q).map_ok(|r| r.into_response())),
@@ -138,7 +141,7 @@ fn dispatch(
             "createInternetRadioStation" => Box::pin(handlers::create_internet_radio_station(q).map_ok(|r| r.into_response())),
             "updateInternetRadioStation" => Box::pin(handlers::update_internet_radio_station(q).map_ok(|r| r.into_response())),
             "deleteInternetRadioStation" => Box::pin(handlers::delete_internet_radio_station(q).map_ok(|r| r.into_response())),
-            "download" => Box::pin(handlers::download(q).map_ok(|r| r)),
+            "download" => Box::pin(handlers::download(q, range).map_ok(|r| r)),
             "getTranscodeDecision" => Box::pin(handlers::get_transcode_decision(q, body).map_ok(|r| r.into_response())),
             _ => return Box::pin(async move { Err(warp::reject::not_found()) }),
         };
@@ -303,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_endpoint_name_rejects() {
         let q = QueryParams::from_merged("").unwrap();
-        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new()).await.is_err());
+        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new(), None).await.is_err());
     }
 
     // A POST body over the 1 MiB cap must be rejected before it is read

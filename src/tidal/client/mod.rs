@@ -4,7 +4,7 @@
 // `impl TidalClient` block.
 //   auth:   https://auth.tidal.com/v1/oauth2
 //   api:    https://api.tidal.com/v1
-//   stream: GET /tracks/{id}/playbackinfopostpaywall
+//   stream: GET /tracks/{id}/playbackinfo (v1; BTS single-file manifest)
 use std::time::Duration;
 
 use moka::future::Cache;
@@ -25,7 +25,7 @@ mod jsonapi;mod playlists;
 mod playqueues;
 mod search;
 mod stream;
-pub use stream::HlsInfo;
+pub use stream::{Asset, SEGMENT_CONCURRENCY, StreamInfo};
 use stream::StreamLimiter;
 pub(crate) use playlists::ItemAddr;
 mod tracks;

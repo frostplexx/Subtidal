@@ -1,5 +1,5 @@
-// Track browsing and streaming: getSong, getRandomSongs, getSongsByGenre,
-// getSimilarSongs (v1 and v2), and stream.
+// Track browsing: getSong, getRandomSongs, getSongsByGenre, getSimilarSongs
+// (v1 and v2). Streaming lives in super::stream.
 use super::favorites::favorite_track_songs;
 use crate::navidrome::ids;
 use crate::navidrome::models::{
@@ -7,15 +7,11 @@ use crate::navidrome::models::{
     SimilarSongs2Response, SimilarSongsResponse, SongsByGenre, SongsByGenreResponse,
 };
 use crate::navidrome::params::QueryParams;
-use crate::tidal::client::HlsInfo;
 use rand::seq::SliceRandom;
-use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex};
-use std::time::{Duration, Instant};
-use super::{fail, ok, redirect};
+use std::collections::HashSet;
+use super::{fail, ok};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{song_from_track, year_from};
-use warp::Reply;
 
 // getSong: one track's detail. The id may be t<id> or a bare number.
 // Tidal track JSON carries no release date (not even on the embedded
@@ -240,207 +236,10 @@ pub async fn get_similar_songs(q: QueryParams) -> Result<warp::reply::Json, warp
     }
 }
 
-//TODO: turn tidal qualities into an enum.
-
-// Map Subsonic maxBitRate (kbps) to a Tidal quality tier. A client
-// requesting the "Dolby Atmos" transcode format (VeloSonic's
-// StreamFormat.EAC3) sends format=eac3 with no maxBitRate (its bitrate is
-// always ORIGINAL/unlimited for that format) — that must resolve to the
-// ATMOS tier specifically, not fall through to the generic non-empty-
-// format-means-LOSSLESS case below, or Tidal is never actually asked for
-// an Atmos-formatted manifest at all.
-fn tidal_quality(max_bit_rate: Option<u32>, format: Option<&str>) -> &'static str {
-    match max_bit_rate {
-        // 0 means "no limit" in Subsonic; only a positive bitrate caps.
-        Some(m) if (1..=64).contains(&m) => "LOW",
-        Some(m) if (65..=320).contains(&m) => "HIGH",
-        _ => match format {
-            Some("eac3") => "ATMOS",
-            Some("flac") => "LOSSLESS",
-            Some(f) if !f.is_empty() => "LOSSLESS",
-            _ => "LOSSLESS",
-        },
-    }
-}
-
-// The default tier when the client sends no bitrate and no format hint:
-// the tidal_quality setting, LOSSLESS when unset or unknown.
-fn default_tier() -> &'static str {
-    match crate::SETTINGS.get().map(|s| s.tidal_quality.as_str()) {
-        Some("ATMOS") => "ATMOS",
-        Some("HIGH") => "HIGH",
-        Some("LOW") => "LOW",
-        _ => "LOSSLESS",
-    }
-}
-
-// The cache prevents a replay from re-fetching the manifest: Arpeggi
-// re-requests the same URL after a failed track load, and a client
-// bursting a queue would otherwise call playbackinfo once per song per
-// retry. The CDN segment tokens inside carry short-lived signatures, so
-// a stale entry degrades to a fresh fetch.
-const HLS_TTL: Duration = Duration::from_secs(120);
-type HlsCache = HashMap<(u64, String), (Instant, HlsInfo)>;
-static HLS_CACHE: LazyLock<Mutex<HlsCache>> = LazyLock::new(|| Mutex::new(HlsCache::new()));
-
-fn cached_hls(track_id: u64, tier: &str) -> Option<HlsInfo> {
-    let mut map = HLS_CACHE.lock().unwrap();
-    map.retain(|_, (at, _)| at.elapsed() < HLS_TTL);
-    map.get(&(track_id, tier.to_string())).map(|(_, h)| h.clone())
-}
-
-fn store_hls(track_id: u64, tier: &str, hls: &HlsInfo) {
-    let mut map = HLS_CACHE.lock().unwrap();
-    map.retain(|_, (at, _)| at.elapsed() < HLS_TTL);
-    // A replay of the same song re-signs the URLs; a single slot keeps
-    // the cache small.
-    map.insert((track_id, tier.to_string()), (Instant::now(), hls.clone()));
-}
-
-// stream: resolve a track to its v2 manifest and serve Tidal's native
-// media playlist verbatim (v2 has no BTS single-file streams, so every
-// request is segmented). The playlist points at Tidal's own CDN
-// segments; no audio bytes cross this server. Ids are t<id> or bare
-// numbers.
-pub async fn stream(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
-    let Some(id) = q.id.0.first() else {
-        return Ok(fail(10, "Required parameter missing").into_response());
-    };
-    let Some(track_id) = ids::parse_track_id(id) else {
-        return Ok(fail(70, "Song not found").into_response());
-    };
-    let client = crate::tidal::client();
-    let tier = if q.max_bit_rate.is_none() && q.format.is_none() {
-        default_tier()
-    } else {
-        tidal_quality(q.max_bit_rate, q.format.as_deref())
-    };
-    // A replay of the same track within the TTL must not re-fetch the
-    // manifest; serve the playlist the last fetch stored instead.
-    if let Some(hls) = cached_hls(track_id, tier) {
-        tracing::debug!(
-            "stream {track_id} tier={tier} -> hls playlist (cached {} Hz, {}-bit {})",
-            hls.sample_rate, hls.bit_depth, hls.codec
-        );
-        return Ok(hls_reply(hls.media_playlist));
-    }
-    match client.stream_info(track_id, tier, "STREAM").await {
-        Ok(info) => {
-            // A direct url is not expected on v2 (uriScheme=DATA), but
-            // the parse defends against a manifest host change.
-            if let Some(url) = info.direct_url {
-                tracing::debug!("stream {track_id} tier={tier} -> redirect");
-                return Ok(redirect(url));
-            }
-            if let Some(hls) = &info.hls {
-                tracing::debug!(
-                    "stream {track_id} tier={tier} -> hls playlist ({} Hz, {}-bit {})",
-                    hls.sample_rate, hls.bit_depth, hls.codec
-                );
-                store_hls(track_id, tier, hls);
-                return Ok(hls_reply(hls.media_playlist.clone()));
-            }
-            tracing::debug!("manifest for track {track_id} carried no playable stream");
-        }
-        Err(e) => {
-            if matches!(e, Error::RateLimited) {
-                tracing::warn!("tidal stream limit hit for track {track_id}");
-                return Ok(fail(0, "Stream unavailable").into_response());
-            }
-            if e.is_unavailable_asset() {
-                tracing::warn!("track {track_id} not playable on tidal: {e}");
-                return Ok(fail(70, "Song not found").into_response());
-            }
-            tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-        }
-    }
-    Ok(fail(0, "Stream unavailable").into_response())
-}
-
-// download: a song's manifest served as an HLS playlist, like stream.
-// Subsonic allows several ids (a zip archive); the server builds no zip,
-// so a multi-id request fails. The manifest is requested in offline
-// mode, like the official app's downloader; a mode rejection falls back
-// to the streaming mode.
-pub async fn download(q: QueryParams) -> Result<warp::reply::Response, warp::Rejection> {
-    let ids = &q.id.0;
-    if ids.is_empty() {
-        return Ok(fail(10, "Required parameter missing").into_response());
-    }
-    if ids.len() > 1 {
-        return Ok(fail(0, "Multiple downloads not supported").into_response());
-    }
-    let Some(track_id) = ids::parse_track_id(&ids[0]) else {
-        return Ok(fail(70, "Song not found").into_response());
-    };
-    let client = crate::tidal::client();
-    let tier = if q.max_bit_rate.is_none() && q.format.is_none() {
-        default_tier()
-    } else {
-        tidal_quality(q.max_bit_rate, q.format.as_deref())
-    };
-    match client.download_info(track_id, tier).await {
-        Ok(info) => {
-            if let Some(url) = info.direct_url {
-                return Ok(redirect(url));
-            }
-            if let Some(hls) = &info.hls {
-                return Ok(hls_reply(hls.media_playlist.clone()));
-            }
-        }
-        Err(e) => {
-            if matches!(e, Error::RateLimited) {
-                tracing::warn!("tidal stream limit hit for track {track_id}");
-                return Ok(fail(0, "Stream unavailable").into_response());
-            }
-            if e.is_unavailable_asset() {
-                tracing::warn!("track {track_id} not playable on tidal: {e}");
-                return Ok(fail(70, "Song not found").into_response());
-            }
-            tracing::error!("tidal stream fetch failed for track {track_id}: {e}");
-        }
-    }
-    Ok(fail(0, "Stream unavailable").into_response())
-}
-
-fn hls_reply(playlist: String) -> warp::reply::Response {
-    let reply = warp::reply::with_header(playlist, "Content-Type", "application/vnd.apple.mpegurl");
-    warp::reply::with_header(reply, "Cache-Control", "no-store").into_response()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{pick_random, tidal_quality};
+    use super::pick_random;
     use crate::navidrome::models::{Child, GenreItem};
-
-    #[test]
-    fn bitrate_picks_tier() {
-        assert_eq!(tidal_quality(None, None), "LOSSLESS");
-        assert_eq!(tidal_quality(Some(0), None), "LOSSLESS");
-        assert_eq!(tidal_quality(Some(64), None), "LOW");
-        assert_eq!(tidal_quality(Some(128), None), "HIGH");
-        assert_eq!(tidal_quality(Some(320), None), "HIGH");
-        assert_eq!(tidal_quality(Some(999), None), "LOSSLESS");
-    }
-
-    #[test]
-    fn format_hint_only_matters_without_bitrate() {
-        assert_eq!(tidal_quality(None, Some("flac")), "LOSSLESS");
-        assert_eq!(tidal_quality(None, Some("mp3")), "LOSSLESS");
-        assert_eq!(tidal_quality(Some(128), Some("flac")), "HIGH");
-        assert_eq!(tidal_quality(Some(64), Some("mp3")), "LOW");
-    }
-
-    #[test]
-    fn eac3_format_hint_resolves_to_atmos_tier() {
-        // format=eac3 with no maxBitRate (VeloSonic's "Dolby Atmos" transcode
-        // option always sends ORIGINAL/unlimited bitrate for this format) must
-        // reach ATMOS specifically, not the generic non-empty-format-means-
-        // LOSSLESS fallback every other unrecognized format hits.
-        assert_eq!(tidal_quality(None, Some("eac3")), "ATMOS");
-        // A bitrate cap still wins over the eac3 hint, same as any other format.
-        assert_eq!(tidal_quality(Some(128), Some("eac3")), "HIGH");
-    }
 
     // A minimal Child for pick_random tests.
     fn song(id: &str, year: Option<u32>, genre: Option<&str>) -> Child {

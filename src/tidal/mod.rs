@@ -1,10 +1,12 @@
 pub mod client;
 pub mod embedded;
 pub mod mapping;
+pub mod quality;
 
 use std::sync::OnceLock;
 
 use client::TidalClient;
+pub use quality::Quality;
 
 static CLIENT: OnceLock<TidalClient> = OnceLock::new();
 

@@ -21,6 +21,7 @@ pub mod now_playing;
 pub mod playlist;
 pub mod playqueue;
 pub mod search;
+pub mod stream;
 pub mod system;
 pub mod tracks;
 pub mod transcode;
@@ -49,13 +50,13 @@ pub use now_playing::{get_now_playing, report_playback, update_now_playing};
 pub use playlist::{create_playlist, delete_playlist, get_genres, get_playlist, get_playlists, update_playlist};
 pub use playqueue::{get_play_queue, get_play_queue_by_index, save_play_queue, save_play_queue_by_index};
 pub use search::{search2, search3};
+pub use stream::{download, stream};
 pub use system::{
     get_license, get_music_folders, get_open_subsonic_extensions, get_scan_status, get_user,
     get_users, ping, start_scan,
 };
 pub use tracks::{
-    download, get_random_songs, get_similar_songs, get_similar_songs2, get_song,
-    get_songs_by_genre, stream,
+    get_random_songs, get_similar_songs, get_similar_songs2, get_song, get_songs_by_genre,
 };
 pub use transcode::get_transcode_decision;
 

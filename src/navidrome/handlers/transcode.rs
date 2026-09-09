@@ -9,35 +9,24 @@ use crate::navidrome::models::{
     StreamDetails, TranscodeDecision, TranscodeDecisionResponse,
 };
 use crate::navidrome::params::QueryParams;
+use crate::tidal::Quality;
 use super::{fail, ok};
 
 // The source stream as served for the track's quality tier. The numbers
 // are the tier's typical values, not per-track truth (the track JSON has
-// no sample rate or bitrate); the container/codec drive client decisions,
-// and the decision itself never depends on them.
-fn source_stream(quality: Option<&str>) -> StreamDetails {
-    match quality {
-        Some("ATMOS") => StreamDetails {
-            protocol: "http".into(),
-            container: "mp4".into(),
-            codec: "eac3".into(),
-            audio_channels: 6,
-            audio_bitrate: 768_000, 
-            audio_profile: "JOC".into(),
-            audio_samplerate: 48_000,
-            audio_bitdepth: 16,
-        },
-        Some("HIRES_LOSSLESS") => StreamDetails {
-            protocol: "http".into(),
-            container: "flac".into(),
-            codec: "flac".into(),
-            audio_channels: 2,
-            audio_bitrate: 3_000_000,
-            audio_profile: String::new(),
-            audio_samplerate: 96_000,
-            audio_bitdepth: 24,
-        },
-        Some("LOSSLESS") | None => StreamDetails {
+// no sample rate or bitrate); the container/codec drive client
+// decisions, and the decision itself never depends on them.
+//
+// This keys off `Quality::from_track`, the same derivation the stream
+// handler caps against, so an Atmos track is reported as 6-channel eac3
+// here and streamed as Atmos there. Reading `audioQuality` alone (as
+// this did before) could never reach the Atmos case: that field says
+// LOSSLESS on an Atmos asset, and only `mediaMetadata.tags` names it.
+fn source_stream(quality: Option<Quality>) -> StreamDetails {
+    // No quality metadata at all: the same lossy fallback as the Child
+    // content-type mapping.
+    let Some(quality) = quality else {
+        return StreamDetails {
             protocol: "http".into(),
             container: "flac".into(),
             codec: "flac".into(),
@@ -46,39 +35,27 @@ fn source_stream(quality: Option<&str>) -> StreamDetails {
             audio_profile: String::new(),
             audio_samplerate: 44_100,
             audio_bitdepth: 16,
+        };
+    };
+    let (container, codec) = match quality {
+        Quality::Atmos => ("mp4", "eac3"),
+        Quality::HiRes | Quality::Lossless => ("flac", "flac"),
+        Quality::High | Quality::Low => ("mp4", "aac"),
+    };
+    StreamDetails {
+        protocol: "http".into(),
+        container: container.into(),
+        codec: codec.into(),
+        audio_channels: quality.channel_count(),
+        // StreamDetails carries bits per second; Quality reports kbps.
+        audio_bitrate: quality.bitrate() * 1000,
+        audio_profile: if quality == Quality::Atmos {
+            "JOC".into()
+        } else {
+            String::new()
         },
-        Some("HIGH") => StreamDetails {
-            protocol: "http".into(),
-            container: "mp4".into(),
-            codec: "aac".into(),
-            audio_channels: 2,
-            audio_bitrate: 320_000,
-            audio_profile: String::new(),
-            audio_samplerate: 44_100,
-            audio_bitdepth: 16,
-        },
-        Some("LOW") => StreamDetails {
-            protocol: "http".into(),
-            container: "mp4".into(),
-            codec: "aac".into(),
-            audio_channels: 2,
-            audio_bitrate: 96_000,
-            audio_profile: String::new(),
-            audio_samplerate: 44_100,
-            audio_bitdepth: 16,
-        },
-        // Unknown tiers follow the same lossy fallback as the Child
-        // content-type mapping (audio/mp4) until proven otherwise.
-        Some(_) => StreamDetails {
-            protocol: "http".into(),
-            container: "mp4".into(),
-            codec: "aac".into(),
-            audio_channels: 2,
-            audio_bitrate: 320_000,
-            audio_profile: String::new(),
-            audio_samplerate: 44_100,
-            audio_bitdepth: 16,
-        },
+        audio_samplerate: quality.sample_rate(),
+        audio_bitdepth: quality.bit_depth(),
     }
 }
 
@@ -112,7 +89,7 @@ pub async fn get_transcode_decision(
         transcode_reason: vec![],
         error_reason: String::new(),
         transcode_params: String::new(),
-        source_stream: source_stream(detail["audioQuality"].as_str()),
+        source_stream: source_stream(Quality::from_track(&detail)),
         transcode_stream: None,
     };
     Ok(ok(TranscodeDecisionResponse {
@@ -126,18 +103,18 @@ mod tests {
 
     #[test]
     fn source_stream_follows_quality() {
-        let flac = source_stream(Some("LOSSLESS"));
+        let flac = source_stream(Some(Quality::Lossless));
         assert_eq!(flac.container, "flac");
         assert_eq!(flac.codec, "flac");
         assert_eq!(flac.audio_bitdepth, 16);
-        let hires = source_stream(Some("HIRES_LOSSLESS"));
+        let hires = source_stream(Some(Quality::HiRes));
         assert_eq!(hires.audio_samplerate, 96_000);
         assert_eq!(hires.audio_bitdepth, 24);
-        let high = source_stream(Some("HIGH"));
+        let high = source_stream(Some(Quality::High));
         assert_eq!(high.container, "mp4");
         assert_eq!(high.codec, "aac");
         assert_eq!(high.audio_bitrate, 320_000);
-        let low = source_stream(Some("LOW"));
+        let low = source_stream(Some(Quality::Low));
         assert_eq!(low.audio_bitrate, 96_000);
         let unknown = source_stream(None);
         assert_eq!(unknown.container, "flac");
@@ -151,7 +128,7 @@ mod tests {
             transcode_reason: vec![],
             error_reason: String::new(),
             transcode_params: String::new(),
-            source_stream: source_stream(Some("LOSSLESS")),
+            source_stream: source_stream(Some(Quality::Lossless)),
             transcode_stream: None,
         };
         let json = serde_json::to_value(TranscodeDecisionResponse {

@@ -18,7 +18,9 @@ pub struct Settings {
     #[serde(default)]
     pub tidal_client_secret: Option<String>,
     // Default stream quality when a client sends no bitrate or format
-    // hint: LOSSLESS | HIGH | LOW. The client's own hints still win.
+    // hint: LOW | HIGH | LOSSLESS | HI_RES_LOSSLESS | ATMOS. A client
+    // hint still wins, and every tier is capped by what the track
+    // actually is, so ATMOS here is a ceiling, not a demand.
     #[serde(default = "default_tidal_quality")]
     pub tidal_quality: String,
     // Blend the Tidal mixes (Daily Mix, My Mix, Discovery) into
