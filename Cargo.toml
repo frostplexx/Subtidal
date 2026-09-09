@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "process", "io-util", "io-std", "sync"] }
 warp = { version = "0.4.3", features = ["server", "test"] }
 serde_urlencoded = "0.7"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

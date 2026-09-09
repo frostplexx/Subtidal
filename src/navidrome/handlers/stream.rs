@@ -7,6 +7,7 @@ use crate::navidrome::ids;
 use crate::navidrome::params::QueryParams;
 use crate::tidal::Quality;
 use crate::tidal::client::{Asset, Error, SEGMENT_CONCURRENCY, StreamInfo};
+use crate::transcode::{self, Codec};
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -132,6 +133,21 @@ fn resolve_tier(q: &QueryParams) -> Quality {
     Quality::from_subsonic(q.max_bit_rate, q.format.as_deref()).unwrap_or_else(configured_tier)
 }
 
+// The transcode a client asked for, when the `format` hint names a lossy codec
+// we can emit. A lossy-format request means the client cannot play the lossless
+// source, so it wins over the normal tier mapping, which would serve the source
+// unwrapped.
+fn transcode_target(q: &QueryParams) -> Option<(Codec, u32)> {
+    if !crate::SETTINGS
+        .get()
+        .is_some_and(|s| s.transcode.enabled)
+    {
+        return None;
+    }
+    let codec = Codec::from_format(q.format.as_deref())?;
+    Some((codec, transcode::target_bitrate(codec, q.max_bit_rate)))
+}
+
 // The `tidal_quality` setting, LOSSLESS when unset. An unrecognized
 // value warns rather than silently serving a different tier.
 fn configured_tier() -> Quality {
@@ -157,12 +173,20 @@ pub async fn stream(
     let Some(track_id) = ids::parse_track_id(id) else {
         return Ok(fail(70, "Song not found").into_response());
     };
-    let tier = resolve_tier(&q);
+    let transcode = transcode_target(&q);
+    // A transcode needs a lossless segmented source, so ask for LOSSLESS
+    // regardless of the client's bitrate cap. An account only entitled to a
+    // lossy whole file falls back to serving that directly (see serve).
+    let tier = if transcode.is_some() {
+        Quality::Lossless
+    } else {
+        resolve_tier(&q)
+    };
     let info = match resolve(track_id, tier).await {
         Ok(info) => info,
         Err(e) => return Ok(stream_error(track_id, e)),
     };
-    Ok(serve(track_id, tier, info, range.as_deref(), None).await)
+    Ok(serve(track_id, tier, info, range.as_deref(), None, transcode).await)
 }
 
 // download: the same resolution, asked for in offline mode like the
@@ -196,7 +220,7 @@ pub async fn download(
         "m4a"
     };
     let filename = format!("{track_id}.{ext}");
-    Ok(serve(track_id, tier, info, range.as_deref(), Some(filename)).await)
+    Ok(serve(track_id, tier, info, range.as_deref(), Some(filename), None).await)
 }
 
 async fn resolve(track_id: u64, tier: Quality) -> Result<StreamInfo, Error> {
@@ -216,6 +240,7 @@ async fn serve(
     info: StreamInfo,
     range: Option<&str>,
     attachment: Option<String>,
+    transcode: Option<(Codec, u32)>,
 ) -> warp::reply::Response {
     if info.encrypted {
         // The CDN bytes are AES-128-CTR ciphertext keyed by the
@@ -242,6 +267,11 @@ async fn serve(
     match info.asset {
         Asset::File(url) => redirect(url),
         Asset::Segmented { init, segments } => {
+            // Only segmented FLAC gives ffmpeg a re-encodable stream; anything
+            // else falls through to the normal path, which serves it directly.
+            if let (Some((codec, bitrate)), true) = (transcode, info.codec.starts_with("flac")) {
+                return serve_transcode(track_id, codec, bitrate, init, segments).await;
+            }
             let content_type = if info.codec.starts_with("flac") {
                 "audio/flac"
             } else {
@@ -257,6 +287,67 @@ async fn serve(
             }
         }
     }
+}
+
+// Serve a segmented FLAC source transcoded to a streaming lossy codec.
+//
+// The byte length is unknown until the last frame is encoded, so the reply has
+// no Content-Length and advertises Accept-Ranges: none (HTTP/1.1 transfer-encodes
+// it as chunked). Seeking is not offered on transcoded streams.
+async fn serve_transcode(
+    track_id: u64,
+    codec: Codec,
+    bitrate: u32,
+    init: String,
+    segments: Vec<String>,
+) -> warp::reply::Response {
+    use futures_util::StreamExt as _;
+
+    // The native FLAC header that makes the fragmented source readable as one
+    // continuous FLAC stream on ffmpeg's stdin.
+    let init_bytes = match fetch_part(&init).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("track {track_id}: init segment failed for transcode: {e}");
+            return fail(0, "Stream unavailable").into_response();
+        }
+    };
+    let Some(header) = crate::flac::header(&init_bytes) else {
+        // Not MP4-wrapped FLAC after all, so there is no FLAC stream to feed
+        // ffmpeg.
+        tracing::warn!(
+            "track {track_id}: init segment is not MP4-wrapped FLAC; cannot transcode it"
+        );
+        return fail(0, "Stream unavailable").into_response();
+    };
+
+    // Segments are fetched lazily (and served from the segment cache when warm),
+    // so the first encoded bytes reach the client without a full download.
+    // Buffered rather than sequential: ffmpeg consumes one segment at a time, so
+    // without prefetch every CDN round trip would be an encoder stall, and the
+    // whole pipeline runs at the latency of one segment at a time.
+    let frames = futures_util::stream::iter(segments)
+        .map(move |url| async move {
+            let part = fetch_part(&url).await?;
+            Ok::<_, Error>(bytes::Bytes::from(crate::flac::frames(&part)))
+        })
+        .buffered(SEGMENT_CONCURRENCY);
+    // Boxed so it is Unpin, as the transcode driver requires.
+    let frames = Box::pin(frames);
+
+    tracing::debug!(
+        "stream {track_id} transcoding {:?} at {bitrate}kbps",
+        codec
+    );
+
+    let bin = crate::settings::ffmpeg_bin(crate::SETTINGS.get().expect("settings loaded"));
+    let body = transcode::transcode(bin, codec, bitrate, bytes::Bytes::from(header), frames);
+
+    let mut resp = warp::reply::stream(body).into_response();
+    let headers = resp.headers_mut();
+    headers.insert("Content-Type", codec.content_type().parse().unwrap());
+    headers.insert("Accept-Ranges", "none".parse().unwrap());
+    resp
 }
 
 // Serve a segmented FLAC track as one native FLAC stream, when it must
@@ -760,6 +851,54 @@ mod tests {
         assert_eq!(resolve_tier(&params(None, Some("mp3"))), Quality::Lossless);
         // maxBitRate=0 means "no limit" in Subsonic, not a cap.
         assert_eq!(resolve_tier(&params(Some(0), None)), Quality::Lossless);
+    }
+
+    #[test]
+    fn a_lossy_format_hint_requests_a_transcode() {
+        // Ensure transcoding is enabled for this test; SETTINGS is empty in
+        // the test binary, so seed it once.
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let _ = crate::SETTINGS.set(crate::settings::Settings {
+                username: "u".into(),
+                password: "p".into(),
+                port: 8000,
+                bind_addr: "0.0.0.0".into(),
+                tidal_client_id: None,
+                tidal_client_secret: None,
+                tidal_quality: "LOSSLESS".into(),
+                show_mixes: true,
+                word_synced_lyrics: true,
+                rate_limit: false,
+                labels: Default::default(),
+                lastfm: None,
+                listenbrainz: None,
+                transcode: Default::default(),
+            });
+        });
+
+        // format=aac/mp3/opus asks for a lossy target on a lossless source.
+        assert_eq!(
+            transcode_target(&params(None, Some("mp3"))),
+            Some((Codec::Mp3, 192))
+        );
+        assert_eq!(
+            transcode_target(&params(None, Some("aac"))),
+            Some((Codec::Aac, 192))
+        );
+        assert_eq!(
+            transcode_target(&params(None, Some("opus"))),
+            Some((Codec::Opus, 128))
+        );
+        // A bitrate cap narrows the target rate.
+        assert_eq!(
+            transcode_target(&params(Some(96), Some("mp3"))),
+            Some((Codec::Mp3, 96))
+        );
+        // A lossless hint is not a transcode.
+        assert_eq!(transcode_target(&params(None, Some("flac"))), None);
+        // No format is not a transcode.
+        assert_eq!(transcode_target(&params(None, None)), None);
     }
 
     // All parts are CDN segments, so every URL is Some. A None first

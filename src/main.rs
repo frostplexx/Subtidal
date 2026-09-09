@@ -3,6 +3,7 @@ mod navidrome;
 mod settings;
 mod state;
 mod tidal;
+mod transcode;
 
 use std::sync::OnceLock;
 
@@ -54,6 +55,7 @@ fn print_startup(s: &Settings) {
         ("word-synced lyrics".into(), on_off(s.word_synced_lyrics)),
         ("rate limit".into(), on_off(s.rate_limit)),
         ("content labels".into(), labels_str(&s.labels)),
+        ("transcode".into(), on_off(s.transcode.enabled)),
         ("lastfm".into(), on_off(s.lastfm.is_some())),
         ("listenbrainz".into(), on_off(s.listenbrainz.is_some())),
     ];
@@ -61,6 +63,22 @@ fn print_startup(s: &Settings) {
     for (k, v) in rows {
         println!("  {k:<w$}  {v}");
     }
+}
+
+// Transcoding defaults to on, so a host without ffmpeg would answer every
+// lossy-format request with a 200 whose body fails immediately. Turning it off
+// puts those requests back on the tier mapping, which serves Tidal's own lossy
+// asset and actually plays.
+async fn disable_transcode_without_ffmpeg(settings: &mut Settings) -> Option<String> {
+    if !settings.transcode.enabled {
+        return None;
+    }
+    let bin = settings::ffmpeg_bin(settings);
+    if transcode::ffmpeg_available(&bin).await {
+        return None;
+    }
+    settings.transcode.enabled = false;
+    Some(bin)
 }
 
 fn on_off(b: bool) -> String {
@@ -85,9 +103,16 @@ async fn main() {
         logout();
     }
 
-    let settings = load_settings();
+    let mut settings = load_settings();
+    let missing_ffmpeg = disable_transcode_without_ffmpeg(&mut settings).await;
 
     print_startup(&settings);
+    if let Some(bin) = missing_ffmpeg {
+        // Logging is not initialized this early, so this goes to stderr.
+        eprintln!();
+        eprintln!("  transcoding is off: could not run {bin:?}. Lossy-format");
+        eprintln!("  requests fall back to Tidal's own lossy streams.");
+    }
     println!();
 
     if let Some(cfg) = &settings.lastfm

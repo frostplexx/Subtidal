@@ -23,7 +23,7 @@ RUN touch src/main.rs && cargo build --release --locked
 # for the Tidal token file.
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
+ && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --create-home subtidal \
  && mkdir -p /data \

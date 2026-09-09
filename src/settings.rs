@@ -50,6 +50,9 @@ pub struct Settings {
     // default to on; set a value to false to stop sending that label.
     #[serde(default)]
     pub labels: LabelsConfig,
+    // Streaming transcode options (see TranscodeConfig below).
+    #[serde(default)]
+    pub transcode: TranscodeConfig,
 }
 
 // Last.fm scrobble credentials. The session key (sk) lives in the
@@ -85,6 +88,39 @@ impl Default for LabelsConfig {
             explicit: true,
         }
     }
+}
+
+// Transcode options ([transcode] section in the settings file).
+//
+// Transcoding re-encodes a lossless source with ffmpeg into a lossy
+// codec a client asked for (aac/mp3/opus). It only engages when a client
+// explicitly requests a lossy `format`, so turning it off does not change
+// how lossless streams are served. The toggle lets an operator refuse to
+// run ffmpeg (CPU cost); the binary path defaults to "ffmpeg" on PATH.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct TranscodeConfig {
+    pub enabled: bool,
+    pub ffmpeg_bin: Option<String>,
+}
+
+impl Default for TranscodeConfig {
+    fn default() -> Self {
+        TranscodeConfig {
+            enabled: true,
+            ffmpeg_bin: None,
+        }
+    }
+}
+
+// The ffmpeg binary to use for transcoding. A configured path wins over
+// PATH lookup.
+pub fn ffmpeg_bin(settings: &Settings) -> String {
+    settings
+        .transcode
+        .ffmpeg_bin
+        .clone()
+        .unwrap_or_else(|| "ffmpeg".into())
 }
 
 fn default_tidal_quality() -> String {
@@ -211,5 +247,22 @@ mod tests {
         );
         assert!(!s.labels.ai);
         assert!(!s.labels.explicit);
+    }
+
+    #[test]
+    fn transcode_defaults_to_enabled_with_ffmpeg_on_path() {
+        let s = parse("username = \"u\"\npassword = \"p\"\nport = 8000");
+        assert!(s.transcode.enabled);
+        assert_eq!(ffmpeg_bin(&s), "ffmpeg");
+    }
+
+    #[test]
+    fn transcode_can_be_disabled_and_bin_overridden() {
+        let s = parse(
+            "username = \"u\"\npassword = \"p\"\nport = 8000\n\
+             [transcode]\nenabled = false\nffmpeg_bin = \"/usr/local/bin/ffmpeg\"",
+        );
+        assert!(!s.transcode.enabled);
+        assert_eq!(ffmpeg_bin(&s), "/usr/local/bin/ffmpeg");
     }
 }

@@ -49,3 +49,15 @@ show_mixes = true
 #
 # [listenbrainz]
 # token = "..."
+
+# Streaming transcode options. Transcoding re-encodes a lossless source
+# with ffmpeg into a lossy codec a client explicitly asks for (format=
+# aac/mp3/opus). It engages only for lossy-format requests on lossless
+# sources, so it never changes how lossless streams are served.
+#
+# [transcode]
+# # Set to false to refuse to run ffmpeg. Off keeps every request on the
+# # normal tier mapping (lossy formats fall back to Tidal's native AAC).
+# enabled = true
+# # The ffmpeg binary. Defaults to "ffmpeg" on PATH.
+# ffmpeg_bin = "ffmpeg"
