@@ -24,7 +24,6 @@ pub mod search;
 pub mod stream;
 pub mod system;
 pub mod tracks;
-pub mod transcode;
 
 use super::auth::{BodyReadFailed, BodyTooLarge, Unauthorized};
 use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse};
@@ -58,7 +57,6 @@ pub use system::{
 pub use tracks::{
     get_random_songs, get_similar_songs, get_similar_songs2, get_song, get_songs_by_genre,
 };
-pub use transcode::get_transcode_decision;
 
 // Response envelope helpers, shared by every handler.
 pub(crate) fn ok<T: serde::Serialize>(data: T) -> warp::reply::Json {

@@ -1,13 +1,12 @@
 // The audio quality tier, the single vocabulary shared by the metadata
-// mapping (what a track *is*), the stream handler (what to ask Tidal
-// for) and the transcode decision (what we tell the client we serve).
+// mapping (what a track *is*) and the stream handler (what to ask Tidal
+// for).
 //
-// Before this module each of those three kept its own tier strings and
-// they disagreed: the stream path spelled hi-res "HI_RES", the
-// transcode path spelled it "HIRES_LOSSLESS", and the mapping had a
-// private enum. Tiers now only exist as this type; the strings appear
-// once each, at the edges (Tidal's `audioquality` param, the settings
-// file, Subsonic's format hints).
+// Before this module each of those two kept its own tier strings and
+// they disagreed: the stream path spelled hi-res "HI_RES", and the
+// mapping had a private enum. Tiers now only exist as this type; the
+// strings appear once each, at the edges (Tidal's `audioquality` param,
+// the settings file, Subsonic's format hints).
 use serde_json::Value;
 
 // Ordered worst to best. The order is the capping rule: a request is
@@ -262,8 +261,8 @@ mod tests {
             Quality::from_setting("HI_RES_LOSSLESS"),
             Some(Quality::HiRes)
         );
-        // The transcode module's older spelling stays accepted so an
-        // existing settings file keeps working.
+        // The HIRES_LOSSLESS spelling stays accepted so an existing
+        // settings file keeps working.
         assert_eq!(Quality::from_setting("HIRES_LOSSLESS"), Some(Quality::HiRes));
         assert_eq!(Quality::from_setting("LOSSLESS"), Some(Quality::Lossless));
         assert_eq!(Quality::from_setting("nonsense"), None);

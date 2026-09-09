@@ -23,8 +23,8 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
             .or(auth::require_auth()
                 .and(private())
                 .and(warp::header::optional::<String>("range"))
-                .and_then(|q: QueryParams, raw: String, body: Bytes, _proto: Option<String>, _host: Option<String>, name: String, range: Option<String>| {
-                    dispatch(q, raw, name, body, range)
+                .and_then(|q: QueryParams, raw: String, _body: Bytes, _proto: Option<String>, _host: Option<String>, name: String, range: Option<String>| {
+                    dispatch(q, raw, name, range)
                 })
                 .boxed())
             .unify()
@@ -45,7 +45,8 @@ fn public() -> impl Filter<Extract = (warp::reply::Response,), Error = warp::Rej
 // /rest/<name>.view; dispatch() looks the name up and calls the handler.
 // Auth runs before this matches, so unknown paths with bad credentials
 // get a 40 instead of a 404. The request body is read once, inside
-// require_auth, and passed to dispatch as raw bytes.
+// require_auth, where its form params merge into the query string;
+// dispatch never sees the raw bytes.
 fn private() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clone {
     warp::path("rest")
         .and(warp::path::param::<String>())
@@ -74,7 +75,6 @@ fn dispatch(
     q: QueryParams,
     raw: String,
     name: String,
-    body: Bytes,
     // Only the audio endpoints read this; every other arm ignores it.
     range: Option<String>,
 ) -> super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> {
@@ -142,7 +142,6 @@ fn dispatch(
             "updateInternetRadioStation" => Box::pin(handlers::update_internet_radio_station(q).map_ok(|r| r.into_response())),
             "deleteInternetRadioStation" => Box::pin(handlers::delete_internet_radio_station(q).map_ok(|r| r.into_response())),
             "download" => Box::pin(handlers::download(q, range).map_ok(|r| r)),
-            "getTranscodeDecision" => Box::pin(handlers::get_transcode_decision(q, body).map_ok(|r| r.into_response())),
             _ => return Box::pin(async move { Err(warp::reject::not_found()) }),
         };
     Box::pin(async move {
@@ -259,7 +258,6 @@ mod tests {
             "/rest/updateInternetRadioStation",
             "/rest/deleteInternetRadioStation",
             "/rest/download",
-            "/rest/getTranscodeDecision",
         ] {
             let reply = warp::test::request()
                 .method("GET")
@@ -306,7 +304,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_endpoint_name_rejects() {
         let q = QueryParams::from_merged("").unwrap();
-        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new(), None).await.is_err());
+        assert!(dispatch(q, String::new(), "bogus".into(), None).await.is_err());
     }
 
     // A POST body over the 1 MiB cap must be rejected before it is read
