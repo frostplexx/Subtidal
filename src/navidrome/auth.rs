@@ -78,6 +78,13 @@ fn check_password(p: &str, password: &str) -> bool {
 pub struct Unauthorized;
 impl Reject for Unauthorized {}
 
+// Rejection for a request made before any Tidal session exists. Every
+// endpoint depends on one, so the whole API answers with the same
+// pointer at /setup rather than each handler inventing its own failure.
+#[derive(Debug)]
+pub struct NoSession;
+impl Reject for NoSession {}
+
 // Rejection for a request body that could not be streamed to completion.
 #[derive(Debug)]
 pub struct BodyReadFailed;

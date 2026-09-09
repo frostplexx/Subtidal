@@ -1,22 +1,22 @@
-// Auth: device-code login, token persistence (shared credential file),
-// refresh, and the cached access-token accessor used by every request.
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+// Auth: Authorization Code + PKCE login, token persistence (shared
+// credential file), refresh, and the cached access-token accessor used by
+// every request.
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use qrcode::{QrCode, render::unicode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use super::{API_URL, AUTH_URL, Error, SCOPE};
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeviceAuth {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    expires_in: u64,
-    interval: u64,
-}
+// Tidal's hosted authorize page, and the redirect it sends the browser to
+// on success. The redirect target is a real Tidal URL that does not
+// render anything useful — it exists only to carry `?code=` back, which
+// is what makes the flow work without a local callback server.
+const AUTHORIZE_URL: &str = "https://login.tidal.com/authorize";
+const PKCE_REDIRECT_URI: &str = "https://tidal.com/android/login/auth";
 
 #[derive(Deserialize)]
 struct AuthTokens {
@@ -34,13 +34,27 @@ struct Session {
     country_code: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Tokens {
     pub(crate) access_token: String,
     pub(crate) refresh_token: String,
     pub(crate) expires_at: u64, // unix seconds
     pub(crate) user_id: Option<u64>,
     pub(crate) country_code: Option<String>,
+}
+
+// What a completed login reports back. Tokens itself stays private to
+// this module; callers outside only ever need the identity it resolved.
+pub struct LoginResult {
+    pub user_id: Option<u64>,
+    pub country_code: Option<String>,
+}
+
+// A login started but not yet redeemed: the PKCE verifier and unique
+// key the authorize URL was built with.
+pub(super) struct PendingLogin {
+    verifier: String,
+    unique_key: String,
 }
 
 impl Tokens {
@@ -94,116 +108,173 @@ impl super::TidalClient {
         }
     }
 
-    // Device-code login. Prints the code for the CLI, polls until the user
-    // authorizes, then persists the tokens to the shared credential file.
-    pub async fn login(&self) -> Result<(), Error> {
+    // A login that has been started: the PKCE verifier and unique key
+    // that the authorize URL was built with. Both are needed to redeem
+    // the code, and both must match the URL the user actually opened.
+    pub async fn begin_login(&self) -> Result<String, Error> {
         if self.client_id.starts_with("REPLACE_") {
             return Err(Error::Auth(
                 "Tidal credentials are not configured. Run:\n  \
                  python3 scripts/gen_embedded.py CLIENT_ID CLIENT_SECRET > src/tidal/embedded.rs\n\
-                 then rebuild"
+                 then rebuild, or set tidal_client_id / tidal_client_secret in settings.toml"
                     .into(),
             ));
         }
 
+        let (verifier, challenge) = pkce_pair();
+        let unique_key = client_unique_key();
+        let query = serde_urlencoded::to_string([
+            ("response_type", "code"),
+            ("redirect_uri", PKCE_REDIRECT_URI),
+            ("client_id", self.client_id.as_str()),
+            ("lang", "EN"),
+            ("appMode", "android"),
+            ("client_unique_key", unique_key.as_str()),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+            ("restrict_signup", "true"),
+        ])
+        .map_err(|e| Error::Auth(format!("could not build authorize url: {e}")))?;
+
+        *self.pending_login.lock().await = Some(PendingLogin {
+            verifier,
+            unique_key,
+        });
+        Ok(format!("{AUTHORIZE_URL}?{query}"))
+    }
+
+    // Redeem what the user pasted back: either the full redirect URL or
+    // the bare code. Consumes the pending login, so a failed attempt
+    // needs a fresh authorize URL — the code is single-use anyway.
+    pub async fn complete_login(&self, pasted: &str) -> Result<LoginResult, Error> {
+        let pending = self.pending_login.lock().await.take().ok_or_else(|| {
+            Error::Auth("no login in progress. start the login again.".into())
+        })?;
+        let code = authorization_code(pasted).ok_or_else(|| {
+            Error::Auth(
+                "no authorization code found. Paste the whole redirect URL \
+                 (it contains `?code=...`), or just the code itself."
+                    .into(),
+            )
+        })?;
+
         let resp = self
             .http
-            .post(format!("{AUTH_URL}/device_authorization"))
-            .form(&self.auth_form(vec![("scope", SCOPE)]))
+            .post(format!("{AUTH_URL}/token"))
+            .form(&self.auth_form(vec![
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("code_verifier", &pending.verifier),
+                ("redirect_uri", PKCE_REDIRECT_URI),
+                ("client_unique_key", &pending.unique_key),
+                ("scope", SCOPE),
+            ]))
             .send()
             .await?;
         let status = resp.status();
         let body = resp.text().await?;
         if !status.is_success() {
-            if body.contains("not a Limited Input Device client") {
+            // An already-redeemed or stale code is the common mistake and
+            // reads as a generic invalid_grant otherwise.
+            if body.contains("invalid_grant") {
                 return Err(Error::Auth(
-                    "this client_id does not support the device-code flow. \
-                     use credentials from the native Android app, not the web player"
+                    "the authorization code was rejected. Codes are single-use and \
+                     short-lived — run the login again and paste the new URL promptly."
                         .into(),
                 ));
             }
             return Err(Error::Tidal(status.as_u16(), body));
         }
-        // Tidal returns HTTP 200 with an error payload for some failures.
-        if let Ok(v) = serde_json::from_str::<Value>(&body) {
-            if v["sub_status"] == 1002 {
-                return Err(Error::Auth(
-                    "this client_id does not support the device-code flow. \
-                     use credentials from the native Android app, not the web player"
-                        .into(),
-                ));
-            }
-            if v.get("sub_status").is_some() || v.get("error").is_some() {
-                let msg = v["errorDescription"]
-                    .as_str()
-                    .or_else(|| v["error"].as_str())
-                    .unwrap_or("unknown error");
-                return Err(Error::Auth(format!("device authorization refused: {msg}")));
-            }
-        }
-        let auth: DeviceAuth = serde_json::from_str(&body)?;
 
-        println!(
-            "Open https://{}/{} in a browser or scan the QR code to log into Tidal.",
-            auth.verification_uri, auth.user_code
-        );
-        let code = QrCode::new(format!(
-            "https://{}/{}",
-            auth.verification_uri, auth.user_code
-        ))
-        .unwrap();
-        let image = code
-            .render::<unicode::Dense1x2>()
-            .dark_color(unicode::Dense1x2::Dark)
-            .light_color(unicode::Dense1x2::Light)
-            .build();
+        let auth_tokens: AuthTokens = serde_json::from_str(&body)?;
+        let session = self.session_with(&auth_tokens.access_token).await?;
+        let tokens = Tokens {
+            access_token: auth_tokens.access_token,
+            refresh_token: auth_tokens.refresh_token.unwrap_or_default(),
+            expires_at: unix_now() + auth_tokens.expires_in,
+            user_id: Some(session.user_id),
+            country_code: session.country_code,
+        };
+        self.store_tokens(&tokens)?;
+        // The server may already be running, so seed the in-memory cache
+        // too: handlers that hold the client must see the new session
+        // without a restart.
+        let result = LoginResult {
+            user_id: tokens.user_id,
+            country_code: tokens.country_code.clone(),
+        };
+        *self.tokens.lock().await = Some(tokens);
+        Ok(result)
+    }
 
-        println!("{}", image);
+    // The interactive CLI login: the same two halves with a terminal
+    // between them. Needs a TTY — headless installs use the /setup page.
+    pub async fn login(&self) -> Result<(), Error> {
+        let authorize_url = self.begin_login().await?;
 
-        let deadline = Instant::now() + Duration::from_secs(auth.expires_in);
-        loop {
-            if Instant::now() >= deadline {
-                return Err(Error::Auth("device authorization timed out".into()));
-            }
-            let resp = self
-                .http
-                .post(format!("{AUTH_URL}/token"))
-                .form(&self.auth_form(vec![
-                    ("device_code", &auth.device_code),
-                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                    ("scope", SCOPE),
-                ]))
-                .send()
-                .await?;
-            let status = resp.status();
-            let body = resp.text().await?;
-            if status.as_u16() == 400
-                && (body.contains("authorization_pending") || body.contains("slow_down"))
-            {
-                tokio::time::sleep(Duration::from_secs(auth.interval)).await;
-                continue;
-            }
-            if !status.is_success() {
-                return Err(Error::Tidal(status.as_u16(), body));
-            }
-
-            let auth_tokens: AuthTokens = serde_json::from_str(&body)?;
-            let session = self.session_with(&auth_tokens.access_token).await?;
-            let tokens = Tokens {
-                access_token: auth_tokens.access_token,
-                refresh_token: auth_tokens.refresh_token.unwrap_or_default(),
-                expires_at: unix_now() + auth_tokens.expires_in,
-                user_id: Some(session.user_id),
-                country_code: session.country_code,
-            };
-            self.store_tokens(&tokens)?;
+        println!("Open this URL in a browser or scan the QR code to log into Tidal:\n");
+        println!("{authorize_url}\n");
+        if let Ok(code) = QrCode::new(&authorize_url) {
             println!(
-                "Logged in.\nuser_id={} country={:?}",
-                tokens.user_id.unwrap_or(0),
-                tokens.country_code.unwrap_or("N/A".to_string())
+                "{}",
+                code.render::<unicode::Dense1x2>()
+                    .dark_color(unicode::Dense1x2::Dark)
+                    .light_color(unicode::Dense1x2::Light)
+                    .build()
             );
-            return Ok(());
         }
+        println!(
+            "After signing in the browser is redirected to a {PKCE_REDIRECT_URI} page\n\
+             that will not load. That is expected — the login already succeeded.\n\
+             Copy that page's full address from the address bar and paste it here."
+        );
+        print!("\nRedirect URL: ");
+        use std::io::{IsTerminal, Write};
+        std::io::stdout().flush().ok();
+
+        // Without a terminal there is nobody to answer the prompt: under
+        // systemd or a detached container stdin is /dev/null and reads
+        // EOF immediately. Say so instead of failing on an empty line.
+        if !std::io::stdin().is_terminal() {
+            return Err(Error::Auth(
+                "stdin is not a terminal, so the pasted URL cannot be read here. \
+                 Start the server and open /setup in a browser instead."
+                    .into(),
+            ));
+        }
+
+        // stdin is blocking; keep it off the async runtime's worker.
+        let line = tokio::task::spawn_blocking(|| {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf).map(|_| buf)
+        })
+        .await
+        .map_err(|e| Error::Auth(format!("could not read stdin: {e}")))?
+        .map_err(|e| Error::Auth(format!("could not read stdin: {e}")))?;
+
+        let tokens = self.complete_login(line.trim()).await?;
+        println!(
+            "Logged in.\nuser_id={} country={:?}",
+            tokens.user_id.unwrap_or(0),
+            tokens.country_code.clone().unwrap_or("N/A".to_string())
+        );
+        Ok(())
+    }
+
+    pub async fn session_raw(&self) -> Result<Value, Error> {
+        let token = self.access_token().await?;
+        let resp = self
+            .http
+            .get(format!("{API_URL}/sessions"))
+            .bearer_auth(token)
+            .send()
+            .await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Tidal(status.as_u16(), body));
+        }
+        Ok(serde_json::from_str(&body)?)
     }
 
     async fn session_with(&self, access_token: &str) -> Result<Session, Error> {
@@ -239,25 +310,21 @@ impl super::TidalClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    // Restore a session at startup: use a stored token, refresh an expired
-    // one silently, and only fall back to the full device-code login when
-    // no token exists or Tidal rejects the refresh. HTTP 400/401 means the
-    // stored refresh token was revoked or expired.
-    pub async fn ensure_session(&self) -> Result<(), Error> {
+
+    // The non-interactive half of ensure_session, used at server startup:
+    // a stored token is refreshed when stale, but a missing or revoked
+    // one yields NotLoggedIn rather than dropping into the terminal
+    // prompt. The server then comes up serving /setup.
+    pub async fn restore_session(&self) -> Result<(), Error> {
         let Some(tokens) = self.load_tokens()? else {
-            return self.login().await;
+            return Err(Error::NotLoggedIn);
         };
         if !tokens.expired(unix_now()) {
             return Ok(());
         }
         match self.refresh_and_store(&tokens).await {
             Ok(_) => Ok(()),
-            Err(Error::Tidal(400 | 401, _)) => {
-                println!(
-                    "The stored Tidal session expired and could not be refreshed; logging in again."
-                );
-                self.login().await
-            }
+            Err(Error::Tidal(400 | 401, _)) => Err(Error::NotLoggedIn),
             Err(e) => Err(e),
         }
     }
@@ -342,4 +409,119 @@ fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn b64url(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn pkce_pair() -> (String, String) {
+    let raw: [u8; 32] = rand::random();
+    let verifier = b64url(&raw);
+    // The challenge hashes the verifier's ASCII form, not the bytes it
+    // decodes to (RFC 7636 §4.2).
+    let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+fn client_unique_key() -> String {
+    let raw: [u8; 8] = rand::random();
+    raw.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn authorization_code(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+    let Some((_, query)) = input.split_once('?') else {
+        // Not a URL: treat it as the code itself, unless it is obviously
+        // a URL whose code is missing.
+        return (!input.starts_with("http")).then(|| input.to_string());
+    };
+    // Strip a fragment before parsing; some browsers append one.
+    let query = query.split('#').next().unwrap_or(query);
+    serde_urlencoded::from_str::<Vec<(String, String)>>(query)
+        .ok()?
+        .into_iter()
+        .find(|(k, v)| k == "code" && !v.is_empty())
+        .map(|(_, v)| v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pkce_challenge_is_the_sha256_of_the_verifier_string() {
+        let (verifier, challenge) = pkce_pair();
+        // Both are base64url without padding, so neither needs escaping
+        // in a query string.
+        for s in [&verifier, &challenge] {
+            assert!(!s.contains('='), "padding would need escaping: {s}");
+            assert!(!s.contains('+') && !s.contains('/'), "not url-safe: {s}");
+        }
+        assert_eq!(challenge, b64url(&Sha256::digest(verifier.as_bytes())));
+        // A fresh pair every call; a reused verifier would let one
+        // intercepted authorize URL be replayed.
+        assert_ne!(pkce_pair().0, verifier);
+    }
+
+    #[test]
+    fn rfc7636_reference_vector() {
+        // RFC 7636 appendix B: the known verifier/challenge pair.
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(
+            b64url(&Sha256::digest(verifier.as_bytes())),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn code_is_read_from_a_pasted_redirect_url() {
+        assert_eq!(
+            authorization_code("https://tidal.com/android/login/auth?code=abc123&state=x"),
+            Some("abc123".into())
+        );
+        // Order does not matter.
+        assert_eq!(
+            authorization_code("https://tidal.com/android/login/auth?state=x&code=abc123"),
+            Some("abc123".into())
+        );
+        // A trailing fragment must not end up inside the code.
+        assert_eq!(
+            authorization_code("https://tidal.com/android/login/auth?code=abc123#_=_"),
+            Some("abc123".into())
+        );
+        // Percent-encoding is decoded.
+        assert_eq!(
+            authorization_code("https://x/cb?code=a%2Bb"),
+            Some("a+b".into())
+        );
+    }
+
+    #[test]
+    fn a_bare_code_is_accepted() {
+        assert_eq!(authorization_code("abc123"), Some("abc123".into()));
+        assert_eq!(authorization_code("  abc123  "), Some("abc123".into()));
+    }
+
+    #[test]
+    fn junk_and_codeless_urls_are_rejected() {
+        assert_eq!(authorization_code(""), None);
+        assert_eq!(authorization_code("   "), None);
+        // A URL that carries no code must not be mistaken for a code.
+        assert_eq!(authorization_code("https://tidal.com/android/login/auth"), None);
+        assert_eq!(authorization_code("https://x/cb?error=access_denied"), None);
+        // An empty code value is not a code.
+        assert_eq!(authorization_code("https://x/cb?code="), None);
+    }
+
+    #[test]
+    fn unique_key_is_hex_and_fresh_per_login() {
+        let k = client_unique_key();
+        assert_eq!(k.len(), 16);
+        assert!(k.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(client_unique_key(), k);
+    }
 }

@@ -5,18 +5,19 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "process", "io-util", "io-std", "sync"] }
 warp = { version = "0.4.3", features = ["server", "test"] }
 serde_urlencoded = "0.7"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 md-5 = "0.11"
 config = "0.15.25"
-moka = { version = "0.12.16", features = ["future"] }
+moka = { version = "0.12.16", features = ["future", "sync"] }
 reqwest = { version = "0.13", features = ["json", "form", "query"] }
 base64 = "0.23"
+regex = "1.13.1"
+sha2 = "0.10"
 serde_json = "1.0.151"
 tracing = "0.1"
-regex = "1.13.1"
 rand = { version = "0.10", features = ["thread_rng"] }
 chrono = "0.4.45"
 bytes = "1.12"

@@ -1,10 +1,10 @@
 // Tidal API client: cached authenticated GETs plus per-entity methods.
-// Auth (device-code login, token refresh, credential file) lives in
+// Auth (Authorization Code + PKCE login, token refresh, credential file) lives in
 // auth.rs; each endpoint family gets its own module with an
 // `impl TidalClient` block.
 //   auth:   https://auth.tidal.com/v1/oauth2
 //   api:    https://api.tidal.com/v1
-//   stream: GET /tracks/{id}/playbackinfopostpaywall
+//   stream: GET /tracks/{id}/playbackinfopostpaywall (v1; BTS single-file manifest)
 use std::time::Duration;
 
 use moka::future::Cache;
@@ -25,7 +25,7 @@ mod jsonapi;mod playlists;
 mod playqueues;
 mod search;
 mod stream;
-pub use stream::HlsInfo;
+pub use stream::{Asset, SEGMENT_CONCURRENCY, StreamInfo};
 use stream::StreamLimiter;
 pub(crate) use playlists::ItemAddr;
 mod tracks;
@@ -53,6 +53,8 @@ pub enum Error {
     Tidal(u16, String),
     Json(serde_json::Error),
     Auth(String),
+    // A CDN asset whose bytes contradict its advertised size or shape (a segment shorter than its header claimed).  
+    Malformed(String),
     RateLimited,
     NotLoggedIn,
 }
@@ -73,9 +75,13 @@ impl std::fmt::Display for Error {
             Error::Tidal(code, body) => write!(f, "tidal api error {code}: {body}"),
             Error::Json(e) => write!(f, "json error: {e}"),
             Error::Auth(msg) => write!(f, "auth error: {msg}"),
+            Error::Malformed(msg) => write!(f, "malformed asset: {msg}"),
             Error::RateLimited => write!(f, "stream limit exceeded"),
             Error::NotLoggedIn => {
-                write!(f, "not logged in. run `subtidal login` first")
+                write!(
+                    f,
+                    "not logged in. run `subtidal login`, or open /setup on this server"
+                )
             }
         }
     }
@@ -115,6 +121,10 @@ pub struct TidalClient {
     client_id: String,
     client_secret: Option<String>,
     tokens: Mutex<Option<auth::Tokens>>,
+    // PKCE verifier for a login that has been started but not yet
+    // redeemed. The web login spans two requests, so the verifier cannot
+    // live on the stack the way the CLI prompt kept it.
+    pending_login: Mutex<Option<auth::PendingLogin>>,
     meta_cache: Cache<String, Value>,
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
@@ -149,6 +159,7 @@ impl TidalClient {
             client_id,
             client_secret,
             tokens: Mutex::new(None),
+            pending_login: Mutex::new(None),
             meta_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(6 * 3600))
                 .max_capacity(10_000)

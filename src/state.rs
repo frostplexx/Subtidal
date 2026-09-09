@@ -107,6 +107,27 @@ pub fn store_section<T: Serialize + ?Sized>(key: &str, value: &T) -> Result<(), 
     store_section_at(&file_path()?, key, value)
 }
 
+// Drop one section, preserving the others. Used by `logout` to discard a
+// stored session without touching the scrobbler credentials that share
+// the file.
+pub fn clear_section(key: &str) -> Result<(), String> {
+    let path = file_path()?;
+    let _g = file_lock();
+    let mut doc = read_doc(&path)?;
+    // Tokens written before the section layout live at the document
+    // root, so clearing only the section would leave them behind and the
+    // next start would silently restore the old session.
+    if key == TIDAL {
+        doc.remove("access_token");
+        doc.remove("refresh_token");
+        doc.remove("expires_at");
+        doc.remove("user_id");
+        doc.remove("country_code");
+    }
+    doc.remove(key);
+    write_doc(&path, &doc)
+}
+
 // The whole document as a map. Callers use it to migrate files that
 // predate the section layout (legacy Tidal tokens at the root).
 pub fn raw_doc() -> Result<Map<String, Value>, String> {

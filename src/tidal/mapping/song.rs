@@ -2,6 +2,7 @@
 use serde_json::Value;
 
 use crate::navidrome::ids;
+use crate::tidal::Quality;
 use crate::navidrome::models::{ArtistRef, Child, GenreItem, ReplayGain};
 
 use super::{
@@ -46,6 +47,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     // The same value as the OpenSubsonic genres array.
     let genres = genre.as_ref().map(|g| vec![GenreItem { name: g.clone() }]);
 
+    let tier = Quality::from_track(v);
     let (content_type, suffix) = format_from_track(v);
 
     Some(Child {
@@ -65,10 +67,10 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
             .and_then(|c| c.as_str())
             .map(|c| cover_url(c, 640)),
         duration: v["duration"].as_u64().unwrap_or(0) as u32,
-        bit_rate: bitrate_from_track(v),
-        bit_depth: bit_depth_from_track(v),
-        sampling_rate: sample_rate_from_track(v),
-        channel_count: channel_count_from_track(v),
+        bit_rate: tier.map(Quality::bitrate),
+        bit_depth: tier.map(Quality::bit_depth),
+        sampling_rate: tier.map(Quality::sample_rate),
+        channel_count: tier.map(Quality::channel_count),
         disc_number: v["volumeNumber"].as_u64().map(|n| n as u32),
         album_id: ids::encode_album(album_id),
         artist_id: ids::encode_artist(artist_id),
@@ -90,120 +92,20 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     })
 }
 
-// The track's own source format, from Tidal's `mediaMetadata.tags` (badge
-// tags: e.g. "DOLBY_ATMOS", "HIRES_LOSSLESS", "LOSSLESS") and/or
-// `audioQuality`. Both come free on a track object already fetched for
-// `song_from_track` (no extra Tidal call) *when present* — the v1-sourced
-// track objects backing most album/song listings (see
-// `TidalClient::album_items_parallel`) carry them, but a v2-flattened
-// jsonapi track (the `album_with_items` fallback path, and some search/
-// mix feeds) does not, so an absent field falls back to the same lossy
-// "m4a" guess this always reported before, rather than claiming a source
-// format Tidal never actually told us. This mirrors a real Subsonic
-// server reporting the file's own tags, not whatever a client's current
-// transcode setting happens to request — so a track tagged DOLBY_ATMOS
-// here still shows/streams as Atmos even for a client whose own format
-// setting is plain FLAC/Off; the requested transcode format is a
-// separate, later decision (see `tidal_quality` in the tracks handler).
 fn format_from_track(v: &Value) -> (&'static str, &'static str) {
-    match quality_from_track(v) {
-        Quality::Atmos => ("audio/eac3", "eac3"),
-        Quality::HiRes | Quality::Lossless => ("audio/flac", "flac"),
-        // HIGH, LOW and unknown tiers all fall back to the lossy
-        // container guess (see the function-level comment).
-        _ => ("audio/mp4", "m4a"),
+    match Quality::from_track(v) {
+        Some(q) => q.content_type_and_suffix(),
+        // No quality metadata at all: the lossy container guess.
+        None => ("audio/mp4", "m4a"),
     }
 }
 
-// The track's quality tier, derived from the same Tidal metadata as
-// `format_from_track`. ATMOS wins over HIRES_LOSSLESS wins over LOSSLESS
-// (each via `mediaMetadata.tags` or `audioQuality`); HIGH and LOW are the
-// lossy tiers. Unknown means the payload carried no quality metadata.
-fn quality_from_track(v: &Value) -> Quality {
-    let tags: &[Value] = v["mediaMetadata"]["tags"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or(&[]);
-    let has_tag = |t: &str| tags.iter().any(|x| x.as_str() == Some(t));
-    if has_tag("DOLBY_ATMOS") {
-        return Quality::Atmos;
-    }
-    if has_tag("HIRES_LOSSLESS") || v["audioQuality"].as_str() == Some("HIRES_LOSSLESS") {
-        return Quality::HiRes;
-    }
-    if has_tag("LOSSLESS") || v["audioQuality"].as_str() == Some("LOSSLESS") {
-        return Quality::Lossless;
-    }
-    match v["audioQuality"].as_str() {
-        Some("HIGH") => Quality::High,
-        Some("LOW") => Quality::Low,
-        _ => Quality::Unknown,
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Quality {
-    Atmos,
-    HiRes,
-    Lossless,
-    High,
-    Low,
-    Unknown,
-}
-
-// The source bitrate in kilobits per second for the track's quality tier.
-// The values are the tier's typical rates, not per-track truth (the track
-// JSON carries no sample rate or bitrate); Unknown yields None so an
-// absent quality field omits bitRate rather than guessing.
-fn bitrate_from_track(v: &Value) -> Option<u32> {
-    match quality_from_track(v) {
-        Quality::Atmos => Some(768),
-        Quality::HiRes => Some(3000),
-        Quality::Lossless => Some(1411),
-        Quality::High => Some(320),
-        Quality::Low => Some(96),
-        Quality::Unknown => None,
-    }
-}
-
-// The source bit depth for the track's quality tier, same caveat as
-// `bitrate_from_track`: tier-typical, not per-track truth.
-fn bit_depth_from_track(v: &Value) -> Option<u32> {
-    match quality_from_track(v) {
-        Quality::HiRes => Some(24),
-        Quality::Atmos | Quality::Lossless | Quality::High | Quality::Low => Some(16),
-        Quality::Unknown => None,
-    }
-}
-
-// The source sample rate in Hz for the track's quality tier, same caveat
-// as `bitrate_from_track`: tier-typical, not per-track truth.
-fn sample_rate_from_track(v: &Value) -> Option<u32> {
-    match quality_from_track(v) {
-        Quality::Atmos => Some(48_000),
-        Quality::HiRes => Some(96_000),
-        Quality::Lossless | Quality::High | Quality::Low => Some(44_100),
-        Quality::Unknown => None,
-    }
-}
-
-// The source channel count for the track's quality tier, same caveat as
-// `bitrate_from_track`: Atmos carries 6 channels, everything else stereo.
-fn channel_count_from_track(v: &Value) -> Option<u32> {
-    match quality_from_track(v) {
-        Quality::Atmos => Some(6),
-        Quality::HiRes | Quality::Lossless | Quality::High | Quality::Low => Some(2),
-        Quality::Unknown => None,
-    }
-}
-
-// Appends the AI marker when the track is AI-generated and the [labels]
-// setting enables it.
 fn mark_ai(title: &mut String, v: &Value, enabled: bool) {
     if enabled && v["ai"].as_bool() == Some(true) {
         title.push_str(" • AI");
     }
 }
+
 
 #[cfg(test)]
 mod tests {

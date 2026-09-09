@@ -30,7 +30,7 @@ Prerequisites: Docker with Compose support.
    - Choose a username and password
    - Optionally set up either last.fm or listenbrainz scrobbling
 4. Run `docker compose up -d`.
-5. The first start prints a Tidal device-code URL. Open `docker compose logs -f subtidal` and complete the login once. If you have last.fm set up, repeat this step for that service too.
+5. Authorize the services once: open `http://localhost:8000/setup` in a browser and sign in with the username and password from step 2. The page logs into Tidal first, then adds a Last.fm step when you configured scrobbling.
 6. Point a Subsonic client at `http://localhost:8000` and log in with the username and password chosen in step 2.
 
 The server reads `./settings.toml` through the Compose mount. Edit the file and run `docker compose restart`, or map any other file:
@@ -57,5 +57,5 @@ docker run -d -p 8000:8000 \
 Prerequisites: a recent Rust nightly toolchain (edition 2024). The Nix flake provides one via rustup, pinned in `rust-toolchain.toml`: `nix develop`.
 
 1. Run `just dev` or `cargo run`.
-2. Complete the device-code login on first start.
+2. Authorize on first start: run `cargo run login` in a terminal, or open `http://localhost:8000/setup` in a browser and follow the page. When you configured Last.fm, the page asks for it after Tidal.
 3. Connect with `admin` / `admin` from `settings.toml`.

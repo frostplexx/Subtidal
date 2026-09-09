@@ -1,3 +1,6 @@
+use std::sync::LazyLock;
+use std::time::Duration;
+
 use crate::navidrome::models::song::{Cue, CueLine};
 // Structured lyrics: getLyricsBySongId and the legacy getLyrics. Tidal
 // returns plain text plus an LRC subtitle track for the same song; the
@@ -31,6 +34,18 @@ const HOST: &str = "https://api.atomix.one/rl-api";
 // Recover the plaintext credential bytes by XOR of cipher and key.
 fn two_xor(enc: &[u8], key: &[u8]) -> String {
     enc.iter().zip(key).map(|(a, b)| (a ^ b) as char).collect()
+}
+
+static RADIANT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .timeout(RADIANT_TIMEOUT)
+        .build()
+        .unwrap_or_default()
+});
+const RADIANT_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn radiant_client() -> &'static reqwest::Client {
+    &RADIANT
 }
 
 async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> {
@@ -76,7 +91,7 @@ async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> 
         .join("&");
     let url = format!("{HOST}?{query}");
 
-    let resp = reqwest::Client::new()
+    let resp = radiant_client()
         .get(url)
         .header("P-Access-Token-Id", two_xor(&ENC_ID, &KEY_ID))
         .header("P-Access-Token", two_xor(&ENC_TOKEN, &KEY_TOKEN))

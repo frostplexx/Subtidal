@@ -2,6 +2,7 @@ use super::auth;
 use super::handlers;
 use super::log::{logged, named, with_params};
 use super::params::QueryParams;
+use super::setup::setup_routes;
 use bytes::Bytes;
 use futures_util::TryFutureExt;
 use warp::Filter;
@@ -22,8 +23,16 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
             .boxed()
             .or(auth::require_auth()
                 .and(private())
-                .and_then(|q: QueryParams, raw: String, body: Bytes, _proto: Option<String>, _host: Option<String>, name: String| {
-                    dispatch(q, raw, name, body)
+                .and(warp::header::optional::<String>("range"))
+                .and_then(|q: QueryParams, raw: String, _body: Bytes, _proto: Option<String>, _host: Option<String>, name: String, range: Option<String>| {
+                    // Every endpoint below needs a Tidal session. Without one,
+                    // answer once here instead of letting each handler fail
+                    // with its own opaque message.
+                    if !crate::tidal::logged_in() {
+                        return Box::pin(async move { Err(warp::reject::custom(auth::NoSession)) })
+                            as super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection>;
+                    }
+                    dispatch(q, raw, name, range)
                 })
                 .boxed())
             .unify()
@@ -38,13 +47,19 @@ fn public() -> impl Filter<Extract = (warp::reply::Response,), Error = warp::Rej
         .or(get_open_subsonic_extensions())
         .unify()
         .map(|r: warp::reply::WithHeader<warp::reply::Json>| r.into_response())
+        // The /setup wizard. It carries its own HTTP Basic check and
+        // closes (404s) once every configured service is authorized, so
+        // it is not an open endpoint despite living on the no-auth side.
+        .or(setup_routes())
+        .unify()
 }
 
 // Private endpoints. One generic matcher covers /rest/<name> and
 // /rest/<name>.view; dispatch() looks the name up and calls the handler.
 // Auth runs before this matches, so unknown paths with bad credentials
 // get a 40 instead of a 404. The request body is read once, inside
-// require_auth, and passed to dispatch as raw bytes.
+// require_auth, where its form params merge into the query string;
+// dispatch never sees the raw bytes.
 fn private() -> impl Filter<Extract = (String,), Error = warp::Rejection> + Clone {
     warp::path("rest")
         .and(warp::path::param::<String>())
@@ -73,7 +88,8 @@ fn dispatch(
     q: QueryParams,
     raw: String,
     name: String,
-    body: Bytes,
+    // Only the audio endpoints read this; every other arm ignores it.
+    range: Option<String>,
 ) -> super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> {
     let handler: super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection> =
         match name.as_str() {
@@ -105,7 +121,7 @@ fn dispatch(
             "getLyrics" => Box::pin(handlers::get_lyrics(q).map_ok(|r| r.into_response())),
             "getLyricsBySongId" => Box::pin(handlers::get_lyrics_by_song_id(q).map_ok(|r| r.into_response())),
             "getRandomSongs" => Box::pin(handlers::get_random_songs(q).map_ok(|r| r.into_response())),
-            "stream" => Box::pin(handlers::stream(q).map_ok(|r| r)),
+            "stream" => Box::pin(handlers::stream(q, range).map_ok(|r| r)),
             "updateNowPlaying" => Box::pin(handlers::update_now_playing(q).map_ok(|r| r.into_response())),
             "getNowPlaying" => Box::pin(handlers::get_now_playing(q).map_ok(|r| r.into_response())),
             "reportPlayback" => Box::pin(handlers::report_playback(q).map_ok(|r| r.into_response())),
@@ -138,8 +154,7 @@ fn dispatch(
             "createInternetRadioStation" => Box::pin(handlers::create_internet_radio_station(q).map_ok(|r| r.into_response())),
             "updateInternetRadioStation" => Box::pin(handlers::update_internet_radio_station(q).map_ok(|r| r.into_response())),
             "deleteInternetRadioStation" => Box::pin(handlers::delete_internet_radio_station(q).map_ok(|r| r.into_response())),
-            "download" => Box::pin(handlers::download(q).map_ok(|r| r)),
-            "getTranscodeDecision" => Box::pin(handlers::get_transcode_decision(q, body).map_ok(|r| r.into_response())),
+            "download" => Box::pin(handlers::download(q, range).map_ok(|r| r)),
             _ => return Box::pin(async move { Err(warp::reject::not_found()) }),
         };
     Box::pin(async move {
@@ -256,7 +271,6 @@ mod tests {
             "/rest/updateInternetRadioStation",
             "/rest/deleteInternetRadioStation",
             "/rest/download",
-            "/rest/getTranscodeDecision",
         ] {
             let reply = warp::test::request()
                 .method("GET")
@@ -303,7 +317,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_endpoint_name_rejects() {
         let q = QueryParams::from_merged("").unwrap();
-        assert!(dispatch(q, String::new(), "bogus".into(), Bytes::new()).await.is_err());
+        assert!(dispatch(q, String::new(), "bogus".into(), None).await.is_err());
     }
 
     // A POST body over the 1 MiB cap must be rejected before it is read

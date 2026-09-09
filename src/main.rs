@@ -1,7 +1,9 @@
+mod flac;
 mod navidrome;
 mod settings;
 mod state;
 mod tidal;
+mod transcode;
 
 use std::sync::OnceLock;
 
@@ -14,10 +16,32 @@ use crate::settings::LabelsConfig;
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-// `subtidal --version`: print the version and exit. Anything else would
-// fall through to load_settings and start a server on the default port.
 fn version_flag() -> bool {
     std::env::args().skip(1).any(|a| a == "--version" || a == "-V")
+}
+
+// The subcommand, if one was given. Unrecognized arguments are ignored
+// rather than rejected, preserving the previous behaviour for flags the
+// server does not know.
+fn subcommand() -> Option<String> {
+    std::env::args()
+        .nth(1)
+        .filter(|a| a == "login" || a == "logout")
+}
+
+fn logout() -> ! {
+    // Clear both credential sections: finishing a logout must not leave
+    // Last.fm authorized when Tidal is not.
+    match state::clear_section(state::TIDAL).and_then(|()| state::clear_section(state::LASTFM)) {
+        Ok(()) => {
+            println!("Logged out of Tidal and Last.fm. Run `subtidal login` to authorize again.");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("could not clear the stored session: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn print_startup(s: &Settings) {
@@ -33,6 +57,7 @@ fn print_startup(s: &Settings) {
         ("word-synced lyrics".into(), on_off(s.word_synced_lyrics)),
         ("rate limit".into(), on_off(s.rate_limit)),
         ("content labels".into(), labels_str(&s.labels)),
+        ("transcode".into(), on_off(s.transcode.enabled)),
         ("lastfm".into(), on_off(s.lastfm.is_some())),
         ("listenbrainz".into(), on_off(s.listenbrainz.is_some())),
     ];
@@ -40,6 +65,22 @@ fn print_startup(s: &Settings) {
     for (k, v) in rows {
         println!("  {k:<w$}  {v}");
     }
+}
+
+// Transcoding defaults to on, so a host without ffmpeg would answer every
+// lossy-format request with a 200 whose body fails immediately. Turning it off
+// puts those requests back on the tier mapping, which serves Tidal's own lossy
+// asset and actually plays.
+async fn disable_transcode_without_ffmpeg(settings: &mut Settings) -> Option<String> {
+    if !settings.transcode.enabled {
+        return None;
+    }
+    let bin = settings::ffmpeg_bin(settings);
+    if transcode::ffmpeg_available(&bin).await {
+        return None;
+    }
+    settings.transcode.enabled = false;
+    Some(bin)
 }
 
 fn on_off(b: bool) -> String {
@@ -59,34 +100,49 @@ async fn main() {
         std::process::exit(0);
     }
 
-    let settings = load_settings();
+    let cmd = subcommand();
+    if cmd.as_deref() == Some("logout") {
+        logout();
+    }
+
+    let mut settings = load_settings();
+    let missing_ffmpeg = disable_transcode_without_ffmpeg(&mut settings).await;
 
     print_startup(&settings);
+    if let Some(bin) = missing_ffmpeg {
+        // Logging is not initialized this early, so this goes to stderr.
+        eprintln!();
+        eprintln!("  transcoding is off: could not run {bin:?}. Lossy-format");
+        eprintln!("  requests fall back to Tidal's own lossy streams.");
+    }
     println!();
 
-    // Automatic first-time authorization: a [lastfm] block without a
-    // session key starts the flow on startup, which prints the authorize
-    // URL and QR code. On failure the server still starts without
-    // Last.fm scrobbling.
-    if let Some(cfg) = &settings.lastfm
-        && navidrome::scrobble::lastfm_session_key()
-            .ok()
-            .flatten()
-            .is_none()
-    {
-        println!("Last.fm is configured but not authorized; starting authorization.");
-        if let Err(e) = navidrome::scrobble::lastfm_auth_flow(&cfg.api_key, &cfg.api_secret).await {
-            eprintln!("lastfm authorization failed: {e}");
-            eprintln!("continuing without Last.fm scrobbling.");
+    let client = TidalClient::new(&settings);
+
+    if cmd.as_deref() == Some("login") {
+        match client.login().await {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("login failed: {e}");
+                std::process::exit(1);
+            }
         }
     }
-    let client = TidalClient::new(&settings);
-    // Restore the stored session silently (refresh-first); only a dead
-    // refresh token forces the interactive login.
-    if let Err(e) = client.ensure_session().await {
-        eprintln!("login failed: {e}");
-        std::process::exit(1);
-    }
+    // Restore the stored session silently (refresh-first). A missing or
+    // revoked token is not fatal: the server still comes up, serving the
+    // /setup page and nothing else. That is the only way to authorize a
+    // headless install, where there is no stdin to prompt on.
+    let logged_in = match client.restore_session().await {
+        Ok(()) => {
+            tidal::mark_logged_in();
+            true
+        }
+        Err(tidal::client::Error::NotLoggedIn) => false,
+        Err(e) => {
+            eprintln!("login failed: {e}");
+            std::process::exit(1);
+        }
+    };
     tidal::init(client);
     SETTINGS.set(settings).expect("SETTINGS already set");
     navidrome::scrobble::init(SETTINGS.get().unwrap());
@@ -95,6 +151,18 @@ async fn main() {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    if logged_in {
+        match tidal::client().session_raw().await {
+            Ok(s) => tracing::info!(
+                "tidal client: {} (id {})",
+                s["client"]["name"].as_str().unwrap_or("unknown"),
+                s["client"]["id"].as_i64().unwrap_or(-1),
+            ),
+            Err(e) => tracing::warn!("could not read tidal session: {e}"),
+        }
+    }
+
     let routes = routes();
     let settings = SETTINGS.get().unwrap();
     let bind = settings
@@ -102,6 +170,33 @@ async fn main() {
         .parse::<std::net::IpAddr>()
         .expect("bind_addr in settings must be an IP address");
     println!("Listening on http://{bind}:{}", settings.port);
+    // A wildcard bind is not a reachable address; name the port and let
+    // the operator supply the host.
+    let host = if bind.is_unspecified() {
+        "<this-host>".to_string()
+    } else {
+        bind.to_string()
+    };
+    let setup_url = format!("http://{host}:{}/setup", settings.port);
+    // The /setup wizard owns first-time authorization now: Tidal always,
+    // Last.fm when a [lastfm] block exists without a session key. Nothing
+    // is prompted on stdin here, because headless installs have none.
+    let lastfm_pending = settings.lastfm.is_some()
+        && navidrome::scrobble::lastfm_session_key()
+            .ok()
+            .flatten()
+            .is_none();
+    match (logged_in, lastfm_pending) {
+        (false, _) => println!(
+            "Not logged into Tidal. Open {setup_url} in a browser and sign in\n\
+             (username and password are the ones from settings.toml)."
+        ),
+        (true, true) => println!(
+            "Last.fm is configured but not authorized. Open {setup_url} in a browser\n\
+             and complete its step."
+        ),
+        (true, false) => {}
+    }
     warp::serve(routes)
         .run((bind, SETTINGS.get().unwrap().port))
         .await;
