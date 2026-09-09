@@ -593,10 +593,23 @@ static RE_REPRESENTATION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"<Representation\b([^>]*)>").unwrap());
 static RE_S: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<S\b([^>]*)/?>").unwrap());
 
-// One attribute out of a captured tag's attribute text.
 fn attr(attrs: &str, name: &str) -> Option<String> {
-    let re = Regex::new(&format!(r#"\b{}="([^"]*)""#, regex::escape(name))).ok()?;
-    re.captures(attrs).map(|c| c[1].to_string())
+    // Attributes in these captures are space-delimited key="value" pairs.
+    // Avoid compiling a regex per lookup; this runs in the segment loop.
+    let needle = format!(" {name}=\"");
+    let start = if let Some(p) = attrs.find(&needle) {
+        p + needle.len()
+    } else {
+        let needle0 = format!("{name}=\"");
+        if attrs.starts_with(&needle0) {
+            needle0.len()
+        } else {
+            return None;
+        }
+    };
+    let rest = &attrs[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 // A hostile or malformed manifest must not be able to make this
