@@ -1,10 +1,10 @@
 // Tidal API client: cached authenticated GETs plus per-entity methods.
-// Auth (device-code login, token refresh, credential file) lives in
+// Auth (Authorization Code + PKCE login, token refresh, credential file) lives in
 // auth.rs; each endpoint family gets its own module with an
 // `impl TidalClient` block.
 //   auth:   https://auth.tidal.com/v1/oauth2
 //   api:    https://api.tidal.com/v1
-//   stream: GET /tracks/{id}/playbackinfo (v1; BTS single-file manifest)
+//   stream: GET /tracks/{id}/playbackinfopostpaywall (v1; BTS single-file manifest)
 use std::time::Duration;
 
 use moka::future::Cache;
