@@ -461,6 +461,42 @@ pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), Str
     }
 }
 
+// The browser half of the Last.fm flow, used by the /setup wizard. The
+// terminal flow above polls because a terminal has nothing to click;
+// here the user comes back with a request of their own, so the two
+// halves split at the same place the Tidal login does.
+pub async fn lastfm_begin(api_key: &str, api_secret: &str) -> Result<(String, String), String> {
+    let http = reqwest::Client::new();
+    let token = lastfm_get_token(&http, api_key, api_secret).await?;
+    let url = format!("{LASTFM_AUTH_URL}?api_key={api_key}&token={token}");
+    Ok((token, url))
+}
+
+// Exchange an authorized token for a session key. A token the user has
+// not approved yet comes back as a Pending error, which reads as "go
+// back and click Yes" rather than as a failure.
+pub async fn lastfm_complete(
+    api_key: &str,
+    api_secret: &str,
+    token: &str,
+) -> Result<String, String> {
+    let http = reqwest::Client::new();
+    match lastfm_get_session(&http, api_key, api_secret, token).await {
+        Ok((key, name)) => {
+            store_lastfm_session_key(&key)?;
+            Ok(name)
+        }
+        Err((code, msg)) => match classify_session_error(code) {
+            SessionPoll::Fatal => Err(format!("error {code}: {msg}")),
+            SessionPoll::Pending => Err(
+                "Last.fm has not seen the authorization yet. Open the link, click Yes, \
+                 then try again."
+                    .into(),
+            ),
+        },
+    }
+}
+
 // Signed form POST to the Last.fm API. The api_sig covers every param
 // except format; format is appended after signing.
 async fn lastfm_post(

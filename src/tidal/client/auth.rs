@@ -34,13 +34,27 @@ struct Session {
     country_code: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct Tokens {
     pub(crate) access_token: String,
     pub(crate) refresh_token: String,
     pub(crate) expires_at: u64, // unix seconds
     pub(crate) user_id: Option<u64>,
     pub(crate) country_code: Option<String>,
+}
+
+// What a completed login reports back. Tokens itself stays private to
+// this module; callers outside only ever need the identity it resolved.
+pub struct LoginResult {
+    pub user_id: Option<u64>,
+    pub country_code: Option<String>,
+}
+
+// A login started but not yet redeemed: the PKCE verifier and unique
+// key the authorize URL was built with.
+pub(super) struct PendingLogin {
+    verifier: String,
+    unique_key: String,
 }
 
 impl Tokens {
@@ -94,7 +108,10 @@ impl super::TidalClient {
         }
     }
 
-    pub async fn login(&self) -> Result<(), Error> {
+    // A login that has been started: the PKCE verifier and unique key
+    // that the authorize URL was built with. Both are needed to redeem
+    // the code, and both must match the URL the user actually opened.
+    pub async fn begin_login(&self) -> Result<String, Error> {
         if self.client_id.starts_with("REPLACE_") {
             return Err(Error::Auth(
                 "Tidal credentials are not configured. Run:\n  \
@@ -118,38 +135,22 @@ impl super::TidalClient {
             ("restrict_signup", "true"),
         ])
         .map_err(|e| Error::Auth(format!("could not build authorize url: {e}")))?;
-        let authorize_url = format!("{AUTHORIZE_URL}?{query}");
 
-        println!("Open this URL in a browser or scan the QR code to log into Tidal:\n");
-        println!("{authorize_url}\n");
-        if let Ok(code) = QrCode::new(&authorize_url) {
-            println!(
-                "{}",
-                code.render::<unicode::Dense1x2>()
-                    .dark_color(unicode::Dense1x2::Dark)
-                    .light_color(unicode::Dense1x2::Light)
-                    .build()
-            );
-        }
-        println!(
-            "After signing in the browser is redirected to a {PKCE_REDIRECT_URI} page\n\
-             that will not load. That is expected — the login already succeeded.\n\
-             Copy that page's full address from the address bar and paste it here."
-        );
-        print!("\nRedirect URL: ");
-        use std::io::Write;
-        std::io::stdout().flush().ok();
+        *self.pending_login.lock().await = Some(PendingLogin {
+            verifier,
+            unique_key,
+        });
+        Ok(format!("{AUTHORIZE_URL}?{query}"))
+    }
 
-        // stdin is blocking; keep it off the async runtime's worker.
-        let line = tokio::task::spawn_blocking(|| {
-            let mut buf = String::new();
-            std::io::stdin().read_line(&mut buf).map(|_| buf)
-        })
-        .await
-        .map_err(|e| Error::Auth(format!("could not read stdin: {e}")))?
-        .map_err(|e| Error::Auth(format!("could not read stdin: {e}")))?;
-
-        let code = authorization_code(line.trim()).ok_or_else(|| {
+    // Redeem what the user pasted back: either the full redirect URL or
+    // the bare code. Consumes the pending login, so a failed attempt
+    // needs a fresh authorize URL — the code is single-use anyway.
+    pub async fn complete_login(&self, pasted: &str) -> Result<LoginResult, Error> {
+        let pending = self.pending_login.lock().await.take().ok_or_else(|| {
+            Error::Auth("no login in progress. start the login again.".into())
+        })?;
+        let code = authorization_code(pasted).ok_or_else(|| {
             Error::Auth(
                 "no authorization code found. Paste the whole redirect URL \
                  (it contains `?code=...`), or just the code itself."
@@ -163,9 +164,9 @@ impl super::TidalClient {
             .form(&self.auth_form(vec![
                 ("grant_type", "authorization_code"),
                 ("code", &code),
-                ("code_verifier", &verifier),
+                ("code_verifier", &pending.verifier),
                 ("redirect_uri", PKCE_REDIRECT_URI),
-                ("client_unique_key", &unique_key),
+                ("client_unique_key", &pending.unique_key),
                 ("scope", SCOPE),
             ]))
             .send()
@@ -195,10 +196,67 @@ impl super::TidalClient {
             country_code: session.country_code,
         };
         self.store_tokens(&tokens)?;
+        // The server may already be running, so seed the in-memory cache
+        // too: handlers that hold the client must see the new session
+        // without a restart.
+        let result = LoginResult {
+            user_id: tokens.user_id,
+            country_code: tokens.country_code.clone(),
+        };
+        *self.tokens.lock().await = Some(tokens);
+        Ok(result)
+    }
+
+    // The interactive CLI login: the same two halves with a terminal
+    // between them. Needs a TTY — headless installs use the /setup page.
+    pub async fn login(&self) -> Result<(), Error> {
+        let authorize_url = self.begin_login().await?;
+
+        println!("Open this URL in a browser or scan the QR code to log into Tidal:\n");
+        println!("{authorize_url}\n");
+        if let Ok(code) = QrCode::new(&authorize_url) {
+            println!(
+                "{}",
+                code.render::<unicode::Dense1x2>()
+                    .dark_color(unicode::Dense1x2::Dark)
+                    .light_color(unicode::Dense1x2::Light)
+                    .build()
+            );
+        }
+        println!(
+            "After signing in the browser is redirected to a {PKCE_REDIRECT_URI} page\n\
+             that will not load. That is expected — the login already succeeded.\n\
+             Copy that page's full address from the address bar and paste it here."
+        );
+        print!("\nRedirect URL: ");
+        use std::io::{IsTerminal, Write};
+        std::io::stdout().flush().ok();
+
+        // Without a terminal there is nobody to answer the prompt: under
+        // systemd or a detached container stdin is /dev/null and reads
+        // EOF immediately. Say so instead of failing on an empty line.
+        if !std::io::stdin().is_terminal() {
+            return Err(Error::Auth(
+                "stdin is not a terminal, so the pasted URL cannot be read here. \
+                 Start the server and open /setup in a browser instead."
+                    .into(),
+            ));
+        }
+
+        // stdin is blocking; keep it off the async runtime's worker.
+        let line = tokio::task::spawn_blocking(|| {
+            let mut buf = String::new();
+            std::io::stdin().read_line(&mut buf).map(|_| buf)
+        })
+        .await
+        .map_err(|e| Error::Auth(format!("could not read stdin: {e}")))?
+        .map_err(|e| Error::Auth(format!("could not read stdin: {e}")))?;
+
+        let tokens = self.complete_login(line.trim()).await?;
         println!(
             "Logged in.\nuser_id={} country={:?}",
             tokens.user_id.unwrap_or(0),
-            tokens.country_code.unwrap_or("N/A".to_string())
+            tokens.country_code.clone().unwrap_or("N/A".to_string())
         );
         Ok(())
     }
@@ -252,25 +310,21 @@ impl super::TidalClient {
         Ok(serde_json::from_str(&body)?)
     }
 
-    // Restore a session at startup: use a stored token, refresh an expired
-    // one silently, and only fall back to the full device-code login when
-    // no token exists or Tidal rejects the refresh. HTTP 400/401 means the
-    // stored refresh token was revoked or expired.
-    pub async fn ensure_session(&self) -> Result<(), Error> {
+
+    // The non-interactive half of ensure_session, used at server startup:
+    // a stored token is refreshed when stale, but a missing or revoked
+    // one yields NotLoggedIn rather than dropping into the terminal
+    // prompt. The server then comes up serving /setup.
+    pub async fn restore_session(&self) -> Result<(), Error> {
         let Some(tokens) = self.load_tokens()? else {
-            return self.login().await;
+            return Err(Error::NotLoggedIn);
         };
         if !tokens.expired(unix_now()) {
             return Ok(());
         }
         match self.refresh_and_store(&tokens).await {
             Ok(_) => Ok(()),
-            Err(Error::Tidal(400 | 401, _)) => {
-                println!(
-                    "The stored Tidal session expired and could not be refreshed; logging in again."
-                );
-                self.login().await
-            }
+            Err(Error::Tidal(400 | 401, _)) => Err(Error::NotLoggedIn),
             Err(e) => Err(e),
         }
     }

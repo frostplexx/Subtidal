@@ -78,7 +78,10 @@ impl std::fmt::Display for Error {
             Error::Malformed(msg) => write!(f, "malformed asset: {msg}"),
             Error::RateLimited => write!(f, "stream limit exceeded"),
             Error::NotLoggedIn => {
-                write!(f, "not logged in. run `subtidal login` first")
+                write!(
+                    f,
+                    "not logged in. run `subtidal login`, or open /setup on this server"
+                )
             }
         }
     }
@@ -118,6 +121,10 @@ pub struct TidalClient {
     client_id: String,
     client_secret: Option<String>,
     tokens: Mutex<Option<auth::Tokens>>,
+    // PKCE verifier for a login that has been started but not yet
+    // redeemed. The web login spans two requests, so the verifier cannot
+    // live on the stack the way the CLI prompt kept it.
+    pending_login: Mutex<Option<auth::PendingLogin>>,
     meta_cache: Cache<String, Value>,
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
@@ -152,6 +159,7 @@ impl TidalClient {
             client_id,
             client_secret,
             tokens: Mutex::new(None),
+            pending_login: Mutex::new(None),
             meta_cache: Cache::builder()
                 .time_to_live(Duration::from_secs(6 * 3600))
                 .max_capacity(10_000)

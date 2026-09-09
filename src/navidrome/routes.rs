@@ -2,6 +2,7 @@ use super::auth;
 use super::handlers;
 use super::log::{logged, named, with_params};
 use super::params::QueryParams;
+use super::setup::setup_routes;
 use bytes::Bytes;
 use futures_util::TryFutureExt;
 use warp::Filter;
@@ -24,6 +25,13 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
                 .and(private())
                 .and(warp::header::optional::<String>("range"))
                 .and_then(|q: QueryParams, raw: String, _body: Bytes, _proto: Option<String>, _host: Option<String>, name: String, range: Option<String>| {
+                    // Every endpoint below needs a Tidal session. Without one,
+                    // answer once here instead of letting each handler fail
+                    // with its own opaque message.
+                    if !crate::tidal::logged_in() {
+                        return Box::pin(async move { Err(warp::reject::custom(auth::NoSession)) })
+                            as super::handlers::BoxedTryFuture<warp::reply::Response, warp::Rejection>;
+                    }
                     dispatch(q, raw, name, range)
                 })
                 .boxed())
@@ -39,6 +47,11 @@ fn public() -> impl Filter<Extract = (warp::reply::Response,), Error = warp::Rej
         .or(get_open_subsonic_extensions())
         .unify()
         .map(|r: warp::reply::WithHeader<warp::reply::Json>| r.into_response())
+        // The /setup wizard. It carries its own HTTP Basic check and
+        // closes (404s) once every configured service is authorized, so
+        // it is not an open endpoint despite living on the no-auth side.
+        .or(setup_routes())
+        .unify()
 }
 
 // Private endpoints. One generic matcher covers /rest/<name> and

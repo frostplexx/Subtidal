@@ -30,9 +30,11 @@ fn subcommand() -> Option<String> {
 }
 
 fn logout() -> ! {
-    match state::clear_section(state::TIDAL) {
+    // Clear both credential sections: finishing a logout must not leave
+    // Last.fm authorized when Tidal is not.
+    match state::clear_section(state::TIDAL).and_then(|()| state::clear_section(state::LASTFM)) {
         Ok(()) => {
-            println!("Logged out. Run `subtidal login` to authorize again.");
+            println!("Logged out of Tidal and Last.fm. Run `subtidal login` to authorize again.");
             std::process::exit(0);
         }
         Err(e) => {
@@ -115,18 +117,6 @@ async fn main() {
     }
     println!();
 
-    if let Some(cfg) = &settings.lastfm
-        && navidrome::scrobble::lastfm_session_key()
-            .ok()
-            .flatten()
-            .is_none()
-    {
-        println!("Last.fm is configured but not authorized; starting authorization.");
-        if let Err(e) = navidrome::scrobble::lastfm_auth_flow(&cfg.api_key, &cfg.api_secret).await {
-            eprintln!("lastfm authorization failed: {e}");
-            eprintln!("continuing without Last.fm scrobbling.");
-        }
-    }
     let client = TidalClient::new(&settings);
 
     if cmd.as_deref() == Some("login") {
@@ -138,12 +128,21 @@ async fn main() {
             }
         }
     }
-    // Restore the stored session silently (refresh-first); only a dead
-    // refresh token forces the interactive login.
-    if let Err(e) = client.ensure_session().await {
-        eprintln!("login failed: {e}");
-        std::process::exit(1);
-    }
+    // Restore the stored session silently (refresh-first). A missing or
+    // revoked token is not fatal: the server still comes up, serving the
+    // /setup page and nothing else. That is the only way to authorize a
+    // headless install, where there is no stdin to prompt on.
+    let logged_in = match client.restore_session().await {
+        Ok(()) => {
+            tidal::mark_logged_in();
+            true
+        }
+        Err(tidal::client::Error::NotLoggedIn) => false,
+        Err(e) => {
+            eprintln!("login failed: {e}");
+            std::process::exit(1);
+        }
+    };
     tidal::init(client);
     SETTINGS.set(settings).expect("SETTINGS already set");
     navidrome::scrobble::init(SETTINGS.get().unwrap());
@@ -153,13 +152,15 @@ async fn main() {
         )
         .init();
 
-    match tidal::client().session_raw().await {
-        Ok(s) => tracing::info!(
-            "tidal client: {} (id {})",
-            s["client"]["name"].as_str().unwrap_or("unknown"),
-            s["client"]["id"].as_i64().unwrap_or(-1),
-        ),
-        Err(e) => tracing::warn!("could not read tidal session: {e}"),
+    if logged_in {
+        match tidal::client().session_raw().await {
+            Ok(s) => tracing::info!(
+                "tidal client: {} (id {})",
+                s["client"]["name"].as_str().unwrap_or("unknown"),
+                s["client"]["id"].as_i64().unwrap_or(-1),
+            ),
+            Err(e) => tracing::warn!("could not read tidal session: {e}"),
+        }
     }
 
     let routes = routes();
@@ -169,6 +170,33 @@ async fn main() {
         .parse::<std::net::IpAddr>()
         .expect("bind_addr in settings must be an IP address");
     println!("Listening on http://{bind}:{}", settings.port);
+    // A wildcard bind is not a reachable address; name the port and let
+    // the operator supply the host.
+    let host = if bind.is_unspecified() {
+        "<this-host>".to_string()
+    } else {
+        bind.to_string()
+    };
+    let setup_url = format!("http://{host}:{}/setup", settings.port);
+    // The /setup wizard owns first-time authorization now: Tidal always,
+    // Last.fm when a [lastfm] block exists without a session key. Nothing
+    // is prompted on stdin here, because headless installs have none.
+    let lastfm_pending = settings.lastfm.is_some()
+        && navidrome::scrobble::lastfm_session_key()
+            .ok()
+            .flatten()
+            .is_none();
+    match (logged_in, lastfm_pending) {
+        (false, _) => println!(
+            "Not logged into Tidal. Open {setup_url} in a browser and sign in\n\
+             (username and password are the ones from settings.toml)."
+        ),
+        (true, true) => println!(
+            "Last.fm is configured but not authorized. Open {setup_url} in a browser\n\
+             and complete its step."
+        ),
+        (true, false) => {}
+    }
     warp::serve(routes)
         .run((bind, SETTINGS.get().unwrap().port))
         .await;

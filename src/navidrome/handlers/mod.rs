@@ -25,7 +25,7 @@ pub mod stream;
 pub mod system;
 pub mod tracks;
 
-use super::auth::{BodyReadFailed, BodyTooLarge, Unauthorized};
+use super::auth::{BodyReadFailed, BodyTooLarge, NoSession, Unauthorized};
 use super::models::{SubsonicBody, SubsonicError, SubsonicErrorBody, SubsonicResponse};
 use warp::reject::Rejection;
 use warp::Reply;
@@ -100,6 +100,11 @@ pub(crate) fn fail(code: u32, message: &'static str) -> warp::reply::Json {
 pub async fn recover(r: Rejection) -> Result<Box<dyn warp::Reply>, Rejection> {
     if r.find::<Unauthorized>().is_some() {
         Ok(Box::new(fail(40, "Wrong username or password")))
+    } else if r.find::<NoSession>().is_some() {
+        Ok(Box::new(fail(
+            0,
+            "Subtidal is not logged into Tidal. Open /setup on this server to sign in.",
+        )))
     } else if r.find::<BodyTooLarge>().is_some()
         || r.find::<warp::reject::PayloadTooLarge>().is_some()
     {
