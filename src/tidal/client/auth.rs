@@ -94,20 +94,6 @@ impl super::TidalClient {
         }
     }
 
-    // Authorization Code + PKCE login (RFC 7636).
-    //
-    // This replaced the device-code flow, which was not merely a
-    // different UX: Tidal scopes sound quality to the registered client,
-    // and device-code ("limited input device") clients are capped at 320
-    // kbps AAC. A fully-entitled account asking for HI_RES_LOSSLESS over
-    // a device-code token still gets AAC back, with no error to explain
-    // it. PKCE authorizes as the app named by `appMode`, whose client
-    // carries the lossless/hi-res entitlement.
-    //
-    // Headless-friendly: there is no local callback server. The redirect
-    // target is Tidal's own URL, which the browser will fail to load —
-    // that is expected. The code is in its query string, and the user
-    // pastes the address back here.
     pub async fn login(&self) -> Result<(), Error> {
         if self.client_id.starts_with("REPLACE_") {
             return Err(Error::Auth(
@@ -217,11 +203,6 @@ impl super::TidalClient {
         Ok(())
     }
 
-    // The raw /sessions document, including the `client` block naming
-    // the registered client this token belongs to. Tidal scopes sound
-    // quality per client independently of the subscription, so when a
-    // fully-authorized LOSSLESS request comes back HIGH this is what
-    // identifies the ceiling.
     pub async fn session_raw(&self) -> Result<Value, Error> {
         let token = self.access_token().await?;
         let resp = self
@@ -380,10 +361,6 @@ fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-// A PKCE (verifier, challenge) pair. The verifier is the secret kept in
-// memory for the token exchange; the challenge is its SHA-256, and is
-// what travels through the browser. S256 rather than `plain` so an
-// intercepted authorize URL cannot be replayed.
 fn pkce_pair() -> (String, String) {
     let raw: [u8; 32] = rand::random();
     let verifier = b64url(&raw);
@@ -393,17 +370,11 @@ fn pkce_pair() -> (String, String) {
     (verifier, challenge)
 }
 
-// A per-installation device identifier. Tidal ties the session to it, so
-// it is generated once per login rather than shared or fixed.
 fn client_unique_key() -> String {
     let raw: [u8; 8] = rand::random();
     raw.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// The authorization code from whatever the user pasted. Accepts the full
-// redirect URL (what the address bar holds) or a bare code, because
-// asking someone to extract a query parameter by hand is a step that
-// invites mistakes.
 fn authorization_code(input: &str) -> Option<String> {
     let input = input.trim();
     if input.is_empty() {

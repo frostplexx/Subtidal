@@ -36,17 +36,6 @@ fn two_xor(enc: &[u8], key: &[u8]) -> String {
     enc.iter().zip(key).map(|(a, b)| (a ^ b) as char).collect()
 }
 
-// The radiant client, built once.
-//
-// The timeout is the point. This is a third-party service on the path of
-// a request some clients issue alongside starting playback, and without
-// a bound a slow day there became a 22-second `getLyricsBySongId` — long
-// enough to look like the player itself was stuck. Lyrics are optional:
-// giving up quickly and falling back to Tidal's own is always better
-// than making the client wait.
-//
-// Reused rather than rebuilt per call so connections and TLS sessions
-// are pooled; `reqwest::Client::new()` per request threw both away.
 static RADIANT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(RADIANT_TIMEOUT)

@@ -1,12 +1,3 @@
-// The audio quality tier, the single vocabulary shared by the metadata
-// mapping (what a track *is*) and the stream handler (what to ask Tidal
-// for).
-//
-// Before this module each of those two kept its own tier strings and
-// they disagreed: the stream path spelled hi-res "HI_RES", and the
-// mapping had a private enum. Tiers now only exist as this type; the
-// strings appear once each, at the edges (Tidal's `audioquality` param,
-// the settings file, Subsonic's format hints).
 use serde_json::Value;
 
 // Ordered worst to best. The order is the capping rule: a request is
@@ -19,24 +10,11 @@ pub enum Quality {
     Lossless,
     HiRes,
     // Atmos sits above hi-res because Tidal treats it as the premium
-    // presentation of a track, but it is not "more lossless": it is a
-    // different (lossy, multichannel) codec. It ranks last only so that
-    // `min` never silently downgrades an Atmos request on an Atmos
-    // track.
+    // presentation of a track
     Atmos,
 }
 
 impl Quality {
-    // The track's own tier, from Tidal's `mediaMetadata.tags` (badge
-    // tags: "DOLBY_ATMOS", "HIRES_LOSSLESS", "LOSSLESS") and/or the
-    // `audioQuality` field. ATMOS wins over HIRES_LOSSLESS wins over
-    // LOSSLESS; HIGH and LOW are the lossy tiers.
-    //
-    // None means the payload carried no quality metadata at all. That
-    // is not the same as "low quality": the v2-flattened jsonapi track
-    // objects (the `album_with_items` fallback, some search and mix
-    // feeds) carry neither field, so callers must treat None as "no
-    // information" and not as a reason to downgrade.
     pub fn from_track(v: &Value) -> Option<Self> {
         let tags: &[Value] = v["mediaMetadata"]["tags"]
             .as_array()
@@ -60,14 +38,6 @@ impl Quality {
         }
     }
 
-    // The value for the v1 playbackinfo `audioquality` parameter.
-    //
-    // Atmos maps to LOSSLESS deliberately: `audioquality` has no Atmos
-    // member (the SDK's own AudioQuality union is
-    // HI_RES_LOSSLESS|LOSSLESS|HIGH|LOW). Atmos is the orthogonal
-    // `audioMode` and is selected by the *track*, not by this param —
-    // asking for an Atmos track at LOSSLESS is what returns the Atmos
-    // asset. The response's `audioMode` is what confirms it.
     pub fn as_audioquality(self) -> &'static str {
         match self {
             Quality::Low => "LOW",
@@ -77,9 +47,6 @@ impl Quality {
         }
     }
 
-    // The configured default tier (the `tidal_quality` setting). An
-    // unrecognized value returns None so the caller can warn rather
-    // than silently serving something else.
     pub fn from_setting(s: &str) -> Option<Self> {
         match s {
             "LOW" => Some(Quality::Low),
@@ -91,14 +58,6 @@ impl Quality {
         }
     }
 
-    // The tier a Subsonic client asked for, from its `maxBitRate` (kbps)
-    // and `format` hints. None means it expressed no preference and the
-    // configured default applies.
-    //
-    // A bitrate cap is a hard ceiling and wins over the format hint: a
-    // client asking for flac at 128 kbps is asking for something that
-    // does not exist, and the cap is the half that is actionable. Note
-    // maxBitRate=0 means "no limit" in Subsonic, not "silence".
     pub fn from_subsonic(max_bit_rate: Option<u32>, format: Option<&str>) -> Option<Self> {
         match max_bit_rate {
             Some(m) if (1..=64).contains(&m) => Some(Quality::Low),
@@ -106,14 +65,8 @@ impl Quality {
             // Above 320 kbps the cap cannot distinguish the lossless
             // tiers, so the format hint decides.
             _ => match format {
-                // VeloSonic's "Dolby Atmos" option sends eac3 with an
-                // unlimited bitrate; it is the only format hint that
-                // names a tier Tidal has.
                 Some("eac3") | Some("ec-3") => Some(Quality::Atmos),
                 Some("flac") => Some(Quality::Lossless),
-                // Any other non-empty format is a codec the client can
-                // play, not a tier. It carries no tier information, so
-                // it must not override the configured default.
                 _ => None,
             },
         }

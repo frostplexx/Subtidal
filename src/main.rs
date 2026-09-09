@@ -15,8 +15,6 @@ use crate::settings::LabelsConfig;
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-// `subtidal --version`: print the version and exit. Anything else would
-// fall through to load_settings and start a server on the default port.
 fn version_flag() -> bool {
     std::env::args().skip(1).any(|a| a == "--version" || a == "-V")
 }
@@ -30,11 +28,6 @@ fn subcommand() -> Option<String> {
         .filter(|a| a == "login" || a == "logout")
 }
 
-// `subtidal logout`: discard the stored Tidal session and exit. Needed
-// because a session is bound to the client that minted it — after
-// changing credentials the old refresh token keeps working and silently
-// pins you to the old client's entitlements, so re-authorizing has to be
-// explicit.
 fn logout() -> ! {
     match state::clear_section(state::TIDAL) {
         Ok(()) => {
@@ -97,10 +90,6 @@ async fn main() {
     print_startup(&settings);
     println!();
 
-    // Automatic first-time authorization: a [lastfm] block without a
-    // session key starts the flow on startup, which prints the authorize
-    // URL and QR code. On failure the server still starts without
-    // Last.fm scrobbling.
     if let Some(cfg) = &settings.lastfm
         && navidrome::scrobble::lastfm_session_key()
             .ok()
@@ -114,9 +103,7 @@ async fn main() {
         }
     }
     let client = TidalClient::new(&settings);
-    // `subtidal login` re-authorizes unconditionally and exits. Going
-    // through ensure_session instead would just refresh the session that
-    // is already stored and do nothing visible.
+
     if cmd.as_deref() == Some("login") {
         match client.login().await {
             Ok(()) => std::process::exit(0),
@@ -140,26 +127,7 @@ async fn main() {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    // Report the account's real ceiling once. A stream served below the
-    // configured tier is otherwise indistinguishable from a bug, because
-    // playbackinfo downgrades silently instead of refusing.
-    match tidal::client().subscription().await {
-        Ok(sub) => {
-            tracing::info!(
-                "tidal subscription: {}, highest sound quality {}",
-                sub["subscription"]["type"].as_str().unwrap_or("unknown"),
-                sub["highestSoundQuality"].as_str().unwrap_or("unknown"),
-            );
-            // The two fields above can disagree (a legacy
-            // highestSoundQuality outliving a plan change), so keep the
-            // whole object available rather than only the reading of it.
-            tracing::debug!("tidal subscription detail: {sub}");
-        }
-        Err(e) => tracing::warn!("could not read tidal subscription: {e}"),
-    }
-    // Which registered client the token belongs to. Sound quality is
-    // scoped per client, so this is the ceiling that applies when the
-    // subscription itself allows more than the streams come back as.
+
     match tidal::client().session_raw().await {
         Ok(s) => tracing::info!(
             "tidal client: {} (id {})",

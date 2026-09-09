@@ -1,31 +1,8 @@
-// Streaming and downloading, both resolved through Tidal's v1
-// playbackinfo endpoint.
-//
-// Both endpoints answer with a file. A whole-file asset (the lossy
-// tiers) becomes a 302 to Tidal's CDN and costs nothing here. A
-// segmented one (the FLAC tiers) is fetched here and rewrapped into a
-// native FLAC stream.
-//
-// Two earlier shapes did not work, and the reasons are worth keeping:
-//
-//   * An HLS playlist kept audio off this server entirely, but clients
-//     use /stream to *download* as well as to play, and a playlist is
-//     not a file — a downloader that saved one got a few KB of text
-//     pointing at URLs that expire within the hour. Nothing in the
-//     request distinguishes the two cases. (The segment URLs now carry
-//     signed tokens, so this server fetches and rewraps them instead.)
-//   * Concatenated fragmented MP4 is a file, but not one a player can
-//     start on: a DASH init segment carries no duration and there is no
-//     segment index, so the player downloaded and scanned the entire
-//     track before decoding a frame. Delivering those bytes faster
-//     could never fix it; the container was the problem.
-//
-// Native FLAC has neither flaw. It is a file, and it decodes from byte
-// zero.
-//
-// The tier asked for is the client's own hint, else the configured
-// default. Tidal decides what it will actually serve and downgrades
-// silently, so the log line reports requested and served side by side.
+// Streaming and downloading, both resolved through Tidal's v1 playbackinfo endpoint. Both endpoints
+// answer with a file. A whole-file asset (the lossy tiers) becomes a 302 to Tidal's CDN and costs
+// nothing here. A segmented one (the FLAC tiers) is fetched here and rewrapped into a native FLAC
+// stream.
+
 use crate::navidrome::ids;
 use crate::navidrome::params::QueryParams;
 use crate::tidal::Quality;
@@ -40,15 +17,10 @@ use moka::sync::Cache;
 use super::{fail, redirect};
 use warp::Reply;
 
-// Manifest cache. Its job is not to save a round-trip but to keep
-// repeat requests off the StreamLimiter: a client re-requests the same
-// track on every pause/resume and after a failed load, and each of
-// those otherwise consumes one of the 5-per-10s manifest slots, so a
-// user skipping through a queue queues up multi-second waits behind
-// requests for tracks they already fetched.
-//
-// The TTL is well inside the CDN signature's lifetime, so cached URLs
-// are still fetchable; an expired entry just costs a fresh fetch.
+// Manifest cache. Its job is to keep repeat requests off the StreamLimiter: a client re-requests
+// the same track on every pause/resume and after a failed load, and each of those otherwise
+// consumes one of the 5-per-10s manifest slots, so a user skipping through a queue queues up
+// multi-second waits behind requests for tracks they already fetched.
 const MANIFEST_TTL: Duration = Duration::from_secs(120);
 static MANIFEST_CACHE: LazyLock<Cache<(u64, Quality), StreamInfo>> = LazyLock::new(|| {
     Cache::builder()
@@ -65,17 +37,6 @@ fn store_manifest(track_id: u64, tier: Quality, info: &StreamInfo) {
     MANIFEST_CACHE.insert((track_id, tier), info.clone());
 }
 
-// Assembled-audio cache. Concatenating a track costs dozens of CDN
-// fetches, and clients re-request constantly — on pause/resume, on
-// seek, and once per queue reshuffle. Without this every one of those
-// re-downloads the whole track.
-//
-// Bounded in both directions: entries expire, and the total is capped
-// by weight so a long queue cannot grow this without limit.
-// Deliberately in memory and lost on restart — it is a latency cache,
-// not storage. An entry that alone exceeds the byte budget is evicted
-// rather than pinned, so one oversized track is re-fetched per request
-// instead of holding the cache over its cap.
 const AUDIO_TTL: Duration = Duration::from_secs(300);
 const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 static AUDIO_CACHE: LazyLock<Cache<(u64, Quality), Arc<Vec<u8>>>> = LazyLock::new(|| {
@@ -101,18 +62,6 @@ fn store_audio(track_id: u64, tier: Quality, bytes: &Arc<Vec<u8>>) {
 static SIZE_CACHE: LazyLock<Cache<(u64, Quality), Arc<Vec<u64>>>> =
     LazyLock::new(|| Cache::builder().max_capacity(10_000).build());
 
-// Segment cache, keyed by URL.
-//
-// This is the one that matters for playback. A player does not fetch a
-// track once: it probes, reads the whole thing, re-reads the tail for
-// the index, and issues fresh ranges on every seek. Those requests
-// overlap heavily, so without a segment cache the same bytes are pulled
-// from Tidal again and again — which is what made playback slow even
-// after the response headers got fast.
-//
-// Keyed by URL rather than (track, tier) because that is the identity
-// of the bytes, and it means a range request warms exactly the parts a
-// later request will reuse.
 const SEGMENT_TTL: Duration = Duration::from_secs(300);
 const MAX_SEGMENT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 static SEGMENT_CACHE: LazyLock<Cache<String, bytes::Bytes>> = LazyLock::new(|| {
@@ -179,20 +128,6 @@ type AssemblyGates = HashMap<(u64, Quality), Arc<tokio::sync::Mutex<()>>>;
 static ASSEMBLING: LazyLock<Mutex<AssemblyGates>> =
     LazyLock::new(|| Mutex::new(AssemblyGates::new()));
 
-// The tier to request for one track: the client's own hints if it sent
-// any, else the configured default.
-//
-// This deliberately does *not* cap by the track's own metadata tier.
-// An earlier version did, reasoning that asking for more than a track
-// has wastes a round-trip — but Tidal downgrades server-side regardless
-// (a LOSSLESS request on a lossy-only track simply comes back HIGH), so
-// the cap cost a round-trip either way and only ever subtracted. It
-// also actively broke hi-res: `mediaMetadata.tags` routinely carries
-// just LOSSLESS on tracks Tidal will happily serve as HI_RES_LOSSLESS,
-// so capping meant the ceiling could never be requested at all.
-//
-// Tidal is the authority on what it will serve; ask for the ceiling and
-// report what comes back.
 fn resolve_tier(q: &QueryParams) -> Quality {
     Quality::from_subsonic(q.max_bit_rate, q.format.as_deref()).unwrap_or_else(configured_tier)
 }
@@ -264,11 +199,6 @@ pub async fn download(
     Ok(serve(track_id, tier, info, range.as_deref(), Some(filename)).await)
 }
 
-// Resolve a track's manifest, reusing a recent one when there is one.
-// A repeat within the TTL must not spend a manifest slot: a client
-// re-requests the same track on pause/resume and after a failed load,
-// and each of those would otherwise consume one of the limiter's
-// 5-per-10s starts.
 async fn resolve(track_id: u64, tier: Quality) -> Result<StreamInfo, Error> {
     if let Some(info) = cached_manifest(track_id, tier) {
         return Ok(info);
@@ -280,10 +210,6 @@ async fn resolve(track_id: u64, tier: Quality) -> Result<StreamInfo, Error> {
     Ok(info)
 }
 
-// Answer with the audio. The log line reports what Tidal actually
-// served, not what was requested — the two differ whenever the account
-// or the track lacks the tier, and that difference is the first thing
-// worth knowing when a client plays the wrong quality.
 async fn serve(
     track_id: u64,
     requested: Quality,
@@ -314,19 +240,8 @@ async fn serve(
         info.bit_depth
     );
     match info.asset {
-        // Already a whole file: hand over the CDN URL and let the client
-        // fetch and range-seek against Tidal directly. Nothing is gained
-        // by copying those bytes through here.
         Asset::File(url) => redirect(url),
-        // Segmented. Clients use /stream to download as well as to play,
-        // and a playlist is not a file — one saved by a downloader is a
-        // few KB of text pointing at URLs that expire within the hour.
-        // Since the request carries no signal distinguishing the two,
-        // the only shape that satisfies both is a real file.
         Asset::Segmented { init, segments } => {
-            // Already assembled: serve from memory, which needs no
-            // network at all and makes ranges trivial. The rewrapped
-            // FLAC stream is FLAC bytes, so the type follows the codec.
             let content_type = if info.codec.starts_with("flac") {
                 "audio/flac"
             } else {
@@ -480,11 +395,6 @@ async fn assemble(
     if let Some(bytes) = cached_audio(track_id, tier) {
         return Ok(bytes);
     }
-    // Single-flight. Clients routinely fire the same request two or
-    // three times in a row (pause/resume, a retried load, a range probe
-    // arriving before the first response). Without this each one starts
-    // its own assembly, so N duplicate requests take N times the CDN
-    // bandwidth and all of them finish slower than one would have.
     let gate = {
         let mut map = ASSEMBLING.lock().unwrap();
         Arc::clone(
@@ -546,10 +456,6 @@ async fn assemble_flac(
     segments: Vec<String>,
 ) -> Result<Arc<Vec<u8>>, Error> {
     use futures_util::StreamExt as _;
-    // Fetched through the segment cache, in order, with the same
-    // lookahead as the streaming path. The init segment is not included:
-    // its contents are already in `header`, and passing an empty URL
-    // here would send a request to nowhere.
     let parts: Vec<Result<bytes::Bytes, Error>> = futures_util::stream::iter(segments)
         .map(|url: String| async move { fetch_part(&url).await })
         .buffered(SEGMENT_CONCURRENCY)
@@ -581,10 +487,6 @@ async fn sizes_for(track_id: u64, tier: Quality, urls: &[String]) -> Option<Arc<
     Some(sizes)
 }
 
-// Turn one fetched part into the bytes contributed to the stream.
-// Returns the transformed payload, or an error when the part is
-// shorter than its advertised length — the CDN lied, and every later
-// offset in the body would desync.
 type SegmentTransform = fn(track_id: u64, raw: bytes::Bytes) -> Result<bytes::Bytes, Error>;
 
 fn chunked_flac_transform(_track_id: u64, raw: bytes::Bytes) -> Result<bytes::Bytes, Error> {
@@ -595,23 +497,6 @@ fn chunked_mp4_transform(_track_id: u64, raw: bytes::Bytes) -> Result<bytes::Byt
     Ok(raw)
 }
 
-// Stream the requested byte range as one continuous file, fetching only
-// the parts that cover it and sending each on as it arrives.
-//
-// This is what keeps a 30 MB track from costing eight seconds of
-// silence before playback starts: the client gets the first bytes after
-// one part rather than after all ninety. Seeking still works because
-// the size table gives an exact Content-Length, and a seek deep into a
-// track now skips the parts before it instead of downloading them.
-//
-// `lens` are the part lengths in stream order; part 0 is the in-memory
-// header for a rewrapped FLAC body (`header` carries its bytes), or the
-// init segment URL for a raw MP4 body. `transform` rewraps each part:
-// FLAC strips MP4 box framing, MP4 is the identity.
-//
-// The whole stream accumulates as it goes and is cached on completion,
-// so the next request for the same track serves from memory with an
-// exact length and full range support.
 async fn chunked_reply(
     track_id: u64,
     tier: Quality,
@@ -628,14 +513,8 @@ async fn chunked_reply(
         Some((s, e)) => (s, e, true),
         None => (0, total.saturating_sub(1), false),
     };
-    // `parts_desc` and `lens` are parallel; part 0 is the in-memory
-    // header (None) for a rewrapped FLAC body.
     let parts = plan(&parts_desc, &lens, start, end);
     let length = end - start + 1;
-    // How many of the needed parts are already warm. A run where this
-    // stays at zero across repeated requests means the cache is not
-    // doing its job, which is invisible from timings alone because the
-    // headers go out before any body is fetched.
     let warm = parts
         .iter()
         .filter(|p| p.url.as_deref().is_some_and(|u| SEGMENT_CACHE.contains_key(u)))
@@ -646,16 +525,7 @@ async fn chunked_reply(
         lens.len()
     );
 
-    // Whether this response covers the entire file, and so can populate
-    // the whole-track cache. Note this is decided by the byte span, not
-    // by whether a Range header was present: players ask for the whole
-    // file *as* a range (`bytes=0-`), and treating that as partial meant
-    // nothing was ever cached.
     let cacheable = start == 0 && end + 1 == total;
-    // Headers go out before any body is fetched, so the response time in
-    // the access log says nothing about how long the audio took. Time
-    // the body itself: it is the only way to tell "the server is slow"
-    // apart from "the client is still thinking".
     let began = Instant::now();
     let acc = Arc::new(Mutex::new(Vec::new()));
     let acc_body = Arc::clone(&acc);
@@ -869,11 +739,6 @@ mod tests {
 
     #[test]
     fn the_configured_tier_is_requested_unchanged() {
-        // The configured default is LOSSLESS in tests (SETTINGS unset).
-        // Nothing about the track reduces it: an earlier version capped
-        // by the track's mediaMetadata tier, which meant a hi-res
-        // ceiling could never actually be requested, because those tags
-        // routinely read LOSSLESS on tracks Tidal serves as hi-res.
         assert_eq!(resolve_tier(&params(None, None)), Quality::Lossless);
     }
 

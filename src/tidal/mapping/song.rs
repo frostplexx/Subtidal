@@ -92,20 +92,6 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     })
 }
 
-// The track's own source format, from the tier `Quality::from_track`
-// derives from Tidal's `mediaMetadata.tags` and `audioQuality`. Both
-// come free on a track object already fetched for `song_from_track` (no
-// extra Tidal call) *when present* — the v1-sourced track objects
-// backing most album/song listings carry them, but a v2-flattened
-// jsonapi track (the `album_with_items` fallback path, and some search/
-// mix feeds) does not, so an absent field falls back to the same lossy
-// "m4a" guess this always reported before, rather than claiming a
-// source format Tidal never actually told us.
-//
-// This mirrors a real Subsonic server reporting the file's own tags. It
-// is also what the stream handler caps against: a track tagged
-// DOLBY_ATMOS here is what makes an Atmos request resolve to the Atmos
-// asset (see `resolve_tier` in the stream handler).
 fn format_from_track(v: &Value) -> (&'static str, &'static str) {
     match Quality::from_track(v) {
         Some(q) => q.content_type_and_suffix(),
@@ -114,8 +100,6 @@ fn format_from_track(v: &Value) -> (&'static str, &'static str) {
     }
 }
 
-// Appends the AI marker when the track is AI-generated and the [labels]
-// setting enables it.
 fn mark_ai(title: &mut String, v: &Value, enabled: bool) {
     if enabled && v["ai"].as_bool() == Some(true) {
         title.push_str(" • AI");

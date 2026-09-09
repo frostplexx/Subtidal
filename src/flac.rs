@@ -1,23 +1,3 @@
-// Turning Tidal's MP4-wrapped FLAC into a native FLAC stream.
-//
-// Tidal serves the lossless tiers as segmented DASH: an init segment
-// holding `moov`, then fragments of `moof` + `mdat`. Concatenating those
-// produces a valid fragmented MP4 — but not one a player can *start* on.
-// A DASH init segment carries no duration (the timeline lives in the
-// manifest, which the client never sees) and there is no `sidx`, so a
-// player has to walk every fragment in the file before it can decode a
-// single frame. That is a full download before playback, no matter how
-// fast the bytes arrive.
-//
-// A native FLAC stream has no such index. STREAMINFO sits in the first
-// few bytes and carries the sample count, so duration is known
-// immediately and decoding can start at byte 0. The audio itself needs
-// no transcoding: `mdat` already contains exactly the FLAC frames a
-// `.flac` file is made of, so this is a rewrap, not a re-encode — the
-// samples are bit-identical.
-//
-// It also makes the served bytes match what `getSong` has always
-// advertised for these tracks (`audio/flac`, suffix `flac`).
 
 // One ISO-BMFF box: its four-character type and its payload.
 type Boxed<'a> = (&'a [u8], &'a [u8]);
