@@ -20,8 +20,8 @@ Some highlighted features are:
 
 ## Getting Started 
 
-> [!WARNING]
-> A paid Tidal account is required!
+> [!IMPORTANT]
+> A paid Tidal account is required! This project is not affiliated with Tidal.
 
 Prerequisites: Docker with Compose support.
 
