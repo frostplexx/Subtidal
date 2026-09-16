@@ -29,30 +29,31 @@ pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::R
     }))
 }
 
-// The Tidal account name and an email derived from it. Falls back to the
-// configured username when the profile is unreachable.
+// The Subsonic login username stays the configured one: clients
+// authenticate against it (some, like Arpeggi, even start reusing
+// whatever getUser echoes back as their own `u=` on later requests), so
+// substituting the Tidal account's identity here would drift it out from
+// under a client mid-session. The email is still worth deriving from the
+// Tidal profile when it looks like one, purely as display metadata.
 async fn account_identity() -> (String, String) {
     let settings = SETTINGS.get().expect("settings not loaded");
-    let fallback = settings.username.clone();
+    let username = settings.username.clone();
     match crate::tidal::client().user_profile().await {
         Ok(v) => {
-            let name = v["username"]
+            let profile_name = v["username"]
                 .as_str()
                 .filter(|s| !s.is_empty())
-                .or_else(|| v["profileName"].as_str().filter(|s| !s.is_empty()))
-                .unwrap_or(&fallback)
-                .to_string();
-            // Tidal's username is often the login email itself.
-            let email = if name.contains('@') {
-                name.clone()
-            } else {
-                format!("{name}@localhost")
+                .or_else(|| v["profileName"].as_str().filter(|s| !s.is_empty()));
+            let email = match profile_name {
+                // Tidal's username is often the login email itself.
+                Some(name) if name.contains('@') => name.to_string(),
+                _ => format!("{username}@localhost"),
             };
-            (name, email)
+            (username, email)
         }
         Err(e) => {
             tracing::warn!("user profile fetch failed: {e}");
-            (fallback.clone(), format!("{fallback}@localhost"))
+            (username.clone(), format!("{username}@localhost"))
         }
     }
 }
