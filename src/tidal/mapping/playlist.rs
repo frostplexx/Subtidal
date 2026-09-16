@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::navidrome::models::Playlist;
 
-use super::song::song_from_track;
+use super::{cover_cache, song::song_from_track};
 
 // Tidal playlist ids are UUIDs; Subsonic keeps them as opaque strings.
 // coverArt reuses the playlist's own id: getCoverArt already recognizes a
@@ -20,6 +20,9 @@ pub fn playlist_from_tidal(v: &Value) -> Option<Playlist> {
         .or_else(|| v["numberOfTracks"].as_u64())
         .map(|n| n as u32);
     let known_tracks = song_count.unwrap_or(0) > 0;
+    if let Some(image) = v["squareImage"].as_str().or_else(|| v["image"].as_str()) {
+        cover_cache::remember(&id, image);
+    }
     Some(Playlist {
         id: id.clone(),
         name,
@@ -123,8 +126,12 @@ fn iso_duration_seconds(s: &str) -> Option<u32> {
 pub fn mix_from_tidal(v: &Value) -> Option<Playlist> {
     let id = format!("mx{}", v["id"].as_str()?);
     let name = v["title"].as_str()?.to_string();
-    let has_cover =
-        v["images"]["MEDIUM"]["url"].is_string() || v["images"]["SMALL"]["url"].is_string();
+    let cover = v["images"]["MEDIUM"]["url"]
+        .as_str()
+        .or_else(|| v["images"]["SMALL"]["url"].as_str());
+    if let Some(url) = cover {
+        cover_cache::remember(&id, url);
+    }
     Some(Playlist {
         id: id.clone(),
         name,
@@ -138,7 +145,7 @@ pub fn mix_from_tidal(v: &Value) -> Option<Playlist> {
         duration: Some(0),
         created: Some("1970-01-01T00:00:00.000Z".into()),
         changed: None,
-        cover_art: has_cover.then_some(id),
+        cover_art: cover.is_some().then_some(id),
     })
 }
 

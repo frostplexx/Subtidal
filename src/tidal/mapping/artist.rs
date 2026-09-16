@@ -4,15 +4,22 @@ use serde_json::Value;
 use crate::navidrome::ids;
 use crate::navidrome::models::{ArtistId3, StarredArtist};
 
+use super::cover_cache;
+
 pub fn artist_from_tidal(v: &Value) -> Option<ArtistId3> {
     let id = v["id"].as_u64()?;
     let name = v["name"].as_str()?.to_string();
+    let artist_id = ids::encode_artist(id);
+    if let Some(pic) = v["picture"].as_str() {
+        cover_cache::remember(&artist_id, pic);
+    }
     Some(ArtistId3 {
-        id: ids::encode_artist(id),
+        id: artist_id.clone(),
         name,
         // An opaque artist id, not a raw Tidal CDN URL; getCoverArt
-        // resolves it back to the artist's picture at request time.
-        cover_art: v["picture"].as_str().map(|_| ids::encode_artist(id)),
+        // resolves it back to the artist's picture at request time
+        // (cheaply, via the cover_cache populated above).
+        cover_art: v["picture"].as_str().map(|_| artist_id),
         album_count: v["albumCount"].as_u64().map(|n| n as u32),
         starred: None,
         starred_at: None,
@@ -25,10 +32,14 @@ pub fn favorite_artist_from_tidal(entry: &Value) -> Option<StarredArtist> {
     let item = &entry["item"];
     let id = item["id"].as_u64()?;
     let name = item["name"].as_str()?.to_string();
+    let artist_id = ids::encode_artist(id);
+    if let Some(pic) = item["picture"].as_str() {
+        cover_cache::remember(&artist_id, pic);
+    }
     Some(StarredArtist {
-        id: ids::encode_artist(id),
+        id: artist_id.clone(),
         name,
-        cover_art: item["picture"].as_str().map(|_| ids::encode_artist(id)),
+        cover_art: item["picture"].as_str().map(|_| artist_id),
         starred: entry["created"].as_str().map(String::from),
     })
 }
