@@ -71,7 +71,6 @@ pub async fn get_starred() -> Result<warp::reply::Json, warp::Rejection> {
         .map(|a| StarredAlbum {
             parent: a.artist_id.clone(),
             is_dir: true,
-            starred: a.created.clone(),
             album: a,
         })
         .collect();
@@ -95,10 +94,7 @@ pub async fn get_starred2() -> Result<warp::reply::Json, warp::Rejection> {
     };
     let album = favorites_albums(&albums)
         .into_iter()
-        .map(|a| Starred2Album {
-            starred: a.created.clone(),
-            album: a,
-        })
+        .map(|a| Starred2Album { album: a })
         .collect();
     let artist = artists["items"]
         .as_array()
@@ -116,7 +112,6 @@ pub async fn get_starred2() -> Result<warp::reply::Json, warp::Rejection> {
                         entry["item"]["picture"].as_str().map(|p| artist_pic_url(p, 480));
                     Some(Starred2Artist {
                         artist_image_url,
-                        starred: entry["created"].as_str().map(String::from),
                         artist,
                     })
                 })
