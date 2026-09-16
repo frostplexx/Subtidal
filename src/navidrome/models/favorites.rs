@@ -30,6 +30,9 @@ pub struct StarredArtist {
     pub starred: Option<String>,
 }
 
+// `starred`/`starredAt` come from the flattened AlbumId3, already set by
+// favorite_album_from_tidal; a duplicate field here would serialize the
+// key twice.
 #[derive(Serialize)]
 pub struct StarredAlbum {
     #[serde(flatten)]
@@ -37,8 +40,6 @@ pub struct StarredAlbum {
     pub parent: String,
     #[serde(rename = "isDir")]
     pub is_dir: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub starred: Option<String>,
 }
 
 // getStarred2 data: ID3 shapes. Artists carry albumCount and
@@ -55,22 +56,23 @@ pub struct Starred2 {
     pub song: Vec<Child>,
 }
 
+// `starred`/`starredAt` come from the flattened ArtistId3; a duplicate
+// field here would serialize the key twice.
 #[derive(Serialize)]
 pub struct Starred2Artist {
     #[serde(flatten)]
     pub artist: ArtistId3,
     #[serde(rename = "artistImageUrl", skip_serializing_if = "Option::is_none")]
     pub artist_image_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub starred: Option<String>,
 }
 
+// `starred`/`starredAt` come from the flattened AlbumId3, already set by
+// favorite_album_from_tidal; a duplicate field here would serialize the
+// key twice.
 #[derive(Serialize)]
 pub struct Starred2Album {
     #[serde(flatten)]
     pub album: AlbumId3,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub starred: Option<String>,
 }
 
 #[cfg(test)]
@@ -90,7 +92,6 @@ mod tests {
                 album: vec![StarredAlbum {
                     parent: "ar1".into(),
                     is_dir: true,
-                    starred: None,
                     album: AlbumId3 {
                         id: "al1".into(),
                         album: "A".into(),
@@ -125,7 +126,6 @@ mod tests {
             starred2: Starred2 {
                 artist: vec![Starred2Artist {
                     artist_image_url: Some("https://example.com/a.jpg".into()),
-                    starred: None,
                     artist: ArtistId3 {
                         id: "ar1".into(),
                         name: "X".into(),
@@ -145,5 +145,29 @@ mod tests {
             json["starred2"]["artist"][0]["artistImageUrl"],
             "https://example.com/a.jpg"
         );
+    }
+
+    // Regression: Starred2Artist/Starred2Album/StarredAlbum used to carry
+    // their own `starred` field alongside the flattened ArtistId3/AlbumId3,
+    // which already has one. serde_json::to_value collapses duplicate keys
+    // into a Map (last write wins), so only the raw serialized string
+    // reveals a literal repeated key — which some strict JSON decoders
+    // (this bit a real client) reject outright.
+    #[test]
+    fn flattened_entities_serialize_starred_exactly_once() {
+        let artist = Starred2Artist {
+            artist_image_url: None,
+            artist: ArtistId3 {
+                id: "ar1".into(),
+                name: "X".into(),
+                cover_art: None,
+                album_count: None,
+                starred: Some("2026-05-31T11:07:08Z".into()),
+                starred_at: Some("2026-05-31T11:07:08Z".into()),
+            },
+        };
+        let raw = serde_json::to_string(&artist).unwrap();
+        assert_eq!(raw.matches("\"starred\"").count(), 1);
+        assert_eq!(raw.matches("\"starredAt\"").count(), 1);
     }
 }
