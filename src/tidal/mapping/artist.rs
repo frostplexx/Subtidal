@@ -4,15 +4,15 @@ use serde_json::Value;
 use crate::navidrome::ids;
 use crate::navidrome::models::{ArtistId3, StarredArtist};
 
-use super::artist_pic_url;
-
 pub fn artist_from_tidal(v: &Value) -> Option<ArtistId3> {
     let id = v["id"].as_u64()?;
     let name = v["name"].as_str()?.to_string();
     Some(ArtistId3 {
         id: ids::encode_artist(id),
         name,
-        cover_art: v["picture"].as_str().map(|p| artist_pic_url(p, 480)),
+        // An opaque artist id, not a raw Tidal CDN URL; getCoverArt
+        // resolves it back to the artist's picture at request time.
+        cover_art: v["picture"].as_str().map(|_| ids::encode_artist(id)),
         album_count: v["albumCount"].as_u64().map(|n| n as u32),
         starred: None,
         starred_at: None,
@@ -28,7 +28,7 @@ pub fn favorite_artist_from_tidal(entry: &Value) -> Option<StarredArtist> {
     Some(StarredArtist {
         id: ids::encode_artist(id),
         name,
-        cover_art: item["picture"].as_str().map(|p| artist_pic_url(p, 480)),
+        cover_art: item["picture"].as_str().map(|_| ids::encode_artist(id)),
         starred: entry["created"].as_str().map(String::from),
     })
 }
@@ -44,9 +44,6 @@ mod tests {
         let a = artist_from_tidal(&artist).unwrap();
         assert_eq!(a.id, "ar9");
         assert_eq!(a.album_count, None);
-        assert_eq!(
-            a.cover_art.unwrap(),
-            "https://resources.tidal.com/images/pic/1/480x480.jpg"
-        );
+        assert_eq!(a.cover_art.as_deref(), Some("ar9"));
     }
 }

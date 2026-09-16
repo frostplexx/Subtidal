@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::navidrome::ids;
 use crate::navidrome::models::{AlbumId3, GenreItem};
 
-use super::{content_labels, cover_url, explicit_status, lead_artist, year_from};
+use super::{content_labels, explicit_status, lead_artist, year_from};
 
 pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
     let id = v["id"].as_u64()?;
@@ -28,7 +28,9 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
         name,
         artist: artist_name,
         artist_id: ids::encode_artist(artist_id),
-        cover_art: v["cover"].as_str().map(|c| cover_url(c, 640)),
+        // An opaque album id, not a raw Tidal CDN URL; getCoverArt
+        // resolves it back to the album's cover at request time.
+        cover_art: v["cover"].as_str().map(|_| ids::encode_album(id)),
         song_count: v["numberOfTracks"].as_u64().map(|n| n as u32),
         duration: v["duration"].as_u64().map(|n| n as u32),
         play_count: 0,
@@ -74,6 +76,7 @@ mod tests {
         });
         let a = album_from_tidal(&album).unwrap();
         assert_eq!(a.id, "al456");
+        assert_eq!(a.cover_art.as_deref(), Some("al456"));
         assert_eq!(a.artist_id, "ar9");
         assert_eq!(a.song_count, Some(10));
         assert_eq!(a.year, Some(2020));
