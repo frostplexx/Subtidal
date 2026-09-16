@@ -4,6 +4,7 @@
 
 pub mod album;
 pub mod artist;
+pub(crate) mod cover_cache;
 pub mod playlist;
 pub mod song;
 

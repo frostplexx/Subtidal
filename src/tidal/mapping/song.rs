@@ -6,7 +6,7 @@ use crate::tidal::Quality;
 use crate::navidrome::models::{ArtistRef, Child, GenreItem, ReplayGain};
 
 use super::{
-    artist_credits, content_labels, cover_url, explicit_status, lead_artist, year_from,
+    artist_credits, content_labels, cover_cache, explicit_status, lead_artist, year_from,
 };
 
 pub fn song_from_track(v: &Value) -> Option<Child> {
@@ -50,9 +50,14 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     let tier = Quality::from_track(v);
     let (content_type, suffix) = format_from_track(v);
 
+    let album_subsonic_id = ids::encode_album(album_id);
+    if let Some(cover) = album.get("cover").and_then(|c| c.as_str()) {
+        cover_cache::remember(&album_subsonic_id, cover);
+    }
+
     Some(Child {
         id: ids::encode_track(id),
-        parent: ids::encode_album(album_id),
+        parent: album_subsonic_id.clone(),
         is_dir: false,
         is_video: false,
         title,
@@ -62,10 +67,13 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         year,
         genre,
         genres,
+        // An opaque album id, not a raw Tidal CDN URL; getCoverArt
+        // resolves it back to the album's cover at request time (cheaply,
+        // via the cover_cache populated above).
         cover_art: album
             .get("cover")
             .and_then(|c| c.as_str())
-            .map(|c| cover_url(c, 640)),
+            .map(|_| album_subsonic_id),
         duration: v["duration"].as_u64().unwrap_or(0) as u32,
         bit_rate: tier.map(Quality::bitrate),
         bit_depth: tier.map(Quality::bit_depth),
@@ -140,10 +148,7 @@ mod tests {
         assert_eq!(song.year, Some(2021));
         assert_eq!(song.track, 3);
         assert_eq!(song.disc_number, Some(2));
-        assert_eq!(
-            song.cover_art.unwrap(),
-            "https://resources.tidal.com/images/abc/123/640x640.jpg"
-        );
+        assert_eq!(song.cover_art.as_deref(), Some("al456"));
     }
 
     #[test]

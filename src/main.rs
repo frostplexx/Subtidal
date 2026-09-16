@@ -147,9 +147,13 @@ async fn main() {
     SETTINGS.set(settings).expect("SETTINGS already set");
     navidrome::scrobble::init(SETTINGS.get().unwrap());
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            // warp logs every aborted client connection (e.g. a player
+            // cancelling a request mid-navigation) as an ERROR-level
+            // IncompleteMessage; that's normal client behavior, not a
+            // server fault, so it's muted by default.
+            EnvFilter::new("info,warp::server::run=off")
+        }))
         .init();
 
     if logged_in {
