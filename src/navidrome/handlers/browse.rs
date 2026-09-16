@@ -13,7 +13,7 @@ use crate::navidrome::models::{
 use crate::navidrome::params::QueryParams;
 use super::{fail, ok};
 use crate::tidal::client::Error;
-use crate::tidal::mapping::{album_from_tidal, artist_pic_url, song_from_track, year_from};
+use crate::tidal::mapping::{album_from_tidal, song_from_track, year_from};
 
 // Leading articles the index strips before bucketing (Navidrome's default
 // list). Serve the same string in ignoredArticles so clients know the rule.
@@ -42,7 +42,7 @@ async fn favorite_artists() -> Result<Vec<IndexArtist>, ()> {
                     Some(IndexArtist {
                         id: ids::encode_artist(id),
                         name,
-                        cover_art: item["picture"].as_str().map(|p| artist_pic_url(p, 480)),
+                        cover_art: item["picture"].as_str().map(|_| ids::encode_artist(id)),
                         album_count: item["albumCount"].as_u64().map(|n| n as u32),
                         starred: entry["created"].as_str().map(String::from),
                     })
@@ -284,7 +284,7 @@ async fn root_directory(client: &crate::tidal::client::TidalClient) -> Result<Di
                         name.clone(),
                         name.clone(),
                         name,
-                        item["picture"].as_str().map(|p| artist_pic_url(p, 480)),
+                        item["picture"].as_str().map(|_| ids::encode_artist(id)),
                     ))
                 })
                 .collect()

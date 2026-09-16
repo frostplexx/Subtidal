@@ -3,13 +3,14 @@ use serde_json::Value;
 
 use crate::navidrome::models::Playlist;
 
-use super::{cover_url, song::song_from_track};
+use super::song::song_from_track;
 
 // Tidal playlist ids are UUIDs; Subsonic keeps them as opaque strings.
-// squareImage is a cover UUID; coverArt carries the full image URL so
-// clients that accept URLs skip getCoverArt entirely. The v2 attributes
-// use accessType/numberOfTrackItems/createdAt/lastModifiedAt and an ISO
-// 8601 duration string; the older names stay as fallbacks for drift.
+// coverArt reuses the playlist's own id: getCoverArt already recognizes a
+// bare UUID as a playlist id and resolves it to squareImage/image itself.
+// The v2 attributes use accessType/numberOfTrackItems/createdAt/
+// lastModifiedAt and an ISO 8601 duration string; the older names stay as
+// fallbacks for drift.
 pub fn playlist_from_tidal(v: &Value) -> Option<Playlist> {
     let id = v["uuid"].as_str()?.to_string();
     let name = v["title"].as_str()?.to_string();
@@ -20,7 +21,7 @@ pub fn playlist_from_tidal(v: &Value) -> Option<Playlist> {
         .map(|n| n as u32);
     let known_tracks = song_count.unwrap_or(0) > 0;
     Some(Playlist {
-        id,
+        id: id.clone(),
         name,
         comment: v["description"].as_str().map(String::from),
         owner: v["creator"]["name"].as_str().map(String::from),
@@ -45,7 +46,7 @@ pub fn playlist_from_tidal(v: &Value) -> Option<Playlist> {
         cover_art: v["squareImage"]
             .as_str()
             .or_else(|| v["image"].as_str())
-            .map(|c| cover_url(c, 320)),
+            .map(|_| id.clone()),
     })
 }
 
@@ -115,15 +116,17 @@ fn iso_duration_seconds(s: &str) -> Option<u32> {
 }
 
 // Map a mix object to a Subsonic Playlist. The id keeps an mx prefix so
-// getPlaylist can route it to the mix items endpoint; the cover is a full
-// image URL, like playlist covers. Mixes have no owner or stable track
-// count; created/duration get epoch/zero placeholders so clients render
-// them cleanly instead of showing a broken value.
+// getPlaylist can route it to the mix items endpoint, and so getCoverArt
+// can recognize it and refetch the mix's images itself. Mixes have no
+// owner or stable track count; created/duration get epoch/zero
+// placeholders so clients render them cleanly instead of a broken value.
 pub fn mix_from_tidal(v: &Value) -> Option<Playlist> {
     let id = format!("mx{}", v["id"].as_str()?);
     let name = v["title"].as_str()?.to_string();
+    let has_cover =
+        v["images"]["MEDIUM"]["url"].is_string() || v["images"]["SMALL"]["url"].is_string();
     Some(Playlist {
-        id,
+        id: id.clone(),
         name,
         comment: v["subTitle"]
             .as_str()
@@ -135,10 +138,7 @@ pub fn mix_from_tidal(v: &Value) -> Option<Playlist> {
         duration: Some(0),
         created: Some("1970-01-01T00:00:00.000Z".into()),
         changed: None,
-        cover_art: v["images"]["MEDIUM"]["url"]
-            .as_str()
-            .or_else(|| v["images"]["SMALL"]["url"].as_str())
-            .map(String::from),
+        cover_art: has_cover.then_some(id),
     })
 }
 
@@ -191,10 +191,7 @@ mod tests {
         assert!(pl.r#public);
         assert_eq!(pl.created.as_deref(), Some("2023-01-15T10:00:00.000Z"));
         assert_eq!(pl.changed.as_deref(), Some("2024-02-01T08:30:00.000Z"));
-        assert_eq!(
-            pl.cover_art.as_deref(),
-            Some("https://resources.tidal.com/images/1a2b3c4d/5e6f/4a7b/8c9d/0e1f2a3b4c5d/320x320.jpg")
-        );
+        assert_eq!(pl.cover_art.as_deref(), Some("0f31-6c0a"));
     }
 
     #[test]
@@ -274,7 +271,7 @@ mod tests {
         assert_eq!(p.name, "My Mix 1");
         assert_eq!(p.comment.as_deref(), Some("Cattle Decapitation, Bolt Thrower and more"));
         assert_eq!(p.owner.as_deref(), Some("TIDAL"));
-        assert_eq!(p.cover_art.as_deref(), Some("https://images.tidal.com/m.jpg"));
+        assert_eq!(p.cover_art.as_deref(), Some("mx002a925a8721401af44e9ccb59a2fb"));
         // Placeholders so clients render cleanly instead of a broken value.
         assert_eq!(p.duration, Some(0));
         assert_eq!(p.created.as_deref(), Some("1970-01-01T00:00:00.000Z"));
@@ -288,9 +285,6 @@ mod tests {
             "mixType": "DAILY_MIX",
             "images": {"SMALL": {"url": "https://images.tidal.com/s.jpg"}}
         });
-        assert_eq!(
-            mix_from_tidal(&mix).unwrap().cover_art.as_deref(),
-            Some("https://images.tidal.com/s.jpg")
-        );
+        assert_eq!(mix_from_tidal(&mix).unwrap().cover_art.as_deref(), Some("mxabc"));
     }
 }
