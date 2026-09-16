@@ -189,6 +189,16 @@ fn normalize(obj: &Value, mut v: Value) -> Value {
     }
     if rtype == "tracks" {
         v["duration"] = iso_seconds(&v["duration"]);
+        // v2 nests it as {text: "..."}; v1 (and TidalTrack) expect a
+        // bare string.
+        if let Some(text) = v["copyright"]["text"].as_str() {
+            v["copyright"] = json!(text);
+        }
+        // v2 reports popularity as a 0..1 fraction; v1 (and TidalTrack)
+        // use a 0..100 integer.
+        if let Some(p) = v["popularity"].as_f64() {
+            v["popularity"] = json!((p * 100.0).round() as u32);
+        }
     }
     if rtype == "artists" {
         // no attribute renames; picture comes from the profileArt join
@@ -439,6 +449,29 @@ mod tests {
         assert_eq!(v["album"]["title"], "Opus");
         assert_eq!(v["album"]["releaseDate"], "2013-03-01");
         assert_eq!(v["cover"], "https://art.tidal.com/b");
+    }
+
+    #[test]
+    fn track_copyright_and_popularity_are_normalized_to_v1_shape() {
+        // v2 nests copyright as {text} and reports popularity as a 0..1
+        // fraction; TidalTrack (and the legacy mappers) expect a bare
+        // string and a 0..100 integer, same as v1.
+        let doc = json!({
+            "data": {
+                "type": "tracks",
+                "id": "7",
+                "attributes": {
+                    "title": "Run",
+                    "duration": "PT1M",
+                    "copyright": { "text": "(P) 2010 Some Label" },
+                    "popularity": 0.686704850516485,
+                },
+            },
+            "included": [],
+        });
+        let v = flatten_resource(&doc["data"], &doc);
+        assert_eq!(v["copyright"], "(P) 2010 Some Label");
+        assert_eq!(v["popularity"], json!(69));
     }
 
     #[test]

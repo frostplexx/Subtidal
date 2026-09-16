@@ -118,11 +118,29 @@ impl TidalClient {
     // A track's detail page. The typed TidalTrack carries everything the
     // handlers need (title, artists, duration, mixes) and serializes back
     // to raw Tidal JSON for the legacy Value-based mappers.
+    //
+    // Falls back to the v2 document on any v1 failure: some catalog
+    // entries 404 on the legacy `/v1/tracks/{id}` endpoint (subStatus
+    // 2001, "Track not found") while still resolving fine through
+    // search and album relationships, which are v2-only. The v2 shape
+    // loses replayGain/peak/mixes (mirrors the album_with_items
+    // trade-off), but everything else the handlers need survives.
     pub async fn track(&self, id: u64) -> Result<TidalTrack, super::Error> {
-        let value = self
-            .get_json(&format!("/tracks/{id}"), &self.meta_cache)
-            .await?;
-        serde_json::from_value(value).map_err(super::Error::Json)
+        match self.get_json(&format!("/tracks/{id}"), &self.meta_cache).await {
+            Ok(value) => serde_json::from_value(value).map_err(super::Error::Json),
+            Err(e) => {
+                tracing::debug!("v1 track detail failed, falling back to v2: {e}");
+                let doc = self
+                    .openapi_get(
+                        &format!("/tracks/{id}"),
+                        &[("include", "artists,albums.coverArt,genres")],
+                        &self.meta_cache,
+                    )
+                    .await?;
+                let value = jsonapi::flatten_resource(&doc["data"], &doc);
+                serde_json::from_value(value).map_err(super::Error::Json)
+            }
+        }
     }
 
     // Tidal's built-in lyrics: plain text plus an LRC subtitle track.
@@ -356,6 +374,46 @@ mod tests {
         assert_eq!(album.title, "Album One");
         assert_eq!(album.release_date.as_deref(), Some("2021-06-25"));
         assert_eq!(t.media_metadata.as_ref().unwrap().tags, vec!["LOSSLESS"]);
+    }
+
+    #[test]
+    fn track_deserializes_from_a_flattened_v2_document() {
+        // The shape track()'s v2 fallback produces: a jsonapi document
+        // flattened by jsonapi::flatten_resource, same as what backs
+        // getAlbum's v2 fallback. Confirms the v1-named TidalTrack
+        // struct still deserializes from it, missing fields (mixes,
+        // replayGain, peak) simply reading None.
+        let doc = serde_json::json!({
+            "data": {
+                "type": "tracks",
+                "id": "4261333",
+                "attributes": {
+                    "title": "Garbage Truck",
+                    "duration": "PT1M44S",
+                    "isrc": "US3841000025",
+                    "explicit": false,
+                },
+                "relationships": {
+                    "artists": { "data": [{ "type": "artists", "id": "3721117" }] },
+                    "albums": { "data": [{ "type": "albums", "id": "4261325" }] },
+                },
+            },
+            "included": [
+                { "type": "artists", "id": "3721117", "attributes": { "name": "Sex Bob-Omb" } },
+                { "type": "albums", "id": "4261325", "attributes": { "title": "Scott Pilgrim vs. the World" } },
+            ],
+        });
+        let value = jsonapi::flatten_resource(&doc["data"], &doc);
+        let t: TidalTrack = serde_json::from_value(value).unwrap();
+        assert_eq!(t.id, 4261333);
+        assert_eq!(t.title, "Garbage Truck");
+        assert_eq!(t.duration, Some(104));
+        assert_eq!(t.isrc.as_deref(), Some("US3841000025"));
+        assert_eq!(t.explicit, Some(false));
+        assert_eq!(t.artists.as_ref().unwrap()[0].name, "Sex Bob-Omb");
+        assert_eq!(t.album.as_ref().unwrap().title, "Scott Pilgrim vs. the World");
+        assert_eq!(t.mixes, None);
+        assert_eq!(t.replay_gain, None);
     }
 
     #[test]
