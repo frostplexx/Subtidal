@@ -30,6 +30,8 @@ pub struct RadiantLine {
     pub start_time: f64,
     pub duration: f64,
     pub end_time: f64,
+    /// Absent when the line is only line-synced, not word-by-word.
+    #[serde(default)]
     pub syllabus: Vec<RadiantSyllable>,
     /// Free-form object; may hold per-line extras. Raw so extra fields
     /// never break deserialization.
@@ -109,6 +111,22 @@ mod tests {
         assert_eq!(r.metadata.source, "Deezer");
         assert_eq!(r.metadata.song_writers, vec!["Lukas Strobel"]);
         assert_eq!(r.metadata.licence.as_deref(), Some("Lyrics Licensed & Provided by LyricFind"));
+    }
+
+    #[test]
+    fn radiant_lyrics_accepts_missing_syllabus() {
+        // Line-synced-only responses omit `syllabus` entirely rather than
+        // sending an empty array; this must still parse.
+        let v = r##"{
+            "type": "Line",
+            "data": [
+                {"text": "X", "startTime": 0.0, "duration": 1.0,
+                 "endTime": 1.0, "element": {}, "translation": null}
+            ],
+            "metadata": {"source": "Deezer"}
+        }"##;
+        let r: RadiantLyrics = serde_json::from_str(v).unwrap();
+        assert!(r.data[0].syllabus.is_empty());
     }
 
     #[test]
