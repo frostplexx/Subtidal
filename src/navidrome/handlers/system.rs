@@ -64,18 +64,18 @@ fn user_of(username: String, email: String, scrobbling_enabled: bool) -> User {
         folder: vec![1],
         username,
         email,
-        scrobbling_enabled: if scrobbling_enabled { "true" } else { "false" },
-        admin_role: "true",
-        settings_role: "true",
-        download_role: "true",
-        playlist_role: "true",
-        cover_art_role: "true",
-        stream_role: "true",
-        upload_role: "false",
-        comment_role: "false",
-        podcast_role: "false",
-        jukebox_role: "false",
-        share_role: "false",
+        scrobbling_enabled,
+        admin_role: true,
+        settings_role: true,
+        download_role: true,
+        playlist_role: true,
+        cover_art_role: true,
+        stream_role: true,
+        upload_role: false,
+        comment_role: false,
+        podcast_role: false,
+        jukebox_role: false,
+        share_role: false,
     }
 }
 
@@ -142,8 +142,8 @@ mod tests {
     #[test]
     fn user_of_reflects_scrobbling_enabled() {
         let on = user_of("u".into(), "e".into(), true);
-        assert_eq!(on.scrobbling_enabled, "true");
+        assert!(on.scrobbling_enabled);
         let off = user_of("u".into(), "e".into(), false);
-        assert_eq!(off.scrobbling_enabled, "false");
+        assert!(!off.scrobbling_enabled);
     }
 }

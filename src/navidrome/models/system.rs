@@ -126,37 +126,40 @@ pub struct ScanStatus {
     pub count: u32,
 }
 
-// Role flags are strings ("true"/"false") to match the documented
-// OpenSubsonic JSON output, a legacy Subsonic quirk.
+// Role flags are native JSON booleans. The Subsonic API's XML form
+// necessarily stringifies them ("true"/"false" attribute values), but
+// the f=json variant (what every modern client, including OpenSubsonic
+// ones, actually requests) uses real booleans; a client with a strict
+// JSON decoder (typed Bool fields) fails to parse a quoted "true"/"false".
 #[derive(Serialize)]
 pub struct User {
     pub folder: Vec<u32>,
     pub username: String,
     pub email: String,
     #[serde(rename = "scrobblingEnabled")]
-    pub scrobbling_enabled: &'static str,
+    pub scrobbling_enabled: bool,
     #[serde(rename = "adminRole")]
-    pub admin_role: &'static str,
+    pub admin_role: bool,
     #[serde(rename = "settingsRole")]
-    pub settings_role: &'static str,
+    pub settings_role: bool,
     #[serde(rename = "downloadRole")]
-    pub download_role: &'static str,
+    pub download_role: bool,
     #[serde(rename = "uploadRole")]
-    pub upload_role: &'static str,
+    pub upload_role: bool,
     #[serde(rename = "playlistRole")]
-    pub playlist_role: &'static str,
+    pub playlist_role: bool,
     #[serde(rename = "coverArtRole")]
-    pub cover_art_role: &'static str,
+    pub cover_art_role: bool,
     #[serde(rename = "commentRole")]
-    pub comment_role: &'static str,
+    pub comment_role: bool,
     #[serde(rename = "podcastRole")]
-    pub podcast_role: &'static str,
+    pub podcast_role: bool,
     #[serde(rename = "streamRole")]
-    pub stream_role: &'static str,
+    pub stream_role: bool,
     #[serde(rename = "jukeboxRole")]
-    pub jukebox_role: &'static str,
+    pub jukebox_role: bool,
     #[serde(rename = "shareRole")]
-    pub share_role: &'static str,
+    pub share_role: bool,
 }
 
 // getGenres data: { genres: { genre: [ Genre ] } }
