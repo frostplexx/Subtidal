@@ -229,7 +229,11 @@ fn rate_limit_enabled() -> bool {
 pub fn require_auth() -> impl Filter<Extract = (QueryParams, String, Bytes, Option<String>, Option<String>), Error = Rejection> + Clone {
     warp::query::raw()
         .or_else(|_| async { Ok::<_, Infallible>((String::new(),)) })
-        .and(warp::addr::remote())
+        // warp::addr::remote() only works with warp::serve()'s own
+        // TcpListener; main.rs's serve_with_keepalive stamps the remote
+        // address as a plain SocketAddr extension instead (see its
+        // WithRemoteAddr comment).
+        .and(warp::filters::ext::optional::<SocketAddr>())
         .and(warp::header::optional::<String>("x-forwarded-proto"))
         .and(warp::header::optional::<String>("host"))
         .and(bounded_body(MAX_BODY_BYTES))

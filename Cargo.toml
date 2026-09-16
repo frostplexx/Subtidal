@@ -5,8 +5,13 @@ edition = "2024"
 
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "process", "io-util", "io-std", "sync"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "process", "io-util", "io-std", "sync", "net"] }
 warp = { version = "0.4.3", features = ["server", "test"] }
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1.12", features = ["server", "server-auto", "tokio", "service"] }
+tower-service = "0.3"
+http = "1"
+socket2 = "0.6"
 serde_urlencoded = "0.7"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 md-5 = "0.11"

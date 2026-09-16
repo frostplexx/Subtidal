@@ -38,7 +38,10 @@ where
         .map(Instant::now)
         .and(warp::path::full())
         .and(warp::method())
-        .and(warp::addr::remote())
+        // warp::addr::remote() only works with warp::serve()'s own
+        // TcpListener; main.rs's serve_with_keepalive stamps the remote
+        // address as a plain SocketAddr extension instead.
+        .and(warp::filters::ext::optional::<SocketAddr>())
         .and(query::raw().or_else(|_| async { Ok::<_, Infallible>((String::new(),)) }))
         .and(filter)
         .map(

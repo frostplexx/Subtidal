@@ -6,6 +6,7 @@ mod tidal;
 mod transcode;
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use navidrome::routes::routes;
 use settings::{Settings, load_settings};
@@ -201,7 +202,95 @@ async fn main() {
         ),
         (true, false) => {}
     }
-    warp::serve(routes)
-        .run((bind, SETTINGS.get().unwrap().port))
-        .await;
+    serve_with_keepalive(routes, bind, SETTINGS.get().unwrap().port).await;
+}
+
+// warp::serve()'s TcpListener never turns on SO_KEEPALIVE for accepted
+// connections (tokio does not enable it by default, unlike Go's
+// net/http.Server, which wraps every accepted connection in a listener
+// that sets a 3-minute keepalive period). Without it, a connection a
+// client is holding open and reusing can go idle, get silently dropped
+// by a router/AP/OS power-saving path, and neither side notices until
+// the client tries to write to it - which surfaces on iOS as a generic
+// "Socket is not connected" background/foreground request failure.
+// Enabling keepalive here lets the OS notice and clean up (or keep
+// alive) a stale connection instead of leaving it a silent trap.
+//
+// This bypasses warp::serve()'s convenience TcpListener Accept impl,
+// which is the only way to touch the accepted socket before hyper takes
+// it; warp's own remote-address extension type is crate-private, so the
+// remote address is instead carried as a `SocketAddr` request extension
+// of our own and read back via `warp::filters::ext::optional` (see
+// navidrome::auth and navidrome::log, which read it the same way
+// `warp::addr::remote()` normally would).
+const TCP_KEEPALIVE: Duration = Duration::from_secs(60);
+
+async fn serve_with_keepalive<F>(routes: F, bind: std::net::IpAddr, port: u16)
+where
+    F: warp::Filter<Error = warp::Rejection> + Clone + Send + Sync + 'static,
+    F::Extract: warp::Reply,
+{
+    let listener = tokio::net::TcpListener::bind((bind, port))
+        .await
+        .unwrap_or_else(|e| panic!("failed to bind {bind}:{port}: {e}"));
+    loop {
+        let (stream, remote) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("failed to accept connection: {e}");
+                continue;
+            }
+        };
+        if let Err(e) = socket2::SockRef::from(&stream).set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(TCP_KEEPALIVE)
+                .with_interval(TCP_KEEPALIVE),
+        ) {
+            tracing::debug!("failed to enable tcp keepalive for {remote}: {e}");
+        }
+        let routes = routes.clone();
+        tokio::spawn(async move {
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let svc = hyper_util::service::TowerToHyperService::new(WithRemoteAddr {
+                inner: warp::service(routes),
+                remote,
+            });
+            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .serve_connection_with_upgrades(io, svc)
+            .await
+            {
+                tracing::debug!("connection error: {e}");
+            }
+        });
+    }
+}
+
+// Stamps the accepted connection's remote address onto every request
+// that flows through it, standing in for warp's own (crate-private)
+// remote-address extension since serve_with_keepalive bypasses
+// warp::serve()'s built-in listener.
+#[derive(Clone)]
+struct WithRemoteAddr<S> {
+    inner: S,
+    remote: std::net::SocketAddr,
+}
+
+impl<S, B> tower_service::Service<http::Request<B>> for WithRemoteAddr<S>
+where
+    S: tower_service::Service<http::Request<B>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: http::Request<B>) -> Self::Future {
+        req.extensions_mut().insert(self.remote);
+        self.inner.call(req)
+    }
 }
