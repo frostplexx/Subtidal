@@ -117,6 +117,18 @@ impl Quality {
             Quality::HiRes | Quality::Lossless | Quality::High | Quality::Low => 2,
         }
     }
+
+    // The next lower tier, for a fallback retry when the requested one
+    // is not (yet) playable (Tidal subStatus 4005). None at the floor.
+    pub fn step_down(self) -> Option<Quality> {
+        match self {
+            Quality::Atmos => Some(Quality::HiRes),
+            Quality::HiRes => Some(Quality::Lossless),
+            Quality::Lossless => Some(Quality::High),
+            Quality::High => Some(Quality::Low),
+            Quality::Low => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +217,15 @@ mod tests {
         // default must apply instead of being overridden to lossless.
         assert_eq!(Quality::from_subsonic(None, Some("mp3")), None);
         assert_eq!(Quality::from_subsonic(None, None), None);
+    }
+
+    #[test]
+    fn step_down_walks_the_capping_order_to_the_floor() {
+        assert_eq!(Quality::Atmos.step_down(), Some(Quality::HiRes));
+        assert_eq!(Quality::HiRes.step_down(), Some(Quality::Lossless));
+        assert_eq!(Quality::Lossless.step_down(), Some(Quality::High));
+        assert_eq!(Quality::High.step_down(), Some(Quality::Low));
+        assert_eq!(Quality::Low.step_down(), None);
     }
 
     #[test]

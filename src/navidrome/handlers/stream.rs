@@ -208,9 +208,24 @@ pub async fn download(
     };
     let tier = resolve_tier(&q);
     let client = crate::tidal::client();
-    let info = match client.download_info(track_id, tier).await {
-        Ok(info) => info,
-        Err(e) => return Ok(stream_error(track_id, e)),
+    // Same tier step-down as resolve(): a not-ready-yet asset at the
+    // requested quality should not fail the whole download when a
+    // lower tier is already playable.
+    let mut current = tier;
+    let info = loop {
+        match client.download_info(track_id, current).await {
+            Ok(info) => break info,
+            Err(e) if e.is_unavailable_asset() => match current.step_down() {
+                Some(lower) => {
+                    tracing::debug!(
+                        "track {track_id}: {current:?} not ready on tidal; retrying download at {lower:?}"
+                    );
+                    current = lower;
+                }
+                None => return Ok(stream_error(track_id, e)),
+            },
+            Err(e) => return Ok(stream_error(track_id, e)),
+        }
     };
     // Name the file after what it actually contains: the FLAC tiers are
     // rewrapped to a native .flac stream, the lossy ones stay MP4.
@@ -227,9 +242,29 @@ async fn resolve(track_id: u64, tier: Quality) -> Result<StreamInfo, Error> {
     if let Some(info) = cached_manifest(track_id, tier) {
         return Ok(info);
     }
-    let info = crate::tidal::client()
-        .stream_info(track_id, tier, "STREAM")
-        .await?;
+    // Tidal sometimes has not finished processing a specific quality
+    // tier of a track yet (subStatus 4005, "Asset is not ready for
+    // playback") even though lower tiers are already available. Step
+    // down the requested tier rather than failing the whole stream.
+    let mut current = tier;
+    let info = loop {
+        match crate::tidal::client()
+            .stream_info(track_id, current, "STREAM")
+            .await
+        {
+            Ok(info) => break info,
+            Err(e) if e.is_unavailable_asset() => match current.step_down() {
+                Some(lower) => {
+                    tracing::debug!(
+                        "track {track_id}: {current:?} not ready on tidal; retrying at {lower:?}"
+                    );
+                    current = lower;
+                }
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
+    };
     store_manifest(track_id, tier, &info);
     Ok(info)
 }
