@@ -8,7 +8,8 @@ use super::TidalClient;
 impl TidalClient {
     // Personalized home feed. Backs getAlbumList2 (type=newest). The feed
     // includes the "Suggested new albums for you" section, so the whole
-    // feed is walked and deduplicated.
+    // feed is walked and deduplicated. The feed regenerates like the
+    // mixes do, so it shares their short cache rather than the 6h one.
     pub async fn home_feed(&self, slug: &str) -> Result<Value, super::Error> {
         self.get_json_q_v2(
             &format!("/home/feed/{slug}"),
@@ -17,7 +18,7 @@ impl TidalClient {
                 ("locale", "en_US"),
                 ("platform", "WEB"),
             ],
-            &self.meta_cache,
+            &self.mix_cache,
         )
         .await
     }
