@@ -138,7 +138,15 @@ fn resolve_tier(q: &QueryParams) -> Quality {
 // we can emit. A lossy-format request means the client cannot play the lossless
 // source, so it wins over the normal tier mapping, which would serve the source
 // unwrapped.
-fn transcode_target(q: &QueryParams) -> Option<(Codec, u32)> {
+// One transcode request: the codec, its bitrate, and the seek offset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Transcode {
+    codec: Codec,
+    bitrate: u32,
+    offset_secs: u32,
+}
+
+fn transcode_target(q: &QueryParams) -> Option<Transcode> {
     if !crate::SETTINGS
         .get()
         .is_some_and(|s| s.transcode.enabled)
@@ -146,7 +154,11 @@ fn transcode_target(q: &QueryParams) -> Option<(Codec, u32)> {
         return None;
     }
     let codec = Codec::from_format(q.format.as_deref())?;
-    Some((codec, transcode::target_bitrate(codec, q.max_bit_rate)))
+    Some(Transcode {
+        codec,
+        bitrate: transcode::target_bitrate(codec, q.max_bit_rate),
+        offset_secs: q.time_offset.unwrap_or(0),
+    })
 }
 
 // The `tidal_quality` setting, LOSSLESS when unset. An unrecognized
@@ -276,7 +288,7 @@ async fn serve(
     info: StreamInfo,
     range: Option<&str>,
     attachment: Option<String>,
-    transcode: Option<(Codec, u32)>,
+    transcode: Option<Transcode>,
 ) -> warp::reply::Response {
     if info.encrypted {
         // The CDN bytes are AES-128-CTR ciphertext keyed by the
@@ -305,8 +317,8 @@ async fn serve(
         Asset::Segmented { init, segments } => {
             // Only segmented FLAC gives ffmpeg a re-encodable stream; anything
             // else falls through to the normal path, which serves it directly.
-            if let (Some((codec, bitrate)), true) = (transcode, info.codec.starts_with("flac")) {
-                return serve_transcode(track_id, codec, bitrate, init, segments).await;
+            if let (Some(t), true) = (transcode, info.codec.starts_with("flac")) {
+                return serve_transcode(track_id, t, init, segments).await;
             }
             let content_type = if info.codec.starts_with("flac") {
                 "audio/flac"
@@ -329,11 +341,11 @@ async fn serve(
 //
 // The byte length is unknown until the last frame is encoded, so the reply has
 // no Content-Length and advertises Accept-Ranges: none (HTTP/1.1 transfer-encodes
-// it as chunked). Seeking is not offered on transcoded streams.
+// it as chunked). Byte-range seeking is not offered on transcoded streams;
+// the transcodeOffset extension's timeOffset seeks instead.
 async fn serve_transcode(
     track_id: u64,
-    codec: Codec,
-    bitrate: u32,
+    Transcode { codec, bitrate, offset_secs }: Transcode,
     init: String,
     segments: Vec<String>,
 ) -> warp::reply::Response {
@@ -372,12 +384,12 @@ async fn serve_transcode(
     let frames = Box::pin(frames);
 
     tracing::debug!(
-        "stream {track_id} transcoding {:?} at {bitrate}kbps",
+        "stream {track_id} transcoding {:?} at {bitrate}kbps from {offset_secs}s",
         codec
     );
 
     let bin = crate::settings::ffmpeg_bin(crate::SETTINGS.get().expect("settings loaded"));
-    let body = transcode::transcode(bin, codec, bitrate, bytes::Bytes::from(header), frames);
+    let body = transcode::transcode(bin, codec, bitrate, offset_secs, bytes::Bytes::from(header), frames);
 
     let mut resp = warp::reply::stream(body).into_response();
     let headers = resp.headers_mut();
@@ -936,21 +948,25 @@ mod tests {
         // format=aac/mp3/opus asks for a lossy target on a lossless source.
         assert_eq!(
             transcode_target(&params(None, Some("mp3"))),
-            Some((Codec::Mp3, 192))
+            Some(Transcode { codec: Codec::Mp3, bitrate: 192, offset_secs: 0 })
         );
         assert_eq!(
             transcode_target(&params(None, Some("aac"))),
-            Some((Codec::Aac, 192))
+            Some(Transcode { codec: Codec::Aac, bitrate: 192, offset_secs: 0 })
         );
         assert_eq!(
             transcode_target(&params(None, Some("opus"))),
-            Some((Codec::Opus, 128))
+            Some(Transcode { codec: Codec::Opus, bitrate: 128, offset_secs: 0 })
         );
         // A bitrate cap narrows the target rate.
         assert_eq!(
             transcode_target(&params(Some(96), Some("mp3"))),
-            Some((Codec::Mp3, 96))
+            Some(Transcode { codec: Codec::Mp3, bitrate: 96, offset_secs: 0 })
         );
+        // timeOffset rides along as the seek.
+        let mut q = params(None, Some("mp3"));
+        q.time_offset = Some(42);
+        assert_eq!(transcode_target(&q).map(|t| t.offset_secs), Some(42));
         // A lossless hint is not a transcode.
         assert_eq!(transcode_target(&params(None, Some("flac"))), None);
         // No format is not a transcode.

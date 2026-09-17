@@ -58,15 +58,18 @@ pub struct QueryParams {
     // quality tier; format is only a hint (flac lifts to LOSSLESS).
     pub max_bit_rate: Option<u32>,
     pub format: Option<String>,
+    // stream: transcodeOffset extension, seconds into the track. Only
+    // honoured on transcoded streams; a native stream seeks by Range.
+    pub time_offset: Option<u32>,
     // scrobble: playback report; time is ms since epoch, submission is
     // true for a real scrobble, false for a now-playing notification.
     pub time: Option<i64>,
     pub submission: Option<bool>,
     // getRandomSongs: genre filter; year window reuses fromYear/toYear
     pub genre: Option<String>,
-    // getLyricsBySongId: enhanced=true asks for the v2 shape (kind,
-    // cueLine). We serve only v1, so the flag is accepted and ignored
-    // beyond the shape of the reply.
+    // getLyricsBySongId: enhanced=true asks for the v2 shape (cueLine
+    // and cues). Word-synced lyrics always carry it, so the flag is
+    // accepted and ignored.
     pub enhanced: Option<bool>,
     // reportPlayback: playback timeline events.
     pub media_id: Option<String>,
@@ -160,6 +163,7 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "fromYear" => q.from_year = Some(v.parse().map_err(|_| E::custom("invalid fromYear"))?),
         "toYear" => q.to_year = Some(v.parse().map_err(|_| E::custom("invalid toYear"))?),
         "maxBitRate" => q.max_bit_rate = Some(v.parse().map_err(|_| E::custom("invalid maxBitRate"))?),
+        "timeOffset" => q.time_offset = Some(v.parse().map_err(|_| E::custom("invalid timeOffset"))?),
         "format" => q.format = Some(v),
         "time" => q.time = Some(v.parse().map_err(|_| E::custom("invalid time"))?),
         "submission" => q.submission = Some(v.parse().map_err(|_| E::custom("invalid submission"))?),

@@ -100,11 +100,18 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 const READ_CHUNK: usize = 64 * 1024;
 
-fn ffmpeg_args(codec: Codec, bitrate: u32) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "-hide_banner",
-        "-loglevel",
-        "error",
+fn ffmpeg_args(codec: Codec, bitrate: u32, offset_secs: u32) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-hide_banner", "-loglevel", "error"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    // An input-side seek: ffmpeg decodes and discards up to the offset,
+    // so the client hears the track from there (transcodeOffset).
+    if offset_secs > 0 {
+        args.push("-ss".into());
+        args.push(offset_secs.to_string());
+    }
+    let tail: Vec<String> = vec![
         "-f",
         "flac",
         "-i",
@@ -117,6 +124,7 @@ fn ffmpeg_args(codec: Codec, bitrate: u32) -> Vec<String> {
     .into_iter()
     .map(String::from)
     .collect();
+    args.extend(tail);
     args.extend(codec.muxer_args(bitrate));
     args.push("-".to_string());
     args
@@ -141,9 +149,9 @@ pub async fn ffmpeg_available(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn spawn(bin: &str, codec: Codec, bitrate: u32) -> io::Result<Child> {
+async fn spawn(bin: &str, codec: Codec, bitrate: u32, offset_secs: u32) -> io::Result<Child> {
     Command::new(bin)
-        .args(ffmpeg_args(codec, bitrate))
+        .args(ffmpeg_args(codec, bitrate, offset_secs))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -160,6 +168,7 @@ pub fn transcode<S, E>(
     bin: String,
     codec: Codec,
     bitrate: u32,
+    offset_secs: u32,
     header: Bytes,
     frames: S,
 ) -> impl Stream<Item = Result<Bytes, io::Error>>
@@ -172,7 +181,7 @@ where
     tokio::spawn(async move {
         // Held for the process lifetime, not just the spawn.
         let _permit = TRANSCODE_GATE.acquire().await.ok();
-        let mut child = match spawn(&bin, codec, bitrate).await {
+        let mut child = match spawn(&bin, codec, bitrate, offset_secs).await {
             Ok(child) => child,
             Err(e) => {
                 tracing::error!("ffmpeg spawn failed ({bin}): {e}");
@@ -320,9 +329,19 @@ mod tests {
     }
 
     #[test]
+    fn ffmpeg_args_seek_before_the_input() {
+        let args = ffmpeg_args(Codec::Mp3, 128, 30);
+        let ss = args.iter().position(|a| a == "-ss").expect("-ss present");
+        let input = args.iter().position(|a| a == "-i").unwrap();
+        assert_eq!(args[ss + 1], "30");
+        assert!(ss < input, "-ss must be an input option");
+        assert!(!ffmpeg_args(Codec::Mp3, 128, 0).iter().any(|a| a == "-ss"));
+    }
+
+    #[test]
     fn ffmpeg_args_route_stdin_to_stdout() {
         for c in [Codec::Aac, Codec::Opus, Codec::Mp3] {
-            let args = ffmpeg_args(c, 128);
+            let args = ffmpeg_args(c, 128, 0);
             let joined = args.join(" ");
             assert!(
                 joined.contains("-f flac"),
@@ -444,7 +463,7 @@ mod tests {
             let out: Vec<u8> = rt.block_on(async {
                 let frames = futures_util::stream::iter(chunks);
                 let frames = Box::pin(frames);
-                let stream = transcode("ffmpeg".to_string(), codec, 128, header.clone(), frames);
+                let stream = transcode("ffmpeg".to_string(), codec, 128, 0, header.clone(), frames);
                 let mut stream = Box::pin(stream);
                 let mut bytes = Vec::new();
                 while let Some(chunk) = stream.next().await {
@@ -486,6 +505,7 @@ mod tests {
                 "ffmpeg".to_string(),
                 Codec::Mp3,
                 128,
+                0,
                 Bytes::new(),
                 Box::pin(frames),
             );
