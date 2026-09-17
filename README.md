@@ -50,7 +50,7 @@ docker run -d -p 8000:8000 \
   ghcr.io/frostplexx/subtidal:latest
 ```
 
-`APP_*` env vars are the settings for this path. The image stores the Tidal token at `/data/tokens.json`.
+`APP_*` env vars are the settings for this path; nested sections use a double underscore, e.g. `APP_LISTENBRAINZ__TOKEN=...` or `APP_TRANSCODE__ENABLED=false`. The image stores the Tidal token at `/data/tokens.json`.
 
 ## Local development
 

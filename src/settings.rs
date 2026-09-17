@@ -188,7 +188,8 @@ fn config_arg() -> Option<PathBuf> {
 }
 
 // Builds the settings from the discovered file and APP_* env vars.
-// Eg.. `APP_PASSWORD=x ./target/debug/subtidal` would override the password.
+// `APP_PASSWORD=x` overrides the password; nested sections use a double
+// underscore, `APP_LISTENBRAINZ__TOKEN=x` or `APP_TRANSCODE__ENABLED=false`.
 pub fn load_settings() -> Settings {
     let mut builder = Config::builder();
     match find_config_path() {
@@ -204,7 +205,14 @@ pub fn load_settings() -> Settings {
         }
     }
     builder
-        .add_source(config::Environment::with_prefix("APP"))
+        // prefix_separator must be set explicitly: separator() alone would
+        // also change the prefix to APP__ and break every existing APP_* var.
+        .add_source(
+            config::Environment::with_prefix("APP")
+                .prefix_separator("_")
+                .separator("__")
+                .try_parsing(true),
+        )
         .build()
         .expect("failed to build settings")
         .try_deserialize()
