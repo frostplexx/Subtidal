@@ -24,6 +24,7 @@ mod genres;
 mod jsonapi;
 mod playlists;
 mod playqueues;
+mod radio;
 mod search;
 mod stream;
 pub use stream::{Asset, SEGMENT_CONCURRENCY, StreamInfo};

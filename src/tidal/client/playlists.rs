@@ -430,7 +430,6 @@ impl TidalClient {
         .await
     }
 
-    #[allow(dead_code)]
     pub async fn mix_items_v1(
         &self,
         mix_id: &str,

@@ -110,36 +110,74 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
 }
 
 // The core shared by getSimilarSongs and getSimilarSongs2: a random
-// collection of songs similar to the artist. The primary source is
-// Tidal's own similar feed: the similarTracks relationship, seeded from
-// the artist's most popular track. A short or empty feed pads with the
-// old heuristic (top tracks of the seed and its three closest similar
-// artists), deduped against the feed. A similar artist's fetch failure
-// degrades to a warning; the seed's failure fails the request.
+// collection of songs similar to the seed. The seed is an artist (ar<id>
+// or a bare number) or a track (t<id>). Tidal's radio mix for the seed
+// comes first; when it is short, the artist's similarTracks feed pads
+// it, then the old heuristic (top tracks of the artist and its three
+// closest similar artists), all deduped. A track seed whose radio comes
+// up empty continues with the track's lead artist. A similar artist's
+// fetch failure degrades to a warning; the artist's failure fails the
+// request.
 fn similar_songs_core(q: QueryParams) -> super::BoxedTryFuture<Vec<Child>, (u32, &'static str)> {
     Box::pin(async move {
     let Some(id) = q.id.0.first() else {
         return Err((10, "Required parameter missing"));
     };
-    let Some(artist_id) = ids::decode(ids::IdKind::Artist, id).or_else(|| id.parse().ok()) else {
-        return Err((70, "Artist not found"));
-    };
     let count = q.count.unwrap_or(50).min(500) as usize;
     let client = crate::tidal::client();
 
-    // The real feed first. On failure the heuristic below still runs, so
-    // a broken relationship endpoint degrades instead of failing.
-    let mut songs: Vec<Child> = match similar_feed_songs(client, artist_id).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("tidal similar feed failed for artist {artist_id}: {e}");
-            Vec::new()
+    let mut songs: Vec<Child> = Vec::new();
+    let artist_id = match ids::parse(id) {
+        Some((ids::IdKind::Track, track_id)) => {
+            match client.track_radio(track_id, count as u32).await {
+                Ok(items) => songs.extend(items.iter().filter_map(song_from_track)),
+                Err(e) => tracing::warn!("tidal track radio failed for {track_id}: {e}"),
+            }
+            if songs.len() >= count {
+                songs.shuffle(&mut rand::rng());
+                songs.truncate(count);
+                return Ok(songs);
+            }
+            match client.track(track_id).await {
+                Ok(t) => match t.to_json()["artists"][0]["id"].as_u64() {
+                    Some(a) => a,
+                    None => return Err((70, "Artist not found")),
+                },
+                Err(_) => return Err((70, "Song not found")),
+            }
         }
+        Some((ids::IdKind::Artist, artist_id)) => artist_id,
+        Some(_) => return Err((70, "Artist not found")),
+        None => match id.parse() {
+            Ok(n) => n,
+            Err(_) => return Err((70, "Artist not found")),
+        },
     };
+
+    if songs.len() < count {
+        match client.artist_radio(artist_id, count as u32).await {
+            Ok(items) => songs.extend(items.iter().filter_map(song_from_track)),
+            Err(e) => tracing::warn!("tidal artist radio failed for {artist_id}: {e}"),
+        }
+    }
+
+    // The similar feed next. On failure the heuristic below still runs,
+    // so a broken relationship endpoint degrades instead of failing.
+    if songs.len() < count {
+        let known: HashSet<u64> = songs.iter().filter_map(|s| ids::parse_track_id(&s.id)).collect();
+        match similar_feed_songs(client, artist_id).await {
+            Ok(v) => songs.extend(v.into_iter().filter(|s| {
+                ids::parse_track_id(&s.id).is_none_or(|t| !known.contains(&t))
+            })),
+            Err(e) => tracing::warn!("tidal similar feed failed for artist {artist_id}: {e}"),
+        }
+    }
 
     if songs.len() < count {
         pad_with_top_tracks(client, artist_id, count, &mut songs).await?;
     }
+    let mut seen = HashSet::new();
+    songs.retain(|s| ids::parse_track_id(&s.id).is_none_or(|t| seen.insert(t)));
     songs.shuffle(&mut rand::rng());
     songs.truncate(count);
     Ok(songs)
