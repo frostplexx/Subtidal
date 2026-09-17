@@ -25,7 +25,11 @@ impl Quality {
         if has_tag("DOLBY_ATMOS") {
             return Some(Quality::Atmos);
         }
-        if has_tag("HIRES_LOSSLESS") || audio_quality == Some("HIRES_LOSSLESS") {
+        // The tag spells it HIRES_LOSSLESS; the audioQuality field uses
+        // HI_RES_LOSSLESS (or the older HI_RES).
+        if has_tag("HIRES_LOSSLESS")
+            || matches!(audio_quality, Some("HIRES_LOSSLESS" | "HI_RES_LOSSLESS" | "HI_RES"))
+        {
             return Some(Quality::HiRes);
         }
         if has_tag("LOSSLESS") || audio_quality == Some("LOSSLESS") {
@@ -145,6 +149,15 @@ mod tests {
         // audioQuality alone still resolves hi-res.
         assert_eq!(
             Quality::from_track(&json!({"audioQuality": "HIRES_LOSSLESS"})),
+            Some(Quality::HiRes)
+        );
+        // The v1 field spelling, with and without the LOSSLESS suffix.
+        assert_eq!(
+            Quality::from_track(&json!({"audioQuality": "HI_RES_LOSSLESS"})),
+            Some(Quality::HiRes)
+        );
+        assert_eq!(
+            Quality::from_track(&json!({"audioQuality": "HI_RES"})),
             Some(Quality::HiRes)
         );
         assert_eq!(
