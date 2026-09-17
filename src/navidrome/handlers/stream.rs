@@ -40,7 +40,8 @@ fn store_manifest(track_id: u64, tier: Quality, info: &StreamInfo) {
 
 const AUDIO_TTL: Duration = Duration::from_secs(300);
 const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
-static AUDIO_CACHE: LazyLock<Cache<(u64, Quality), Arc<Vec<u8>>>> = LazyLock::new(|| {
+type TrackCache<V> = LazyLock<Cache<(u64, Quality), V>>;
+static AUDIO_CACHE: TrackCache<Arc<Vec<u8>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_live(AUDIO_TTL)
         .max_capacity(MAX_CACHE_BYTES)
@@ -60,7 +61,7 @@ fn store_audio(track_id: u64, tier: Quality, bytes: &Arc<Vec<u8>>) {
 // hold (a few hundred integers) and worth keeping for the whole session:
 // the sizes are a property of the asset, not of the signed URLs, so they
 // stay valid even after the manifest is refetched.
-static SIZE_CACHE: LazyLock<Cache<(u64, Quality), Arc<Vec<u64>>>> =
+static SIZE_CACHE: TrackCache<Arc<Vec<u64>>> =
     LazyLock::new(|| Cache::builder().max_capacity(10_000).build());
 
 const SEGMENT_TTL: Duration = Duration::from_secs(300);
@@ -451,13 +452,15 @@ async fn serve_flac(
     chunked_reply(
         track_id,
         tier,
-        parts_desc,
-        lens,
+        ChunkedSource {
+            parts_desc,
+            lens,
+            content_type: "audio/flac",
+            header: Some(header),
+            transform: chunked_flac_transform,
+        },
         range,
         attachment,
-        "audio/flac",
-        Some(header),
-        chunked_flac_transform,
     )
     .await
 }
@@ -497,13 +500,15 @@ async fn serve_mp4(
     chunked_reply(
         track_id,
         tier,
-        parts_desc,
-        sizes.to_vec(),
+        ChunkedSource {
+            parts_desc,
+            lens: sizes.to_vec(),
+            content_type: "audio/mp4",
+            header: None,
+            transform: chunked_mp4_transform,
+        },
         range,
         attachment,
-        "audio/mp4",
-        None,
-        chunked_mp4_transform,
     )
     .await
 }
@@ -626,17 +631,24 @@ fn chunked_mp4_transform(_track_id: u64, raw: bytes::Bytes) -> Result<bytes::Byt
     Ok(raw)
 }
 
-async fn chunked_reply(
-    track_id: u64,
-    tier: Quality,
+// A segmented source: one entry per part, in stream order. A None part
+// is the in-memory header; a Some part is a CDN segment URL.
+struct ChunkedSource {
     parts_desc: Vec<Option<String>>,
     lens: Vec<u64>,
-    range: Option<&str>,
-    attachment: Option<String>,
     content_type: &'static str,
     header: Option<Vec<u8>>,
     transform: SegmentTransform,
+}
+
+async fn chunked_reply(
+    track_id: u64,
+    tier: Quality,
+    source: ChunkedSource,
+    range: Option<&str>,
+    attachment: Option<String>,
 ) -> warp::reply::Response {
+    let ChunkedSource { parts_desc, lens, content_type, header, transform } = source;
     let total: u64 = lens.iter().sum();
     let (start, end, partial) = match range.and_then(|h| parse_range(h, total)) {
         Some((s, e)) => (s, e, true),
