@@ -223,7 +223,7 @@ pub async fn create_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
         // Update mode: rename, then replace the contents.
         Some(pid) => {
             if let Some(name) = q.name.as_deref().filter(|s| !s.is_empty())
-                && let Err(e) = client.update_playlist(pid, Some(name), None).await {
+                && let Err(e) = client.update_playlist(pid, Some(name), None, None).await {
                     return Ok(mutation_error(e, "Playlist update failed"));
                 }
             if !song_ids.is_empty()
@@ -237,8 +237,8 @@ pub async fn create_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
 
 // updatePlaylist: rename, add songs, and remove songs at positions.
 // Removals run first: the indices refer to the playlist as the client
-// sees it. Then additions append. public has no Tidal v1 setter, so it is
-// accepted and ignored.
+// sees it. Then additions append. public maps to Tidal's accessType
+// (PUBLIC or UNLISTED).
 pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(pid) = q.playlist_id.as_deref().filter(|s| !s.is_empty()) else {
         return Ok(fail(10, "Required parameter missing"));
@@ -247,13 +247,10 @@ pub async fn update_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
         return Ok(fail(0, "Mixes are read-only"));
     }
     let client = crate::tidal::client();
-    if q.r#public.is_some() {
-        tracing::debug!("playlist publicity changes are unsupported; public ignored");
-    }
     let name = q.name.as_deref().filter(|s| !s.is_empty());
     let comment = q.comment.as_deref().filter(|s| !s.is_empty());
-    if (name.is_some() || comment.is_some())
-        && let Err(e) = client.update_playlist(pid, name, comment).await {
+    if (name.is_some() || comment.is_some() || q.r#public.is_some())
+        && let Err(e) = client.update_playlist(pid, name, comment, q.r#public).await {
             return Ok(mutation_error(e, "Playlist update failed"));
         }
     // Subsonic positions of the tracks to drop, ascending and deduped.

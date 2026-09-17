@@ -86,8 +86,7 @@ pub struct QueryParams {
     pub if_modified_since: Option<i64>,
     // playlist CRUD: createPlaylist (playlistId + name + songId),
     // updatePlaylist (playlistId + name/comment/public + songIdToAdd +
-    // songIndexToRemove), deletePlaylist (id). Publicity has no Tidal v1
-    // setter, so public is accepted and ignored.
+    // songIndexToRemove), deletePlaylist (id).
     pub playlist_id: Option<String>,
     pub name: Option<String>,
     pub comment: Option<String>,

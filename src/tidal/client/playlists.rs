@@ -316,32 +316,29 @@ impl TidalClient {
         Ok(jsonapi::flatten_resource(&doc["data"], &doc))
     }
 
-    // Update playlist metadata (name, description). Backs updatePlaylist
-    // and createPlaylist's rename mode. PATCH is partial: only the given
-    // fields change. accessType is deliberately omitted: the v1 source
-    // has no accessType (only publicPlaylist), so sending it would risk
-    // flipping a private playlist public.
+    // Update playlist metadata (name, description, visibility). Backs
+    // updatePlaylist and createPlaylist's rename mode. PATCH is partial:
+    // accessType is only sent when the caller asked for a visibility
+    // change, so a rename never flips a private playlist public.
     pub async fn update_playlist(
         &self,
         uuid: &str,
         title: Option<&str>,
         description: Option<&str>,
+        public: Option<bool>,
     ) -> Result<(), super::Error> {
-        if title.is_none() && description.is_none() {
+        if title.is_none() && description.is_none() && public.is_none() {
             return Ok(());
         }
         let current = self.playlist(uuid).await?;
         let name = title.unwrap_or(current["title"].as_str().unwrap_or(""));
         let description = description.unwrap_or(current["description"].as_str().unwrap_or(""));
+        let mut attributes = serde_json::json!({ "name": name, "description": description });
+        if let Some(public) = public {
+            attributes["accessType"] = serde_json::json!(if public { "PUBLIC" } else { "UNLISTED" });
+        }
         let body = serde_json::json!({
-            "data": {
-                "id": uuid,
-                "type": "playlists",
-                "attributes": {
-                    "name": name,
-                    "description": description,
-                },
-            },
+            "data": { "id": uuid, "type": "playlists", "attributes": attributes },
         });
         self.openapi_send(reqwest::Method::PATCH, &format!("/playlists/{uuid}"), Some(&body))
             .await?;
