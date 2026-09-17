@@ -12,7 +12,7 @@ use crate::navidrome::models::{
     LyricLine, Lyrics, LyricsList, LyricsListResponse, LyricsResponse, StructuredLyrics,
 };
 use crate::navidrome::params::QueryParams;
-use crate::tidal::client::{Error, percent_encode};
+use crate::tidal::client::{Error, encode_query};
 use crate::tidal::mapping::search_items;
 
 // XOR-obfuscated radiant API credentials. The ciphertext and the key
@@ -84,12 +84,7 @@ async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> 
         params.push(("album", album.title.clone()));
     }
 
-    let query = params
-        .iter()
-        .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
-        .collect::<Vec<_>>()
-        .join("&");
-    let url = format!("{HOST}?{query}");
+    let url = format!("{HOST}?{}", encode_query(&params));
 
     let resp = radiant_client()
         .get(url)

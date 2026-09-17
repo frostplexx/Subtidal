@@ -262,12 +262,7 @@ impl TidalClient {
         if params.is_empty() {
             return self.get_json_base(base, path, cache).await;
         }
-        let query = params
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, percent_encode(v)))
-            .collect::<Vec<_>>()
-            .join("&");
-        self.get_json_base(base, &format!("{path}?{query}"), cache)
+        self.get_json_base(base, &format!("{path}?{}", encode_query(params)), cache)
             .await
     }
 
@@ -460,16 +455,25 @@ pub(crate) async fn v1_prefix(
     Ok(items)
 }
 
-// Minimal percent-encoding for query strings. No new dependency needed.
-pub(crate) fn percent_encode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
+// `k=v&..` with keys and values percent-encoded, via reqwest's Url so
+// the encoding matches what the client would send itself.
+pub(crate) fn encode_query<K: AsRef<str>, V: AsRef<str>>(params: &[(K, V)]) -> String {
+    let mut url = reqwest::Url::parse("http://x/").expect("static URL");
+    url.query_pairs_mut().extend_pairs(params.iter().map(|(k, v)| (k.as_ref(), v.as_ref())));
+    url.query().unwrap_or("").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_query;
+
+    #[test]
+    fn encode_query_escapes_reserved_characters() {
+        assert_eq!(
+            encode_query(&[("query", "Alcest & Amesoeurs"), ("limit", "5")]),
+            "query=Alcest+%26+Amesoeurs&limit=5"
+        );
+        assert_eq!(encode_query::<&str, &str>(&[]), "");
+        assert_eq!(encode_query(&[("q", String::from("ü/é"))]), "q=%C3%BC%2F%C3%A9");
     }
-    out
 }
