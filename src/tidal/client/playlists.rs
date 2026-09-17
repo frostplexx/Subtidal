@@ -205,9 +205,10 @@ impl TidalClient {
                     .cloned()
                     .unwrap_or_default(),
             );
+            // A repeated cursor would loop forever; treat it as the end.
             match jsonapi::next_cursor(&doc) {
-                Some(c) => cursor = Some(c),
-                None => break,
+                Some(c) if cursor.as_deref() != Some(c.as_str()) => cursor = Some(c),
+                _ => break,
             }
         }
         Ok(items)
