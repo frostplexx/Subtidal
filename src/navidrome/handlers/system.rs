@@ -86,7 +86,7 @@ fn user_of(username: String, email: String, scrobbling_enabled: bool) -> User {
         comment_role: false,
         podcast_role: false,
         jukebox_role: false,
-        share_role: false,
+        share_role: true,
     }
 }
 
@@ -135,9 +135,14 @@ pub async fn get_scan_status() -> Result<warp::reply::Json, warp::Rejection> {
     }))
 }
 
-// startScan: nothing to scan, so the scan is instantly complete. The
-// optional fullScan param is accepted and ignored.
+// startScan: there is no library to walk, but the closest equivalent is
+// dropping the cached favorites so the next read reflects changes made
+// from another Tidal client. Completes instantly; fullScan is ignored.
 pub async fn start_scan(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
+    if let Some(client) = crate::tidal::client_opt() {
+        client.refresh_library();
+        crate::navidrome::handlers::browse::touch_index();
+    }
     Ok(ok(ScanStatusResponse {
         scan_status: ScanStatus {
             scanning: false,

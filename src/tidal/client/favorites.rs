@@ -38,6 +38,12 @@ impl TidalClient {
     // Album and artist reads walk the v2 userCollection endpoints; the
     // track reads use the v1 /users/{id}/favorites/tracks endpoint (v1
     // track objects carry replayGain), so three prefixes must be cleared.
+    // startScan's "rescan the library": favorites changed from another
+    // Tidal client become visible without waiting out the 6h cache.
+    pub fn refresh_library(&self) {
+        self.invalidate_favorites_cache();
+    }
+
     fn invalidate_favorites_cache(&self) {
         for prefix in [
             "/userCollectionTracks/me",
