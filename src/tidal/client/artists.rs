@@ -83,8 +83,10 @@ impl TidalClient {
         Ok(jsonapi::flatten_resource(&doc["data"], &doc))
     }
 
-    // Artists similar to the given one. Backs getArtistInfo2.
-    pub async fn artist_similar(&self, artist_id: u64, _limit: u32) -> Result<Value, super::Error> {
+    // Artists similar to the given one, at most `limit`. Backs
+    // getArtistInfo2 and the similar-songs padding; the walk stops as
+    // soon as the slice is in hand.
+    pub async fn artist_similar(&self, artist_id: u64, limit: u32) -> Result<Value, super::Error> {
         let mut items: Vec<Value> = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -102,11 +104,15 @@ impl TidalClient {
                 )
                 .await?;
             items.extend(jsonapi::bare_items(&doc));
+            if items.len() >= limit as usize {
+                break;
+            }
             match jsonapi::next_cursor(&doc) {
-                Some(c) => cursor = Some(c),
-                None => break,
+                Some(c) if cursor.as_deref() != Some(c.as_str()) => cursor = Some(c),
+                _ => break,
             }
         }
+        items.truncate(limit as usize);
         Ok(serde_json::json!({ "items": items }))
     }
 
