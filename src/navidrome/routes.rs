@@ -24,7 +24,7 @@ pub fn routes() -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejecti
             .or(auth::require_auth()
                 .and(private())
                 .and(warp::header::optional::<String>("range"))
-                .and_then(|q: QueryParams, raw: String, _body: Bytes, _proto: Option<String>, _host: Option<String>, name: String, range: Option<String>| {
+                .and_then(|q: QueryParams, raw: String, _body: Bytes, name: String, range: Option<String>| {
                     // Every endpoint below needs a Tidal session. Without one,
                     // answer once here instead of letting each handler fail
                     // with its own opaque message.

@@ -21,7 +21,8 @@ mod auth;
 mod favorites;
 mod feed;
 mod genres;
-mod jsonapi;mod playlists;
+mod jsonapi;
+mod playlists;
 mod playqueues;
 mod search;
 mod stream;
@@ -129,9 +130,6 @@ pub struct TidalClient {
     search_cache: Cache<String, Value>,
     mix_cache: Cache<String, Value>,
     playlist_cache: Cache<String, Value>,
-    // Tidal play queue mirror disabled; see playqueues.rs.
-    // queue_cache: Cache<String, Value>,
-    // queue_id: Mutex<Option<String>>,
     // Hard cap on parallel playbackinfo fetches; see stream.rs. A wait
     // that exceeds the slot bound is rejected with RateLimited.
     stream_limiter: StreamLimiter,
@@ -183,12 +181,6 @@ impl TidalClient {
                 .max_capacity(10_000)
                 .support_invalidation_closures()
                 .build(),
-            // queue_cache: Cache::builder()
-            //     .time_to_live(Duration::from_secs(60))
-            //     .max_capacity(100)
-            //     .support_invalidation_closures()
-            //     .build(),
-            // queue_id: Mutex::new(None),
             stream_limiter: StreamLimiter::new(),
         }
     }
