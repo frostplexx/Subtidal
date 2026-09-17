@@ -62,7 +62,9 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
             continue;
         };
         crate::navidrome::play_state::record_play_from_track(&detail, time_ms);
-        scrobble::report_song(&song, time_ms).await;
+        // The backends are told in the background: a slow scrobbler must
+        // not hold the client's request, as reportPlayback already does.
+        tokio::spawn(async move { scrobble::report_song(&song, time_ms).await });
     }
     Ok(ok(PingResponse {}))
 }
