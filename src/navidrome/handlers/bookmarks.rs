@@ -51,16 +51,24 @@ pub async fn delete_bookmark(q: QueryParams) -> Result<warp::reply::Json, warp::
 pub async fn get_bookmarks(_q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let client = crate::tidal::client();
     let saved = play_state::bookmarks();
+    let handles: Vec<_> = saved
+        .iter()
+        .map(|b| {
+            let track_id = b.track_id;
+            tokio::spawn(async move {
+                match client.track(track_id).await {
+                    Ok(v) => song_from_track(&v.to_json()),
+                    Err(e) => {
+                        tracing::debug!("tidal track fetch failed (bookmark dropped): {e}");
+                        None
+                    }
+                }
+            })
+        })
+        .collect();
     let mut bookmark: Vec<Bookmark> = Vec::new();
-    for b in saved {
-        let entry = match client.track(b.track_id).await {
-            Ok(v) => song_from_track(&v.to_json()),
-            Err(e) => {
-                tracing::debug!("tidal track fetch failed (bookmark dropped): {e}");
-                None
-            }
-        };
-        if let Some(entry) = entry {
+    for (b, handle) in saved.into_iter().zip(handles) {
+        if let Some(entry) = handle.await.ok().flatten() {
             bookmark.push(Bookmark {
                 entry,
                 position: b.position_ms,
