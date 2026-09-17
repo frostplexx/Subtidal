@@ -13,6 +13,8 @@ Some highlighted features are:
 - Gives you access to your liked songs, artists, and albums
 - Allows to play, create, edit and delete your playlists
 - Play Tidal mixes (Daily Mix, My Mix, Discovery) as read-only playlists
+- Artist and track radio behind getSimilarSongs, and Tidal's catalogue behind genre browsing
+- Recently and most played album lists, with the play queue and bookmarks kept across restarts
 - Scrobbles to either last.fm or listenbrainz
 - Show AI labels on AI-generated music
 - Optional Word-by-word synced provided by [Radiant Lyrics](https://radiant-lyrics.org)
