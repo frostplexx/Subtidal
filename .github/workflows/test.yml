@@ -35,5 +35,9 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Lint
+        # The tree is warning-free; keep it that way.
+        run: cargo clippy --locked --all-targets -- -D warnings
+
       - name: Run the full test suite
         run: cargo test --locked

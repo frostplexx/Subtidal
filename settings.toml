@@ -22,7 +22,9 @@ rate_limit = false
 # tidal_client_secret = ""
 
 # Default stream quality when a client sends no bitrate or format hint:
-# LOSSLESS | HIGH | LOW. The client's own hints still win.
+# LOW | HIGH | LOSSLESS | HI_RES_LOSSLESS | ATMOS. The client's own hints
+# still win, and every tier is capped by what the track actually is, so
+# a higher value is a ceiling, not a demand.
 # tidal_quality = "LOSSLESS"
 
 # Blend the Tidal mixes (Daily Mix, My Mix, Discovery) into getPlaylists
