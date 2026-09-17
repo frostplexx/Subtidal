@@ -29,12 +29,13 @@ pub async fn genre_list(client: &'static TidalClient) -> Result<Vec<Value>, supe
     let valid = valid_count_keys(&paths, &extras);
     let rows = genre_rows(&doc);
     let mut out = Vec::with_capacity(rows.len());
-    // Six count requests in flight at once; reordered on the way back.
+    // Sixteen count requests in flight at once (two per genre, so eight
+    // genres per wave); reordered on the way back.
     // Genres without a v1 browse path get zero counts without a doomed
     // HTTP call, so getGenres stays silent about them.
     let mut i = 0;
     while i < rows.len() {
-        let end = (i + 6).min(rows.len());
+        let end = (i + 8).min(rows.len());
         let mut handles = Vec::with_capacity(end - i);
         for r in &rows[i..end] {
             let name = r["name"].as_str().unwrap_or("").to_string();
