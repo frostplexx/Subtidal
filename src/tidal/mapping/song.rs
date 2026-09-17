@@ -49,6 +49,13 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
 
     let tier = Quality::from_track(v);
     let (content_type, suffix) = format_from_track(v);
+    let duration = v["duration"].as_u64().unwrap_or(0) as u32;
+    // Tidal reports no byte size; clients that show one (download
+    // dialogs, cache budgets) get the tier's nominal bitrate times the
+    // duration. Zero when the tier is unknown, as before.
+    let size = tier
+        .map(|t| u64::from(t.bitrate()) * 125 * u64::from(duration))
+        .unwrap_or(0);
 
     let album_subsonic_id = ids::encode_album(album_id);
     if let Some(cover) = album.get("cover").and_then(|c| c.as_str()) {
@@ -74,7 +81,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
             .get("cover")
             .and_then(|c| c.as_str())
             .map(|_| album_subsonic_id),
-        duration: v["duration"].as_u64().unwrap_or(0) as u32,
+        duration,
         bit_rate: tier.map(Quality::bitrate),
         bit_depth: tier.map(Quality::bit_depth),
         sampling_rate: tier.map(Quality::sample_rate),
@@ -87,7 +94,7 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
         kind: "song",
         content_type,
         suffix,
-        size: 0,
+        size,
         path: String::new(),
         created: String::new(),
         starred: None,
@@ -318,6 +325,8 @@ mod tests {
         });
         let song = song_from_track(&lossless).unwrap();
         assert_eq!(song.bit_rate, Some(1411));
+        // 1411 kbps over 220 s: kbps * 125 bytes/s per kbps * seconds.
+        assert_eq!(song.size, 1411 * 125 * 220);
         assert_eq!(song.bit_depth, Some(16));
         assert_eq!(song.sampling_rate, Some(44_100));
         assert_eq!(song.channel_count, Some(2));
