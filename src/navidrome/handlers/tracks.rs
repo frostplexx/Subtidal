@@ -50,7 +50,7 @@ pub async fn get_song(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
 // the shuffle; musicFolderId is ignored (single virtual folder).
 pub async fn get_random_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let size = q.size.unwrap_or(10).min(500) as usize;
-    let result = match crate::tidal::client().favorite_tracks(0, 2000).await {
+    let result = match crate::tidal::client::TidalClient::favorite_tracks_parallel(crate::tidal::client()).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
@@ -91,7 +91,7 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
     };
     let count = q.count.unwrap_or(10).min(500) as usize;
     let offset = q.offset.unwrap_or(0) as usize;
-    let result = match crate::tidal::client().favorite_tracks(0, 2000).await {
+    let result = match crate::tidal::client::TidalClient::favorite_tracks_parallel(crate::tidal::client()).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");

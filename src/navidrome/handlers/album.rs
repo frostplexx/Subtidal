@@ -6,6 +6,7 @@ use crate::navidrome::models::{
     AlbumList2, AlbumList2Response, AlbumListResponse, AlbumWithSongs, Child, GetAlbumResponse,
 };
 use crate::navidrome::params::QueryParams;
+use crate::tidal::client::FAVORITES_CAP;
 use super::{fail, ok};
 use crate::tidal::mapping::{album_from_tidal, cover_url, song_from_track};
 
@@ -105,7 +106,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                 .collect()
         }
         Some("alphabeticalByName" | "alphabeticalByArtist" | "byYear") => {
-            let result = match crate::tidal::client().favorite_albums(0, 2000).await {
+            let result = match crate::tidal::client().favorite_albums(0, FAVORITES_CAP).await {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");

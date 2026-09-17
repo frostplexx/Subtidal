@@ -11,6 +11,7 @@ use crate::navidrome::models::{
     IndexGroup, Indexes, IndexesResponse,
 };
 use crate::navidrome::params::QueryParams;
+use crate::tidal::client::FAVORITES_CAP;
 use super::{fail, ok};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{album_from_tidal, song_from_track, year_from};
@@ -23,7 +24,7 @@ const IGNORED_ARTICLES: &str = "The El La Los Las Le Les";
 // entry wraps the artist in { item, created }; created is the favorite
 // time, which getIndexes reports as starred.
 async fn favorite_artists() -> Result<Vec<IndexArtist>, ()> {
-    let result = match crate::tidal::client().favorite_artists(0, 2000).await {
+    let result = match crate::tidal::client().favorite_artists(0, FAVORITES_CAP).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
@@ -268,7 +269,7 @@ fn directory_error(e: Error) -> warp::reply::Json {
 
 // The root folder (id 1): favorited artists as subdirectories.
 async fn root_directory(client: &crate::tidal::client::TidalClient) -> Result<Directory, Error> {
-    let result = client.favorite_artists(0, 2000).await?;
+    let result = client.favorite_artists(0, FAVORITES_CAP).await?;
     let child: Vec<DirectoryChild> = result["items"]
         .as_array()
         .map(|items| {

@@ -67,9 +67,10 @@ impl TidalClient {
         }))
     }
 
-    // Favorited tracks, newest first. Backs getStarred/getStarred2.
-    // Same { items: [{ item, created }] } wrapper v1 used; pagination
-    // walks page[cursor] and slices to the requested offset/limit.
+    // Favorited tracks, newest first, from the v2 cursor walk. The v1
+    // parallel fetch (favorite_tracks_parallel) is faster and carries
+    // replayGain, so every reader uses that; this stays as the v2 backup.
+    #[allow(dead_code)]
     pub async fn favorite_tracks(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         self.favorite_pages(
             "Tracks",

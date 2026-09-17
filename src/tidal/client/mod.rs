@@ -44,6 +44,8 @@ const V2_URL: &str = "https://api.tidal.com/v2";
 const OPENAPI_URL: &str = "https://openapi.tidal.com/v2";
 const CLIENT_VERSION: &str = "2025.11.3";
 const SCOPE: &str = "r_usr w_usr w_sub";
+// Tidal caps a user's favorites list at 10,000 entries per kind.
+pub const FAVORITES_CAP: u32 = 10_000;
 
 #[derive(Debug)]
 pub enum Error {
