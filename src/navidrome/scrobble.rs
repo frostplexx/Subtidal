@@ -247,6 +247,15 @@ pub fn scrobble_song_from_track(v: &Value) -> Option<ScrobbleSong> {
 // production. Tests inject a recorder.
 type ReauthFn = Box<dyn Fn(&str, &str) + Send + Sync>;
 
+// Scrobble backends answer in well under this; a hung one must not
+// pin the reporter task.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .unwrap_or_default()
+}
+
 pub struct LastFmReporter {
     api_key: String,
     api_secret: String,
@@ -267,7 +276,7 @@ impl LastFmReporter {
             api_key,
             api_secret,
             api_url: api_url.to_string(),
-            http: reqwest::Client::new(),
+            http: http_client(),
             session_key: Box::new(lastfm_session_key),
             reauth: Box::new(trigger_reauthorization),
         }
@@ -285,7 +294,7 @@ impl LastFmReporter {
             api_key,
             api_secret,
             api_url: api_url.to_string(),
-            http: reqwest::Client::new(),
+            http: http_client(),
             session_key,
             reauth,
         }
@@ -421,6 +430,13 @@ fn trigger_reauthorization(api_key: &str, api_secret: &str) {
     if IN_FLIGHT.swap(true, Ordering::SeqCst) {
         return; // a flow is already running
     }
+    // Drop the dead key first: /setup decides whether its Last.fm step
+    // is done by the key's presence, so a headless install with no
+    // terminal to read the URL below can re-authorize from the browser.
+    match crate::state::clear_section(crate::state::LASTFM) {
+        Ok(()) => tracing::warn!("lastfm: stored session key cleared; /setup offers the Last.fm step again"),
+        Err(e) => tracing::warn!("lastfm: could not clear the stored session key: {e}"),
+    }
     let api_key = api_key.to_string();
     let api_secret = api_secret.to_string();
     tokio::spawn(async move {
@@ -443,7 +459,7 @@ pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), Str
     const TIMEOUT_SECS: u64 = 180;
     const REMINDER_EVERY: u32 = 5; // polls
 
-    let http = reqwest::Client::new();
+    let http = http_client();
     let token = lastfm_get_token(&http, api_key, api_secret).await?;
     println!(
         "Open {LASTFM_AUTH_URL}?api_key={api_key}&token={token} or scan the QR code below to authorize Subtidal with Last.fm."
@@ -490,7 +506,7 @@ pub async fn lastfm_auth_flow(api_key: &str, api_secret: &str) -> Result<(), Str
 // here the user comes back with a request of their own, so the two
 // halves split at the same place the Tidal login does.
 pub async fn lastfm_begin(api_key: &str, api_secret: &str) -> Result<(String, String), String> {
-    let http = reqwest::Client::new();
+    let http = http_client();
     let token = lastfm_get_token(&http, api_key, api_secret).await?;
     let url = format!("{LASTFM_AUTH_URL}?api_key={api_key}&token={token}");
     Ok((token, url))
@@ -504,7 +520,7 @@ pub async fn lastfm_complete(
     api_secret: &str,
     token: &str,
 ) -> Result<String, String> {
-    let http = reqwest::Client::new();
+    let http = http_client();
     match lastfm_get_session(&http, api_key, api_secret, token).await {
         Ok((key, name)) => {
             store_lastfm_session_key(&key)?;
@@ -642,7 +658,7 @@ impl ListenBrainzReporter {
         Self {
             token,
             api_base: api_base.to_string(),
-            http: reqwest::Client::new(),
+            http: http_client(),
         }
     }
 
