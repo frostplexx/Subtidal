@@ -39,7 +39,7 @@ pub fn album_from_tidal(v: &Value) -> Option<AlbumId3> {
         cover_art: v["cover"].as_str().map(|_| album_id),
         song_count: v["numberOfTracks"].as_u64().map(|n| n as u32),
         duration: v["duration"].as_u64().map(|n| n as u32),
-        play_count: 0,
+        play_count: crate::navidrome::play_state::play_count(id),
         created: None,
         year: year_from(v["releaseDate"].as_str()),
         genre: v["genre"].as_str().map(String::from),

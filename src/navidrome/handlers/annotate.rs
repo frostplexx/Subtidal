@@ -61,6 +61,7 @@ pub async fn scrobble(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
             tracing::warn!("scrobble id={id}: track metadata incomplete; skipped");
             continue;
         };
+        crate::navidrome::play_state::record_play_from_track(&detail, time_ms);
         scrobble::report_song(&song, time_ms).await;
     }
     Ok(ok(PingResponse {}))

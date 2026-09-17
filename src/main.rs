@@ -155,6 +155,7 @@ async fn main() {
             EnvFilter::new("info,warp::server::run=off")
         }))
         .init();
+    navidrome::play_state::init();
 
     if logged_in {
         match tidal::client().session_raw().await {

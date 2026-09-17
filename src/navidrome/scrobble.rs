@@ -198,6 +198,7 @@ pub(crate) async fn report_completed(track_id: u64, time_ms: i64) {
         tracing::warn!("scrobble id={track_id}: track metadata incomplete; skipped");
         return;
     };
+    crate::navidrome::play_state::record_play_from_track(&detail, time_ms);
     report_song(&song, time_ms).await;
 }
 

@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 // Section keys in the file.
 pub const TIDAL: &str = "tidal";
 pub const LASTFM: &str = "lastfm";
+pub const PLAYBACK: &str = "playback";
 
 // Path override, kept from the keyring era for the Docker image
 // (SUBTIDAL_TOKEN_FILE=/data/tokens.json). Without it the store lives at

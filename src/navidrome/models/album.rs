@@ -136,7 +136,7 @@ pub struct AlbumId3 {
     pub song_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<u32>,
-    // No play tracking yet, so this is always 0, as in the documented example.
+    // Completed scrobbles counted locally (play_state); 0 until played.
     #[serde(rename = "playCount")]
     pub play_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]

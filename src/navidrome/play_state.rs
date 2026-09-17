@@ -1,14 +1,19 @@
-// Playback session state: the saved play queue and per-track bookmarks.
-// Single-user server, in memory; both are per-user by construction. All
-// functions take the wall clock as a parameter, so tests run without a
-// chrono dependency or timing flakiness.
+// Playback session state: the saved play queue, per-track bookmarks, and
+// the local album play history. Single-user server; all three are
+// per-user by construction. Held in memory and mirrored to the state
+// file once `init` has loaded it, so they survive a restart. All
+// functions take the wall clock as a parameter, so tests run without
+// timing flakiness; tests never call init, so they never touch the file.
 use crate::navidrome::models::Child;
+use crate::state;
 use chrono::{DateTime, SecondsFormat};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 // The saved play queue from savePlayQueue.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PlayQueue {
     pub track_ids: Vec<u64>,
     // The current song as an id (plain savePlayQueue semantics) and as
@@ -36,7 +41,7 @@ pub struct ResolvedQueue {
 }
 
 // One bookmark: a position inside a track.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Bookmark {
     pub track_id: u64,
     pub position_ms: u64,
@@ -45,6 +50,31 @@ pub struct Bookmark {
     pub created_ms: i64,
     pub changed_ms: i64,
 }
+
+// One album's local play record, fed by completed scrobbles.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlayRecord {
+    pub album_id: u64,
+    pub play_count: u32,
+    pub last_played_ms: i64,
+}
+
+// Albums tracked in the history before the least recently played drop.
+const HISTORY_CAP: usize = 500;
+
+// The on-disk shape: everything but the resolved queue, which is a
+// derived cache rebuilt from track_ids on the next read.
+#[derive(Default, Serialize, Deserialize)]
+struct Persisted {
+    #[serde(default)]
+    queue: Option<PlayQueue>,
+    #[serde(default)]
+    bookmarks: Vec<Bookmark>,
+    #[serde(default)]
+    history: Vec<PlayRecord>,
+}
+
+static PERSIST: AtomicBool = AtomicBool::new(false);
 
 fn queue_slot() -> &'static Mutex<Option<PlayQueue>> {
     static SLOT: OnceLock<Mutex<Option<PlayQueue>>> = OnceLock::new();
@@ -61,6 +91,50 @@ fn bookmark_map() -> &'static Mutex<BTreeMap<u64, Bookmark>> {
     MAP.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn history_map() -> &'static Mutex<BTreeMap<u64, PlayRecord>> {
+    static MAP: OnceLock<Mutex<BTreeMap<u64, PlayRecord>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+// Load the stored state and turn on mirroring. A missing section is a
+// fresh install; an unreadable one is logged and treated as empty
+// rather than refusing to start.
+pub fn init() {
+    match state::load_section::<Persisted>(state::PLAYBACK) {
+        Ok(Some(p)) => {
+            *queue_slot().lock().unwrap_or_else(|e| e.into_inner()) = p.queue;
+            *bookmark_map().lock().unwrap_or_else(|e| e.into_inner()) =
+                p.bookmarks.into_iter().map(|b| (b.track_id, b)).collect();
+            *history_map().lock().unwrap_or_else(|e| e.into_inner()) =
+                p.history.into_iter().map(|r| (r.album_id, r)).collect();
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!("playback state not restored: {e}"),
+    }
+    PERSIST.store(true, Ordering::Relaxed);
+}
+
+// Mirror the current state to the file. Callers invoke this after
+// releasing their store lock; the snapshot takes each lock briefly.
+fn persist() {
+    if !PERSIST.load(Ordering::Relaxed) {
+        return;
+    }
+    let snapshot = Persisted {
+        queue: queue(),
+        bookmarks: bookmarks(),
+        history: history_map()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect(),
+    };
+    if let Err(e) = state::store_section(state::PLAYBACK, &snapshot) {
+        tracing::warn!("playback state not saved: {e}");
+    }
+}
+
 // Save the queue. An empty id list clears it, per the OpenSubsonic rule
 // for savePlayQueue.
 pub fn save_queue(state: PlayQueue) {
@@ -69,6 +143,7 @@ pub fn save_queue(state: PlayQueue) {
     } else {
         Some(state)
     };
+    persist();
 }
 
 // The saved queue, if any.
@@ -101,15 +176,77 @@ pub fn upsert_bookmark(track_id: u64, position_ms: u64, comment: String, usernam
             changed_ms: now,
         },
     );
+    drop(map);
+    persist();
 }
 
 // Remove a bookmark. Returns false when none existed.
 pub fn delete_bookmark(track_id: u64) -> bool {
-    bookmark_map()
+    let removed = bookmark_map()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&track_id)
-        .is_some()
+        .is_some();
+    if removed {
+        persist();
+    }
+    removed
+}
+
+// Count one completed play of an album. The history stays bounded by
+// dropping the least recently played album once it overflows.
+pub fn record_play(album_id: u64, now: i64) {
+    let mut map = history_map().lock().unwrap_or_else(|e| e.into_inner());
+    let rec = map.entry(album_id).or_insert(PlayRecord {
+        album_id,
+        play_count: 0,
+        last_played_ms: now,
+    });
+    rec.play_count = rec.play_count.saturating_add(1);
+    rec.last_played_ms = now;
+    if map.len() > HISTORY_CAP
+        && let Some(oldest) = map.values().min_by_key(|r| r.last_played_ms).map(|r| r.album_id)
+    {
+        map.remove(&oldest);
+    }
+    drop(map);
+    persist();
+}
+
+// Count a play from a Tidal track JSON, when it names its album.
+pub fn record_play_from_track(track: &serde_json::Value, now: i64) {
+    if let Some(album_id) = track["album"]["id"].as_u64() {
+        record_play(album_id, now);
+    }
+}
+
+// Album play records, most recently played first.
+pub fn recent_albums() -> Vec<PlayRecord> {
+    let mut all: Vec<PlayRecord> = history_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
+    all.sort_by_key(|r| std::cmp::Reverse(r.last_played_ms));
+    all
+}
+
+// Album play records, most played first; ties break on recency.
+pub fn frequent_albums() -> Vec<PlayRecord> {
+    let mut all = recent_albums();
+    all.sort_by_key(|r| std::cmp::Reverse(r.play_count));
+    all
+}
+
+// The play count of one album, 0 when never played.
+pub fn play_count(album_id: u64) -> u32 {
+    history_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&album_id)
+        .map(|r| r.play_count)
+        .unwrap_or(0)
 }
 
 // All bookmarks, oldest first.
@@ -131,6 +268,7 @@ pub fn reset() {
     *queue_slot().lock().unwrap_or_else(|e| e.into_inner()) = None;
     *resolved_slot().lock().unwrap_or_else(|e| e.into_inner()) = None;
     bookmark_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    history_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 // Epoch ms -> "YYYY-MM-DDTHH:MM:SSZ" (UTC). Subsonic timestamps are
@@ -254,6 +392,69 @@ mod tests {
         upsert_bookmark(2, 1_000, "".into(), "admin".into(), 200);
         let ids: Vec<u64> = bookmarks().iter().map(|b| b.track_id).collect();
         assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn history_orders_by_recency_and_frequency() {
+        let _g = lock();
+        reset();
+        record_play(1, 100);
+        record_play(2, 200);
+        record_play(1, 300);
+        record_play(3, 250);
+        let recent: Vec<u64> = recent_albums().iter().map(|r| r.album_id).collect();
+        assert_eq!(recent, vec![1, 3, 2]);
+        let frequent: Vec<u64> = frequent_albums().iter().map(|r| r.album_id).collect();
+        // Album 1 played twice; the rest tie and keep recency order.
+        assert_eq!(frequent, vec![1, 3, 2]);
+        assert_eq!(play_count(1), 2);
+        assert_eq!(play_count(9), 0);
+        record_play_from_track(&serde_json::json!({"album": {"id": 4}}), 400);
+        assert_eq!(play_count(4), 1);
+    }
+
+    #[test]
+    fn history_drops_the_least_recent_past_the_cap() {
+        let _g = lock();
+        reset();
+        for i in 0..=HISTORY_CAP as u64 {
+            record_play(i, i as i64);
+        }
+        assert_eq!(recent_albums().len(), HISTORY_CAP);
+        assert_eq!(play_count(0), 0, "album 0 was the least recently played");
+        assert_eq!(play_count(HISTORY_CAP as u64), 1);
+    }
+
+    #[test]
+    fn persisted_roundtrips_through_json() {
+        let p = Persisted {
+            queue: Some(PlayQueue {
+                track_ids: vec![1, 2],
+                current: Some(2),
+                current_index: Some(1),
+                position_ms: 5,
+                username: "u".into(),
+                changed_by: "c".into(),
+                changed_ms: 9,
+            }),
+            bookmarks: vec![Bookmark {
+                track_id: 7,
+                position_ms: 1,
+                comment: "x".into(),
+                username: "u".into(),
+                created_ms: 1,
+                changed_ms: 2,
+            }],
+            history: vec![PlayRecord { album_id: 3, play_count: 2, last_played_ms: 4 }],
+        };
+        let text = serde_json::to_string(&p).unwrap();
+        let back: Persisted = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.queue.unwrap().track_ids, vec![1, 2]);
+        assert_eq!(back.bookmarks[0].track_id, 7);
+        assert_eq!(back.history[0].play_count, 2);
+        // Older files without the section fields still parse.
+        let empty: Persisted = serde_json::from_str("{}").unwrap();
+        assert!(empty.queue.is_none());
     }
 
     #[test]
