@@ -151,25 +151,33 @@ async fn artist_info(q: QueryParams) -> Result<ArtistInfo2, warp::reply::Json> {
         },
     };
     let count = q.count.unwrap_or(20).min(500);
-    let detail = match client.artist(artist_id).await {
+    // The artist itself must resolve; the bio and similar artists are
+    // extras that many artists simply lack (Tidal 404s), so either one
+    // failing degrades to an empty field rather than losing the images.
+    let (detail, bio, similar) = tokio::join!(
+        client.artist(artist_id),
+        client.artist_bio(artist_id),
+        client.artist_similar(artist_id, count),
+    );
+    let detail = match detail {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist fetch failed: {e}");
             return Err(fail(0, "Artist info unavailable"));
         }
     };
-    let bio = match client.artist_bio(artist_id).await {
+    let bio = match bio {
         Ok(v) => v["text"].as_str().unwrap_or("").to_string(),
         Err(e) => {
-            tracing::error!("tidal bio fetch failed: {e}");
-            return Err(fail(0, "Artist info unavailable"));
+            tracing::debug!("tidal bio fetch failed for {artist_id}: {e}");
+            String::new()
         }
     };
-    let similar = match client.artist_similar(artist_id, count).await {
+    let similar = match similar {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("tidal similar artists fetch failed: {e}");
-            return Err(fail(0, "Artist info unavailable"));
+            tracing::debug!("tidal similar artists fetch failed for {artist_id}: {e}");
+            serde_json::json!({ "items": [] })
         }
     };
     let picture = detail["picture"].as_str();
