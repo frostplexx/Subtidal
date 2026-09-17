@@ -40,11 +40,16 @@ fn ct_eq(a: &str, b: &str) -> bool {
 // Token authentication per the Subsonic spec:
 // token = hex(md5(password + salt)), sent as t with the salt as s.
 // Falls back to the p parameter: plaintext, or hex(md5(password))
-// prefixed with "enc:" for API version 1.13.0+.
+// prefixed with "enc:" for API version 1.13.0+. A client using the
+// apiKeyAuthentication extension sends apiKey instead and skips all of
+// this; that path is checked on its own, ignoring any u/t/s/p also sent.
 pub fn authenticate(q: &QueryParams) -> bool {
     let Some(settings) = SETTINGS.get() else {
         return false;
     };
+    if let Some(key) = &q.api_key {
+        return check_api_key(key, &settings.api_key);
+    }
     let Some(u) = &q.u else {
         return false;
     };
@@ -69,6 +74,16 @@ fn check_password(p: &str, password: &str) -> bool {
         ct_eq(&expected, &hex.to_ascii_lowercase())
     } else {
         ct_eq(p, password)
+    }
+}
+
+// apiKeyAuthentication extension: the provided key must match the
+// configured one exactly. An unconfigured (None or empty) key always
+// fails, so the extension is inert until an operator opts in.
+fn check_api_key(provided: &str, configured: &Option<String>) -> bool {
+    match configured {
+        Some(key) if !key.is_empty() => ct_eq(provided, key),
+        _ => false,
     }
 }
 
@@ -273,6 +288,16 @@ mod tests {
         // input before comparing.
         assert!(!ct_eq("abc", "ABC"));
         assert!(ct_eq(&md5_hex("x"), &md5_hex("x")));
+    }
+
+    #[test]
+    fn api_key_matches_only_the_configured_value() {
+        assert!(check_api_key("secret", &Some("secret".into())));
+        assert!(!check_api_key("wrong", &Some("secret".into())));
+        assert!(!check_api_key("anything", &None));
+        // An empty configured key is treated as unset, not a valid
+        // "match empty string" key.
+        assert!(!check_api_key("", &Some(String::new())));
     }
 
     #[test]

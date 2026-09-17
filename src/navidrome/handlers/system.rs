@@ -16,17 +16,27 @@ pub async fn ping() -> Result<warp::reply::Json, warp::Rejection> {
 // supports. Mirrors Navidrome v0.63.2 (server/subsonic/opensubsonic.go).
 // Public endpoint: Navidrome serves it without authentication.
 pub async fn get_open_subsonic_extensions() -> Result<warp::reply::Json, warp::Rejection> {
-    Ok(ok(GetOpenSubsonicExtensionsResponse {
-        extensions: vec![
-            OpenSubsonicExtension { name: "transcodeOffset", versions: vec![1] },
-            OpenSubsonicExtension { name: "formPost", versions: vec![1] },
-            OpenSubsonicExtension { name: "songLyrics", versions: vec![1, 2] },
-            OpenSubsonicExtension { name: "indexBasedQueue", versions: vec![1] },
-            OpenSubsonicExtension { name: "transcoding", versions: vec![1] },
-            OpenSubsonicExtension { name: "playbackReport", versions: vec![1] },
-            OpenSubsonicExtension { name: "topSongsByArtistId", versions: vec![1] },
-        ],
-    }))
+    let mut extensions = vec![
+        OpenSubsonicExtension { name: "transcodeOffset", versions: vec![1] },
+        OpenSubsonicExtension { name: "formPost", versions: vec![1] },
+        OpenSubsonicExtension { name: "songLyrics", versions: vec![1, 2] },
+        OpenSubsonicExtension { name: "indexBasedQueue", versions: vec![1] },
+        OpenSubsonicExtension { name: "transcoding", versions: vec![1] },
+        OpenSubsonicExtension { name: "playbackReport", versions: vec![1] },
+        OpenSubsonicExtension { name: "topSongsByArtistId", versions: vec![1] },
+    ];
+    // Only advertised once an operator sets api_key: unlike the other
+    // extensions here, this one is inert (auth::check_api_key always
+    // fails) until configured, so advertising it unconditionally would
+    // invite clients to try a login mode that can never succeed.
+    let api_key_configured = SETTINGS
+        .get()
+        .and_then(|s| s.api_key.as_ref())
+        .is_some_and(|k| !k.is_empty());
+    if api_key_configured {
+        extensions.push(OpenSubsonicExtension { name: "apiKeyAuthentication", versions: vec![1] });
+    }
+    Ok(ok(GetOpenSubsonicExtensionsResponse { extensions }))
 }
 
 // The Subsonic login username stays the configured one: clients

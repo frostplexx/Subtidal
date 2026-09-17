@@ -17,6 +17,8 @@ pub struct QueryParams {
     pub t: Option<String>,
     pub s: Option<String>,
     pub p: Option<String>,
+    // apiKeyAuthentication extension: a key alone, no username needed.
+    pub api_key: Option<String>,
     #[allow(dead_code)]
     pub v: Option<String>,
     #[allow(dead_code)]
@@ -134,6 +136,7 @@ fn assign<E: serde::de::Error>(q: &mut QueryParams, k: &str, v: String) -> Resul
         "t" => q.t = Some(v),
         "s" => q.s = Some(v),
         "p" => q.p = Some(v),
+        "apiKey" => q.api_key = Some(v),
         "v" => q.v = Some(v),
         "c" => q.c = Some(v),
         "query" => q.query = Some(v),

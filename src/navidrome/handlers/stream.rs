@@ -913,6 +913,7 @@ mod tests {
                 show_mixes: true,
                 word_synced_lyrics: true,
                 rate_limit: false,
+                api_key: None,
                 labels: Default::default(),
                 lastfm: None,
                 listenbrainz: None,

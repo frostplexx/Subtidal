@@ -38,6 +38,12 @@ pub struct Settings {
     // the proxy IP, so one attacker can lock out everyone.
     #[serde(default)]
     pub rate_limit: bool,
+    // Optional API key for the apiKeyAuthentication OpenSubsonic
+    // extension: a client sends apiKey=<this> instead of u/p/t/s. Unset
+    // by default, since it grants full access with no username at all;
+    // the extension is only advertised when this is configured.
+    #[serde(default)]
+    pub api_key: Option<String>,
     // Optional scrobble backends. Both are best-effort: a failing
     // reporter only logs, never fails the client request. The Last.fm
     // session key comes from the shared credential file; the ListenBrainz

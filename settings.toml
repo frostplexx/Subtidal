@@ -11,6 +11,12 @@ port = 8000
 # Exponential backoff on failed logins (2s, 4s, 8s, ... per client IP).
 rate_limit = false
 
+# Optional: an API key for the apiKeyAuthentication extension. A client
+# can then send apiKey=<this> instead of a username/password, avoiding
+# the need to store the real password on the client. Unset by default;
+# the extension is only advertised to clients once this is set.
+# api_key = ""
+
 # Optional: override the embedded Tidal app credentials.
 # tidal_client_id = ""
 # tidal_client_secret = ""
