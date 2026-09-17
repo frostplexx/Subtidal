@@ -53,7 +53,6 @@ pub struct QueryParams {
     pub size: Option<u32>,
     // getAlbumList2 byYear
     pub from_year: Option<u32>,
-    #[allow(dead_code)]
     pub to_year: Option<u32>,
     // stream: Tidal has no real transcoding, so maxBitRate picks the
     // quality tier; format is only a hint (flac lifts to LOSSLESS).

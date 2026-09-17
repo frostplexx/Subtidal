@@ -6,6 +6,7 @@ use crate::navidrome::models::{
     AlbumList2, AlbumList2Response, AlbumListResponse, AlbumWithSongs, Child, GetAlbumResponse,
 };
 use crate::navidrome::params::QueryParams;
+use crate::navidrome::play_state;
 use crate::tidal::client::FAVORITES_CAP;
 use super::{fail, ok};
 use crate::tidal::mapping::{album_from_tidal, cover_url, song_from_track};
@@ -45,26 +46,86 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
     }))
 }
 
+// The whole favorites list as AlbumID3 items, or the shared failure.
+async fn all_favorite_albums() -> Result<Vec<AlbumId3>, &'static str> {
+    match crate::tidal::client().favorite_albums(0, FAVORITES_CAP).await {
+        Ok(v) => Ok(favorites_albums(&v)),
+        Err(e) => {
+            tracing::error!("tidal favorites fetch failed: {e}");
+            Err("Album list unavailable")
+        }
+    }
+}
+
+fn page<T>(items: Vec<T>, offset: u32, size: u32) -> Vec<T> {
+    items
+        .into_iter()
+        .skip(offset as usize)
+        .take(size as usize)
+        .collect()
+}
+
+// Albums from the local play history, in the record order given. Detail
+// fetches run in parallel and hit the meta cache; an album Tidal no
+// longer serves is dropped from the list.
+async fn history_albums(records: Vec<play_state::PlayRecord>) -> Vec<AlbumId3> {
+    let client = crate::tidal::client();
+    let handles: Vec<_> = records
+        .iter()
+        .map(|r| {
+            let album_id = r.album_id;
+            tokio::spawn(async move { client.album(album_id).await })
+        })
+        .collect();
+    let mut out = Vec::with_capacity(records.len());
+    for (r, handle) in records.into_iter().zip(handles) {
+        match handle.await {
+            Ok(Ok(detail)) => out.extend(album_from_tidal(&detail)),
+            Ok(Err(e)) => tracing::debug!("album {} dropped from history: {e}", r.album_id),
+            Err(e) => tracing::debug!("album {} fetch task failed: {e}", r.album_id),
+        }
+    }
+    out
+}
+
+// True when the album carries the genre, on either the single label or
+// the OpenSubsonic genres list. Case-insensitive, like Navidrome.
+fn has_genre(a: &AlbumId3, genre: &str) -> bool {
+    a.genre.as_deref().is_some_and(|g| g.eq_ignore_ascii_case(genre))
+        || a.genres
+            .as_ref()
+            .is_some_and(|gs| gs.iter().any(|g| g.name.eq_ignore_ascii_case(genre)))
+}
+
 // The list core shared by getAlbumList2 and getAlbumList. Returns the
-// album list for the requested type, already paginated.
+// album list for the requested type, already paginated. The favorites
+// list is the library; recent/frequent come from the local play history;
+// newest is Tidal's personalised feed. highest stays empty: Tidal has no
+// ratings.
 async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str> {
     let offset = q.offset.unwrap_or(0);
     let size = q.size.unwrap_or(10).min(500);
     let album: Vec<AlbumId3> = match q.r#type.as_deref() {
-        // All five types page favorites; random also shuffles them.
-        Some("starred" | "frequent" | "recent" | "byGenre" | "random") => {
-            let result = match crate::tidal::client().favorite_albums(offset, size).await {
-                Ok(v) => v,
+        Some("starred") => {
+            match crate::tidal::client().favorite_albums(offset, size).await {
+                Ok(v) => favorites_albums(&v),
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");
                     return Err("Album list unavailable");
                 }
-            };
-            let mut album = favorites_albums(&result);
-            if q.r#type.as_deref() == Some("random") {
-                crate::navidrome::handlers::jukebox::shuffle(&mut album);
             }
+        }
+        Some("random") => {
+            let mut album = all_favorite_albums().await?;
+            crate::navidrome::handlers::jukebox::shuffle(&mut album);
+            album.truncate(size as usize);
             album
+        }
+        Some("recent") => {
+            history_albums(page(play_state::recent_albums(), offset, size)).await
+        }
+        Some("frequent") => {
+            history_albums(page(play_state::frequent_albums(), offset, size)).await
         }
         Some("newest") => {
             let result = match crate::tidal::client().home_feed("static").await {
@@ -81,28 +142,37 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                 .filter_map(album_from_tidal)
                 .collect()
         }
-        Some("alphabeticalByName" | "alphabeticalByArtist" | "byYear") => {
-            let result = match crate::tidal::client().favorite_albums(0, FAVORITES_CAP).await {
-                Ok(v) => v,
-                Err(e) => {
-                    tracing::error!("tidal favorites fetch failed: {e}");
-                    return Err("Album list unavailable");
-                }
+        Some("byGenre") => {
+            let Some(genre) = q.genre.as_deref() else {
+                return Err("Required parameter missing: genre");
             };
-            let mut album = favorites_albums(&result);
-            match q.r#type.as_deref() {
-                Some("alphabeticalByName") => {
-                    album.sort_by_key(|a| a.name.to_lowercase())
-                }
-                Some("alphabeticalByArtist") => {
-                    album.sort_by_key(|a| a.artist.to_lowercase())
-                }
-                _ => {
-                    let year = q.from_year.unwrap_or(0);
-                    album.retain(|a| a.year == Some(year));
-                }
+            let mut album = all_favorite_albums().await?;
+            album.retain(|a| has_genre(a, genre));
+            page(album, offset, size)
+        }
+        Some("byYear") => {
+            let (Some(from), Some(to)) = (q.from_year, q.to_year) else {
+                return Err("Required parameter missing: fromYear/toYear");
+            };
+            // A reversed window (fromYear > toYear) lists newest first.
+            let (lo, hi) = (from.min(to), from.max(to));
+            let mut album = all_favorite_albums().await?;
+            album.retain(|a| a.year.is_some_and(|y| (lo..=hi).contains(&y)));
+            album.sort_by_key(|a| a.year);
+            if from > to {
+                album.reverse();
             }
-            album.into_iter().skip(offset as usize).take(size as usize).collect()
+            page(album, offset, size)
+        }
+        Some("alphabeticalByName") => {
+            let mut album = all_favorite_albums().await?;
+            album.sort_by_key(|a| a.name.to_lowercase());
+            page(album, offset, size)
+        }
+        Some("alphabeticalByArtist") => {
+            let mut album = all_favorite_albums().await?;
+            album.sort_by_key(|a| a.artist.to_lowercase());
+            page(album, offset, size)
         }
         _ => Vec::new(),
     };
