@@ -23,7 +23,6 @@ mod feed;
 mod genres;
 mod jsonapi;
 mod playlists;
-mod playqueues;
 mod radio;
 mod search;
 mod stream;
