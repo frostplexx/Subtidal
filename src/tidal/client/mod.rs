@@ -548,3 +548,36 @@ mod coalesce_tests {
         ));
     }
 }
+
+impl TidalClient {
+    // Pre-fetch what a client asks for first (the library index, starred
+    // lists, playlists, genres, the home feed) so the first requests
+    // after a restart hit warm caches instead of Tidal. Best-effort and
+    // concurrent; a failure only logs, the request path refetches.
+    pub async fn warm_caches(client: &'static TidalClient) {
+        let started = std::time::Instant::now();
+        let (tracks, albums, artists, playlists, mixes, genres, feed) = tokio::join!(
+            TidalClient::favorite_tracks_parallel(client),
+            TidalClient::favorite_albums(client, 0, FAVORITES_CAP),
+            TidalClient::favorite_artists(client, 0, FAVORITES_CAP),
+            client.user_playlists(0, 500),
+            client.my_mixes(),
+            genre_list(client),
+            client.home_feed("static"),
+        );
+        for (name, failed) in [
+            ("favorite tracks", tracks.is_err()),
+            ("favorite albums", albums.is_err()),
+            ("favorite artists", artists.is_err()),
+            ("playlists", playlists.is_err()),
+            ("mixes", mixes.is_err()),
+            ("genres", genres.is_err()),
+            ("home feed", feed.is_err()),
+        ] {
+            if failed {
+                tracing::debug!("cache warm-up: {name} fetch failed");
+            }
+        }
+        tracing::info!("caches warmed in {:.1?}", started.elapsed());
+    }
+}

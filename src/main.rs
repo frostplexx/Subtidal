@@ -158,6 +158,7 @@ async fn main() {
     navidrome::play_state::init();
 
     if logged_in {
+        tokio::spawn(TidalClient::warm_caches(tidal::client()));
         match tidal::client().session_raw().await {
             Ok(s) => tracing::info!(
                 "tidal client: {} (id {})",
