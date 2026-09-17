@@ -48,10 +48,11 @@ fn radiant_client() -> &'static reqwest::Client {
     &RADIANT
 }
 
-// Successful Radiant lookups, keyed by track. Clients re-request lyrics
-// on every play (and some poll), so this keeps the third-party traffic
-// to one call per track per session.
-static RADIANT_CACHE: LazyLock<moka::sync::Cache<u64, StructuredLyrics>> = LazyLock::new(|| {
+// Radiant lookups, keyed by track: a hit, or None for a track Radiant
+// has no lyrics for. Clients re-request lyrics on every play (and some
+// poll), so this keeps the third-party traffic to one call per track
+// per session either way.
+static RADIANT_CACHE: LazyLock<moka::sync::Cache<u64, Option<StructuredLyrics>>> = LazyLock::new(|| {
     moka::sync::Cache::builder()
         .time_to_live(Duration::from_secs(6 * 3600))
         .max_capacity(5_000)
@@ -60,11 +61,19 @@ static RADIANT_CACHE: LazyLock<moka::sync::Cache<u64, StructuredLyrics>> = LazyL
 
 async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> {
     if let Some(hit) = RADIANT_CACHE.get(&track_id) {
-        return Ok(hit);
+        return hit.ok_or_else(|| Error::Tidal(404, "no radiant lyrics for track (cached)".into()));
     }
-    let lyrics = fetch_radiant_lyrics_uncached(track_id).await?;
-    RADIANT_CACHE.insert(track_id, lyrics.clone());
-    Ok(lyrics)
+    match fetch_radiant_lyrics_uncached(track_id).await {
+        Ok(lyrics) => {
+            RADIANT_CACHE.insert(track_id, Some(lyrics.clone()));
+            Ok(lyrics)
+        }
+        Err(Error::Tidal(404, msg)) => {
+            RADIANT_CACHE.insert(track_id, None);
+            Err(Error::Tidal(404, msg))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 async fn fetch_radiant_lyrics_uncached(track_id: u64) -> Result<StructuredLyrics, Error> {
