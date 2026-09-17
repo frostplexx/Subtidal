@@ -235,7 +235,7 @@ pub struct Lyrics {
     pub value: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct StructuredLyrics {
     #[serde(rename = "displayArtist")]
     pub display_artist: String,
@@ -253,7 +253,7 @@ pub struct StructuredLyrics {
     pub agents: Option<Vec<Agent>>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct LyricLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start: Option<u32>,
@@ -265,7 +265,7 @@ pub struct LyricLine {
 // agentId references an entry in structuredLyrics.agents; simple
 // unattributed lyrics omit it. byteStart and byteEnd are 0-based
 // inclusive offsets into the UTF-8 encoding of value.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CueLine {
     pub index: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,7 +281,7 @@ pub struct CueLine {
 // One timed word or syllable. start/end are milliseconds; byteStart and
 // byteEnd are 0-based inclusive UTF-8 offsets into cueLine.value. end
 // is present on every cue or none, per the contract.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Cue {
     pub start: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -297,7 +297,7 @@ pub struct Cue {
 // explicit individual voice part, background vocals, or chorus. Agent
 // emission is not wired up yet, so the role variants are intentionally
 // unused for now.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[allow(dead_code)]
 pub enum AgentRole {
     #[serde(rename = "main")]
@@ -313,7 +313,7 @@ pub enum AgentRole {
 // A reusable vocal agent within one structuredLyrics entry. id is only
 // meaningful inside that entry. An attributed entry must mark exactly
 // one agent as Main.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Agent {
     pub id: String,
     pub role: AgentRole,

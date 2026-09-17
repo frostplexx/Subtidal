@@ -48,7 +48,26 @@ fn radiant_client() -> &'static reqwest::Client {
     &RADIANT
 }
 
+// Successful Radiant lookups, keyed by track. Clients re-request lyrics
+// on every play (and some poll), so this keeps the third-party traffic
+// to one call per track per session.
+static RADIANT_CACHE: LazyLock<moka::sync::Cache<u64, StructuredLyrics>> = LazyLock::new(|| {
+    moka::sync::Cache::builder()
+        .time_to_live(Duration::from_secs(6 * 3600))
+        .max_capacity(5_000)
+        .build()
+});
+
 async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> {
+    if let Some(hit) = RADIANT_CACHE.get(&track_id) {
+        return Ok(hit);
+    }
+    let lyrics = fetch_radiant_lyrics_uncached(track_id).await?;
+    RADIANT_CACHE.insert(track_id, lyrics.clone());
+    Ok(lyrics)
+}
+
+async fn fetch_radiant_lyrics_uncached(track_id: u64) -> Result<StructuredLyrics, Error> {
     let client = crate::tidal::client();
     // Fetch the typed track; it carries title, artist, duration and isrc.
     let track = client.track(track_id).await?;
