@@ -15,9 +15,9 @@ use crate::tidal::mapping::{album_from_tidal, artist_from_tidal, search_items, s
 // search. Err carries the (code, message) for the failure.
 async fn search_parts(
     q: &QueryParams,
-) -> Result<Option<(Vec<Value>, Vec<Value>, Vec<Value>)>, (u32, &'static str)> {
+) -> Result<Option<(Vec<Value>, Vec<Value>, Vec<Value>)>, (u32, String)> {
     let Some(query) = q.query.as_deref() else {
-        return Err((10, "Required parameter missing"));
+        return Err((10, "Required parameter missing".into()));
     };
     if query.trim().is_empty() {
         return Ok(None);
@@ -26,7 +26,7 @@ async fn search_parts(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal search failed: {e}");
-            return Err((0, "Search failed"));
+            return Err((0, format!("Search failed: {}", e.user_reason())));
         }
     };
     let slice = |section: &str, count: Option<u32>, offset: Option<u32>| {

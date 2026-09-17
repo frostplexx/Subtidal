@@ -82,7 +82,7 @@ pub(crate) fn redirect(url: String) -> warp::reply::Response {
     .into_response()
 }
 
-pub(crate) fn fail(code: u32, message: &'static str) -> warp::reply::Json {
+pub(crate) fn fail(code: u32, message: impl Into<String>) -> warp::reply::Json {
     warp::reply::json(&SubsonicResponse {
         inner: SubsonicErrorBody {
             status: "failed",
@@ -90,9 +90,23 @@ pub(crate) fn fail(code: u32, message: &'static str) -> warp::reply::Json {
             server_type: "Subtidal",
             server_version: super::models::system::SERVER_VERSION,
             open_subsonic: true,
-            error: SubsonicError { code, message },
+            error: SubsonicError { code, message: message.into() },
         },
     })
+}
+
+// A failure reply that names its cause. Clients show the message as a
+// toast, so "Album unavailable: Tidal is rate limiting this server" is
+// what the user acts on; the bare message alone told them nothing.
+// A generic failure (code 0) that turns out to be a Tidal 404 becomes
+// code 70, "requested data not found", which clients handle as a
+// missing item rather than a server fault.
+pub(crate) fn fail_with(code: u32, message: &str, e: &crate::tidal::client::Error) -> warp::reply::Json {
+    let code = match (code, e) {
+        (0, crate::tidal::client::Error::Tidal(404, _)) => 70,
+        _ => code,
+    };
+    fail(code, format!("{message}: {}", e.user_reason()))
 }
 
 // Converts middleware rejections into Subsonic error replies.

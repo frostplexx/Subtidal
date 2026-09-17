@@ -5,7 +5,7 @@ use crate::navidrome::models::{
     GetArtistResponse, TopSongs, TopSongsResponse,
 };
 use crate::navidrome::params::QueryParams;
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 use crate::tidal::mapping::{
     album_from_tidal, artist_from_tidal, artist_pic_url, search_items, song_from_track,
 };
@@ -26,14 +26,14 @@ pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist fetch failed: {e}");
-            return Ok(fail(0, "Artist unavailable"));
+            return Ok(fail_with(0, "Artist unavailable", &e));
         }
     };
     let albums = match albums {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist albums fetch failed: {e}");
-            return Ok(fail(0, "Artist unavailable"));
+            return Ok(fail_with(0, "Artist unavailable", &e));
         }
     };
     let mut artist = match artist_from_tidal(&detail) {
@@ -66,7 +66,7 @@ pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Re
                     Ok(v) => v,
                     Err(e) => {
                         tracing::error!("tidal artist search failed: {e}");
-                        return Ok(fail(0, "Top songs unavailable"));
+                        return Ok(fail_with(0, "Top songs unavailable", &e));
                     }
                 };
                 match search_items(&result, "artists")
@@ -87,7 +87,7 @@ pub async fn get_top_songs(q: QueryParams) -> Result<warp::reply::Json, warp::Re
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal top tracks fetch failed: {e}");
-            return Ok(fail(0, "Top songs unavailable"));
+            return Ok(fail_with(0, "Top songs unavailable", &e));
         }
     };
     let song: Vec<Child> = result["items"]
@@ -133,7 +133,7 @@ async fn artist_info(q: QueryParams) -> Result<ArtistInfo2, warp::reply::Json> {
             },
             Err(e) => {
                 tracing::error!("tidal album fetch failed: {e}");
-                return Err(fail(0, "Artist info unavailable"));
+                return Err(fail_with(0, "Artist info unavailable", &e));
             }
         },
         Some((IdKind::Track, n)) => match client.track(n).await {
@@ -143,7 +143,7 @@ async fn artist_info(q: QueryParams) -> Result<ArtistInfo2, warp::reply::Json> {
             },
             Err(e) => {
                 tracing::error!("tidal track fetch failed: {e}");
-                return Err(fail(0, "Artist info unavailable"));
+                return Err(fail_with(0, "Artist info unavailable", &e));
             }
         },
         _ => match id.parse().ok() {
@@ -164,7 +164,7 @@ async fn artist_info(q: QueryParams) -> Result<ArtistInfo2, warp::reply::Json> {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist fetch failed: {e}");
-            return Err(fail(0, "Artist info unavailable"));
+            return Err(fail_with(0, "Artist info unavailable", &e));
         }
     };
     let bio = match bio {

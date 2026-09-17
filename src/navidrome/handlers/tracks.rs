@@ -9,7 +9,7 @@ use crate::navidrome::models::{
 use crate::navidrome::params::QueryParams;
 use rand::seq::SliceRandom;
 use std::collections::HashSet;
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{song_from_track, year_from};
 
@@ -29,7 +29,7 @@ pub async fn get_song(q: QueryParams) -> Result<warp::reply::Json, warp::Rejecti
         Ok(v) => v.to_json(),
         Err(e) => {
             tracing::error!("tidal track fetch failed: {e}");
-            return Ok(fail(0, "Song unavailable"));
+            return Ok(fail_with(0, "Song unavailable", &e));
         }
     };
     let mut song = match song_from_track(&detail) {
@@ -54,7 +54,7 @@ pub async fn get_random_songs(q: QueryParams) -> Result<warp::reply::Json, warp:
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
-            return Ok(fail(0, "Favorites unavailable"));
+            return Ok(fail_with(0, "Favorites unavailable", &e));
         }
     };
     let songs = favorite_track_songs(&result);
@@ -99,7 +99,7 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
             Ok(items) => items.iter().filter_map(song_from_track).collect(),
             Err(e) => {
                 tracing::error!("tidal genre tracks fetch failed: {e}");
-                return Ok(fail(0, "Genre unavailable"));
+                return Ok(fail_with(0, "Genre unavailable", &e));
             }
         }
     } else {
@@ -107,7 +107,7 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("tidal favorites fetch failed: {e}");
-                return Ok(fail(0, "Favorites unavailable"));
+                return Ok(fail_with(0, "Favorites unavailable", &e));
             }
         };
         favorite_track_songs(&result)
@@ -131,10 +131,10 @@ pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, war
 // up empty continues with the track's lead artist. A similar artist's
 // fetch failure degrades to a warning; the artist's failure fails the
 // request.
-fn similar_songs_core(q: QueryParams) -> super::BoxedTryFuture<Vec<Child>, (u32, &'static str)> {
+fn similar_songs_core(q: QueryParams) -> super::BoxedTryFuture<Vec<Child>, (u32, String)> {
     Box::pin(async move {
     let Some(id) = q.id.0.first() else {
-        return Err((10, "Required parameter missing"));
+        return Err((10, "Required parameter missing".into()));
     };
     let count = q.count.unwrap_or(50).min(500) as usize;
     let client = crate::tidal::client();
@@ -154,16 +154,16 @@ fn similar_songs_core(q: QueryParams) -> super::BoxedTryFuture<Vec<Child>, (u32,
             match client.track(track_id).await {
                 Ok(t) => match t.to_json()["artists"][0]["id"].as_u64() {
                     Some(a) => a,
-                    None => return Err((70, "Artist not found")),
+                    None => return Err((70, "Artist not found".into())),
                 },
-                Err(_) => return Err((70, "Song not found")),
+                Err(_) => return Err((70, "Song not found".into())),
             }
         }
         Some((ids::IdKind::Artist, artist_id)) => artist_id,
-        Some(_) => return Err((70, "Artist not found")),
+        Some(_) => return Err((70, "Artist not found".into())),
         None => match id.parse() {
             Ok(n) => n,
-            Err(_) => return Err((70, "Artist not found")),
+            Err(_) => return Err((70, "Artist not found".into())),
         },
     };
 
@@ -208,7 +208,7 @@ async fn pad_with_top_tracks(
     artist_id: u64,
     count: usize,
     songs: &mut Vec<Child>,
-) -> Result<(), (u32, &'static str)> {
+) -> Result<(), (u32, String)> {
     let known: HashSet<u64> = songs
         .iter()
         .filter_map(|s| ids::parse_track_id(&s.id))
@@ -217,7 +217,7 @@ async fn pad_with_top_tracks(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal similar artists fetch failed: {e}");
-            return Err((0, "Similar songs unavailable"));
+            return Err((0, format!("Similar songs unavailable: {}", e.user_reason())));
         }
     };
     let mut artists: Vec<u64> = vec![artist_id];
@@ -254,7 +254,7 @@ async fn pad_with_top_tracks(
             Err(e) => {
                 if i == 0 {
                     tracing::error!("tidal top tracks fetch failed: {e}");
-                    return Err((0, "Similar songs unavailable"));
+                    return Err((0, "Similar songs unavailable".into()));
                 }
                 tracing::warn!("tidal top tracks failed for artist {a}: {e}");
             }

@@ -15,7 +15,7 @@ use crate::navidrome::models::{
 };
 use crate::navidrome::params::QueryParams;
 use crate::tidal::client::FAVORITES_CAP;
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 use crate::tidal::client::Error;
 use crate::tidal::mapping::{album_from_tidal, song_from_track, year_from};
 
@@ -26,12 +26,12 @@ const IGNORED_ARTICLES: &str = "The El La Los Las Le Les";
 // The whole favorited-artist list, sorted by index key. Each favorites
 // entry wraps the artist in { item, created }; created is the favorite
 // time, which getIndexes reports as starred.
-async fn favorite_artists() -> Result<Vec<IndexArtist>, ()> {
+async fn favorite_artists() -> Result<Vec<IndexArtist>, String> {
     let result = match crate::tidal::client::TidalClient::favorite_artists(crate::tidal::client(), 0, FAVORITES_CAP).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
-            return Err(());
+            return Err(format!("Artist index unavailable: {}", e.user_reason()));
         }
     };
     let mut artists: Vec<IndexArtist> = result["items"]
@@ -62,7 +62,7 @@ async fn favorite_artists() -> Result<Vec<IndexArtist>, ()> {
 
 // Shared index build for getIndexes and getArtists. Returns the letter
 // groups and the newest favorite time (the lastModified stamp).
-async fn index_core(q: &QueryParams) -> Result<(Vec<IndexGroup>, i64), &'static str> {
+async fn index_core(q: &QueryParams) -> Result<(Vec<IndexGroup>, i64), String> {
     // Only folder 1 exists; any other id yields an empty index.
     if let Some(folder) = q.music_folder_id
         && folder != 1 {
@@ -70,7 +70,7 @@ async fn index_core(q: &QueryParams) -> Result<(Vec<IndexGroup>, i64), &'static 
         }
     let artists = match favorite_artists().await {
         Ok(v) => v,
-        Err(()) => return Err("Artist index unavailable"),
+        Err(msg) => return Err(msg),
     };
     let last_modified = last_modified(&artists);
     Ok((index_groups(artists), last_modified))
@@ -217,7 +217,7 @@ pub async fn get_music_directory(q: QueryParams) -> Result<warp::reply::Json, wa
             Ok(d) => d,
             Err(e) => {
                 tracing::error!("tidal directory fetch failed: {e}");
-                return Ok(fail(0, "Directory unavailable"));
+                return Ok(fail_with(0, "Directory unavailable", &e));
             }
         },
         None => match id.parse::<u64>() {

@@ -2,7 +2,7 @@
 // to Tidal's image CDN; the server never proxies image bytes).
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::params::QueryParams;
-use super::{fail, redirect};
+use super::{fail, fail_with, redirect};
 use crate::tidal::mapping::{artist_pic_url, cover_cache, cover_url};
 use warp::Reply;
 
@@ -53,7 +53,7 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("mixes fetch failed: {e}");
-                return Ok(fail(0, "Cover art unavailable").into_response());
+                return Ok(fail_with(0, "Cover art unavailable", &e).into_response());
             }
         };
         let Some(mix) = crate::tidal::mapping::mixes_from_page(&list)
@@ -81,7 +81,7 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("playlist fetch failed: {e}");
-                return Ok(fail(0, "Cover art unavailable").into_response());
+                return Ok(fail_with(0, "Cover art unavailable", &e).into_response());
             }
         };
         let cover = result["squareImage"]
@@ -111,7 +111,7 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
                 }
                 Err(e) => {
                     tracing::warn!("album fetch failed: {e}");
-                    return Ok(fail(0, "Cover art unavailable").into_response());
+                    return Ok(fail_with(0, "Cover art unavailable", &e).into_response());
                 }
             },
             IdKind::Artist => match crate::tidal::client().artist(raw_id).await {
@@ -124,7 +124,7 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
                 }
                 Err(e) => {
                     tracing::warn!("artist fetch failed: {e}");
-                    return Ok(fail(0, "Cover art unavailable").into_response());
+                    return Ok(fail_with(0, "Cover art unavailable", &e).into_response());
                 }
             },
             // A track id resolves through its album: some clients pass
@@ -140,7 +140,7 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
                 }
                 Err(e) => {
                     tracing::warn!("track fetch failed: {e}");
-                    return Ok(fail(0, "Cover art unavailable").into_response());
+                    return Ok(fail_with(0, "Cover art unavailable", &e).into_response());
                 }
             },
             IdKind::Playlist => (None, false),

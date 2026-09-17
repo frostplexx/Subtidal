@@ -63,7 +63,7 @@ pub struct SubsonicErrorBody {
 #[derive(Serialize)]
 pub struct SubsonicError {
     pub code: u32,
-    pub message: &'static str,
+    pub message: String,
 }
 
 // getUser data: { user: { ... } }

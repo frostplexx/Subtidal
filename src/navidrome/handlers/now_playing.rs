@@ -7,7 +7,7 @@ use crate::navidrome::ids;
 use crate::navidrome::models::{NowPlaying, NowPlayingEntry, NowPlayingResponse, PingResponse};
 use crate::navidrome::now_playing;
 use crate::navidrome::params::QueryParams;
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 use crate::tidal::mapping::song_from_track;
 
 // updateNowPlaying: record the reported song as currently playing.
@@ -39,7 +39,7 @@ pub async fn get_now_playing(_q: QueryParams) -> Result<warp::reply::Json, warp:
         Ok(v) => v.to_json(),
         Err(e) => {
             tracing::error!("tidal track fetch failed: {e}");
-            return Ok(fail(0, "Now playing unavailable"));
+            return Ok(fail_with(0, "Now playing unavailable", &e));
         }
     };
     let Some(song) = song_from_track(&detail) else {

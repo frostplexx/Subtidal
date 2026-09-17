@@ -8,7 +8,7 @@ use crate::navidrome::models::{
 use crate::navidrome::params::QueryParams;
 use crate::navidrome::play_state;
 use crate::tidal::client::FAVORITES_CAP;
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 use crate::tidal::mapping::{album_from_tidal, cover_url, song_from_track};
 
 // getAlbum: one album plus its tracks in track order. The album's year
@@ -27,7 +27,7 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
             Ok(v) => v,
             Err(e) => {
                 tracing::error!("tidal album fetch failed: {e}");
-                return Ok(fail(0, "Album unavailable"));
+                return Ok(fail_with(0, "Album unavailable", &e));
             }
         };
     let album = match album_from_tidal(&detail) {
@@ -47,12 +47,12 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
 }
 
 // The whole favorites list as AlbumID3 items, or the shared failure.
-async fn all_favorite_albums() -> Result<Vec<AlbumId3>, &'static str> {
+async fn all_favorite_albums() -> Result<Vec<AlbumId3>, String> {
     match crate::tidal::client::TidalClient::favorite_albums(crate::tidal::client(), 0, FAVORITES_CAP).await {
         Ok(v) => Ok(favorites_albums(&v)),
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
-            Err("Album list unavailable")
+            Err(format!("Album list unavailable: {}", e.user_reason()))
         }
     }
 }
@@ -102,7 +102,7 @@ fn has_genre(a: &AlbumId3, genre: &str) -> bool {
 // list is the library; recent/frequent come from the local play history;
 // newest is Tidal's personalised feed. highest stays empty: Tidal has no
 // ratings.
-async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str> {
+async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, String> {
     let offset = q.offset.unwrap_or(0);
     let size = q.size.unwrap_or(10).min(500);
     let album: Vec<AlbumId3> = match q.r#type.as_deref() {
@@ -111,7 +111,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                 Ok(v) => favorites_albums(&v),
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");
-                    return Err("Album list unavailable");
+                    return Err(format!("Album list unavailable: {}", e.user_reason()));
                 }
             }
         }
@@ -132,7 +132,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal home feed fetch failed: {e}");
-                    return Err("Album list unavailable");
+                    return Err(format!("Album list unavailable: {}", e.user_reason()));
                 }
             };
             let raw = crate::tidal::client::albums_from_page(&result);
@@ -146,7 +146,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
         // has no browse page for falls back to the favorites carrying it.
         Some("byGenre") => {
             let Some(genre) = q.genre.as_deref() else {
-                return Err("Required parameter missing: genre");
+                return Err("Required parameter missing: genre".into());
             };
             let client = crate::tidal::client();
             match crate::tidal::client::genre_key(client, genre).await {
@@ -154,7 +154,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                     Ok(items) => items.iter().filter_map(album_from_tidal).collect(),
                     Err(e) => {
                         tracing::error!("tidal genre albums fetch failed: {e}");
-                        return Err("Album list unavailable");
+                        return Err(format!("Album list unavailable: {}", e.user_reason()));
                     }
                 },
                 None => {
@@ -166,7 +166,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
         }
         Some("byYear") => {
             let (Some(from), Some(to)) = (q.from_year, q.to_year) else {
-                return Err("Required parameter missing: fromYear/toYear");
+                return Err("Required parameter missing: fromYear/toYear".into());
             };
             // A reversed window (fromYear > toYear) lists newest first.
             let (lo, hi) = (from.min(to), from.max(to));
@@ -218,18 +218,18 @@ pub async fn get_album_list(q: QueryParams) -> Result<warp::reply::Json, warp::R
 // The info core shared by getAlbumInfo and getAlbumInfo2: album artwork
 // at the three documented sizes. Tidal exposes no album notes and no
 // external ids, so those stay empty and are omitted.
-async fn album_info_core(q: &QueryParams) -> Result<AlbumInfo, (u32, &'static str)> {
+async fn album_info_core(q: &QueryParams) -> Result<AlbumInfo, (u32, String)> {
     let Some(id) = q.id.0.first() else {
-        return Err((10, "Required parameter missing"));
+        return Err((10, "Required parameter missing".into()));
     };
     let Some(album_id) = ids::decode(IdKind::Album, id).or_else(|| id.parse().ok()) else {
-        return Err((70, "Album not found"));
+        return Err((70, "Album not found".into()));
     };
     let detail = match crate::tidal::client().album(album_id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal album fetch failed: {e}");
-            return Err((0, "Album unavailable"));
+            return Err((0, format!("Album unavailable: {}", e.user_reason())));
         }
     };
     let cover = detail["cover"].as_str();

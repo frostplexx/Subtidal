@@ -109,17 +109,56 @@ impl Error {
         }
     }
 
+    // Tidal's `subStatus` from an error body, when it carried one.
+    pub fn sub_status(&self) -> Option<u64> {
+        match self {
+            Error::Tidal(_, body) => serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|v| v.get("subStatus").and_then(|s| s.as_u64())),
+            _ => None,
+        }
+    }
+
+    // One short sentence for the client's error toast: what went wrong
+    // and, when there is one, what the user can do about it. The full
+    // diagnostic stays in the log.
+    pub fn user_reason(&self) -> String {
+        match self {
+            Error::NotLoggedIn => "Subtidal is not logged into Tidal; open /setup".into(),
+            Error::RateLimited => "too many streams at once; try again in a moment".into(),
+            Error::Http(e) if e.is_timeout() => "Tidal did not answer in time".into(),
+            Error::Http(e) if e.is_connect() => "could not reach Tidal".into(),
+            Error::Http(_) => "the Tidal request failed".into(),
+            Error::HttpDecode(429, _) => "Tidal is rate limiting this server; try again in a minute".into(),
+            Error::HttpDecode(s, _) if (500..600).contains(s) => "Tidal is having trouble (server error)".into(),
+            Error::HttpDecode(_, _) => "Tidal answered with something unreadable".into(),
+            Error::Tidal(_, _) => match self.sub_status() {
+                Some(4005) => "Tidal has not finished processing this track".into(),
+                Some(4010) => "this Tidal account's monthly stream quota is exhausted".into(),
+                Some(4032) | Some(4035) => "not available in your region on Tidal".into(),
+                Some(4033) => "needs a higher Tidal subscription tier".into(),
+                _ => match self {
+                    Error::Tidal(401, _) | Error::Tidal(403, _) => {
+                        "Tidal rejected the session; open /setup to sign in again".into()
+                    }
+                    Error::Tidal(404, _) => "not found on Tidal".into(),
+                    Error::Tidal(429, _) => "Tidal is rate limiting this server; try again in a minute".into(),
+                    Error::Tidal(s, _) if (500..600).contains(s) => "Tidal is having trouble (server error)".into(),
+                    Error::Tidal(s, _) => format!("Tidal answered {s}"),
+                    _ => unreachable!(),
+                },
+            },
+            Error::Json(_) => "Tidal answered with something unreadable".into(),
+            Error::Auth(m) => m.clone(),
+            Error::Malformed(_) => "Tidal sent a broken audio segment".into(),
+        }
+    }
+
     // True when Tidal refuses the track itself: subStatus 4005 ("Asset
     // is not ready for playback"). The asset is not playable for this
     // account; no retry can change that, and it is not throttle evidence.
     pub fn is_unavailable_asset(&self) -> bool {
-        match self {
-            Error::Tidal(_, body) => serde_json::from_str::<serde_json::Value>(body)
-                .ok()
-                .and_then(|v| v.get("subStatus").and_then(|s| s.as_u64()))
-                == Some(4005),
-            _ => false,
-        }
+        self.sub_status() == Some(4005)
     }
 }
 
@@ -579,5 +618,24 @@ impl TidalClient {
             }
         }
         tracing::info!("caches warmed in {:.1?}", started.elapsed());
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::Error;
+
+    #[test]
+    fn user_reasons_name_the_actionable_cause() {
+        let sub = |s: u64| Error::Tidal(401, format!(r#"{{"status":401,"subStatus":{s}}}"#));
+        assert!(sub(4010).user_reason().contains("quota"));
+        assert!(sub(4032).user_reason().contains("region"));
+        assert!(sub(4033).user_reason().contains("subscription"));
+        assert!(Error::Tidal(401, "{}".into()).user_reason().contains("/setup"));
+        assert!(Error::Tidal(429, "{}".into()).user_reason().contains("rate limiting"));
+        assert!(Error::Tidal(404, "{}".into()).user_reason().contains("not found"));
+        assert!(Error::HttpDecode(503, "<html>".into()).user_reason().contains("server error"));
+        assert!(Error::NotLoggedIn.user_reason().contains("/setup"));
+        assert!(Error::RateLimited.user_reason().contains("try again"));
     }
 }

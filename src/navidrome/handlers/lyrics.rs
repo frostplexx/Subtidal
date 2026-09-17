@@ -5,7 +5,7 @@ use crate::navidrome::models::song::{Cue, CueLine};
 // Structured lyrics: getLyricsBySongId and the legacy getLyrics. Tidal
 // returns plain text plus an LRC subtitle track for the same song; the
 // synced one wins when both exist.
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 use crate::navidrome::ids;
 use crate::navidrome::models::lyrics::RadiantLyrics;
 use crate::navidrome::models::{
@@ -220,7 +220,7 @@ pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, 
         Ok(v) => v,
         Err(e) => {
             tracing::error!("lyrics fetch failed: {e}");
-            return Ok(fail(0, "Lyrics unavailable"));
+            return Ok(fail_with(0, "Lyrics unavailable", &e));
         }
     };
     Ok(ok(LyricsListResponse {
@@ -288,7 +288,7 @@ pub async fn get_lyrics(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal search failed: {e}");
-            return Ok(fail(0, "Lyrics unavailable"));
+            return Ok(fail_with(0, "Lyrics unavailable", &e));
         }
     };
     let Some(track) = search_items(&result, "tracks").into_iter().next() else {
@@ -302,7 +302,7 @@ pub async fn get_lyrics(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
         Err(Error::Tidal(404, _)) => String::new(),
         Err(e) => {
             tracing::error!("tidal lyrics fetch failed: {e}");
-            return Ok(fail(0, "Lyrics unavailable"));
+            return Ok(fail_with(0, "Lyrics unavailable", &e));
         }
     };
     Ok(ok(lyrics_reply(artist, title, &value)))

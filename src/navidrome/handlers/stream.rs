@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use moka::sync::Cache;
 
-use super::{fail, redirect};
+use super::{fail, fail_with, redirect};
 use warp::Reply;
 
 // Manifest cache. Its job is to keep repeat requests off the StreamLimiter: a client re-requests
@@ -847,19 +847,18 @@ fn parse_range(header: &str, total: u64) -> Option<(u64, u64)> {
     }
     Some((start, end))
 }
+// The reply names the cause (fail_with): the difference between "fix
+// your subscription" and "this is a bug" is what the listener acts on.
 fn stream_error(track_id: u64, e: Error) -> warp::reply::Response {
     if matches!(e, Error::RateLimited) {
         tracing::warn!("tidal stream limit hit for track {track_id}");
-        return fail(0, "Stream unavailable").into_response();
+        return fail_with(0, "Stream unavailable", &e).into_response();
     }
     if e.is_unavailable_asset() {
         tracing::warn!("track {track_id} not playable on tidal: {e}");
-        return fail(70, "Song not found").into_response();
+        return fail_with(70, "Song not found", &e).into_response();
     }
-    // The v1 endpoint distinguishes why an asset is refused; the
-    // sub-status is the difference between "fix your subscription" and
-    // "this is a bug", so name it rather than logging one opaque line.
-    match sub_status(&e) {
+    match e.sub_status() {
         Some(4010) => tracing::warn!("track {track_id}: monthly stream quota exceeded"),
         Some(4032) | Some(4035) => {
             tracing::warn!("track {track_id}: not available in this region")
@@ -869,18 +868,7 @@ fn stream_error(track_id: u64, e: Error) -> warp::reply::Response {
         }
         _ => tracing::error!("tidal stream fetch failed for track {track_id}: {e}"),
     }
-    fail(0, "Stream unavailable").into_response()
-}
-
-// Tidal's `subStatus` from an error body, when it carried one.
-fn sub_status(e: &Error) -> Option<u64> {
-    let Error::Tidal(_, body) = e else {
-        return None;
-    };
-    serde_json::from_str::<serde_json::Value>(body)
-        .ok()?
-        .get("subStatus")?
-        .as_u64()
+    fail_with(0, "Stream unavailable", &e).into_response()
 }
 
 #[cfg(test)]
@@ -1102,8 +1090,8 @@ mod tests {
     #[test]
     fn sub_status_is_read_from_the_error_body() {
         let e = Error::Tidal(401, r#"{"status":401,"subStatus":4033}"#.into());
-        assert_eq!(sub_status(&e), Some(4033));
-        assert_eq!(sub_status(&Error::Tidal(500, "<html>".into())), None);
-        assert_eq!(sub_status(&Error::RateLimited), None);
+        assert_eq!(e.sub_status(), Some(4033));
+        assert_eq!(Error::Tidal(500, "<html>".into()).sub_status(), None);
+        assert_eq!(Error::RateLimited.sub_status(), None);
     }
 }

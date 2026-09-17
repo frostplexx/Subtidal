@@ -10,7 +10,7 @@ use crate::tidal::client::{Error, TidalClient};
 use crate::tidal::mapping::{
     mix_from_tidal, mixes_from_page, playlist_from_tidal, playlist_song_from_item,
 };
-use super::{fail, ok};
+use super::{fail, fail_with, ok};
 
 // Whether getPlaylists blends in the Tidal mixes (show_mixes setting).
 fn show_mixes() -> bool {
@@ -34,7 +34,7 @@ pub async fn get_playlists() -> Result<warp::reply::Json, warp::Rejection> {
             .unwrap_or_default(),
         Err(e) => {
             tracing::error!("tidal playlists fetch failed: {e}");
-            return Ok(fail(0, "Playlists unavailable"));
+            return Ok(fail_with(0, "Playlists unavailable", &e));
         }
     };
     if let Some(mixes) = mixes {
@@ -94,7 +94,7 @@ async fn get_mix_playlist(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal mixes fetch failed: {e}");
-            return Ok(fail(0, "Mix unavailable"));
+            return Ok(fail_with(0, "Mix unavailable", &e));
         }
     };
     let Some(mix) = mixes_from_page(&list)
@@ -110,7 +110,7 @@ async fn get_mix_playlist(
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal mix items fetch failed: {e}");
-            return Ok(fail(0, "Mix unavailable"));
+            return Ok(fail_with(0, "Mix unavailable", &e));
         }
     };
     let entry: Vec<Child> = result["items"]
@@ -142,7 +142,7 @@ pub async fn get_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::Rej
         Err(Error::Tidal(404, _)) => return Ok(fail(70, "Playlist not found")),
         Err(e) => {
             tracing::error!("tidal playlist fetch failed: {e}");
-            return Ok(fail(0, "Playlist unavailable"));
+            return Ok(fail_with(0, "Playlist unavailable", &e));
         }
     };
     let Some(playlist) = playlist_from_tidal(&result) else {
@@ -210,7 +210,7 @@ pub async fn create_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
                 Ok(v) => v,
                 Err(e) => {
                     tracing::error!("tidal playlist create failed: {e}");
-                    return Ok(fail(0, "Playlist creation failed"));
+                    return Ok(fail_with(0, "Playlist creation failed", &e));
                 }
             };
             let Some(uuid) = result["uuid"].as_str().map(String::from) else {
@@ -316,7 +316,7 @@ pub async fn delete_playlist(q: QueryParams) -> Result<warp::reply::Json, warp::
         Err(Error::Tidal(404, _) | Error::Tidal(403, _)) => Ok(fail(70, "Playlist not found")),
         Err(e) => {
             tracing::error!("tidal playlist delete failed: {e}");
-            Ok(fail(0, "Playlist deletion failed"))
+            Ok(fail_with(0, "Playlist deletion failed", &e))
         }
     }
 }
@@ -331,7 +331,7 @@ async fn playlist_response(
         Err(Error::Tidal(404, _)) => return Ok(fail(70, "Playlist not found")),
         Err(e) => {
             tracing::error!("tidal playlist fetch failed: {e}");
-            return Ok(fail(0, "Playlist unavailable"));
+            return Ok(fail_with(0, "Playlist unavailable", &e));
         }
     };
     let Some(playlist) = playlist_from_tidal(&result) else {
