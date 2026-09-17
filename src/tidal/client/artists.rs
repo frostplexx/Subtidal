@@ -128,8 +128,18 @@ impl TidalClient {
         Ok(serde_json::json!({ "items": items }))
     }
 
-    // Favorited artists, newest first. Backs getStarred/getStarred2.
-    pub async fn favorite_artists(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+    // Favorited artists, newest first. Backs getStarred/getStarred2 and
+    // the artist index. v1; see favorites_v1_slice.
+    pub async fn favorite_artists(
+        client: &'static TidalClient,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        super::favorites::favorites_v1_slice(client, "artists", offset, limit).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn favorite_artists_v2(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         self.favorite_pages("Artists", "items,items.profileArt", offset, limit)
             .await
     }

@@ -48,7 +48,7 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
 
 // The whole favorites list as AlbumID3 items, or the shared failure.
 async fn all_favorite_albums() -> Result<Vec<AlbumId3>, &'static str> {
-    match crate::tidal::client().favorite_albums(0, FAVORITES_CAP).await {
+    match crate::tidal::client::TidalClient::favorite_albums(crate::tidal::client(), 0, FAVORITES_CAP).await {
         Ok(v) => Ok(favorites_albums(&v)),
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
@@ -107,7 +107,7 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
     let size = q.size.unwrap_or(10).min(500);
     let album: Vec<AlbumId3> = match q.r#type.as_deref() {
         Some("starred") => {
-            match crate::tidal::client().favorite_albums(offset, size).await {
+            match crate::tidal::client::TidalClient::favorite_albums(crate::tidal::client(), offset, size).await {
                 Ok(v) => favorites_albums(&v),
                 Err(e) => {
                     tracing::error!("tidal favorites fetch failed: {e}");

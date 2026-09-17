@@ -35,9 +35,8 @@ impl TidalClient {
     // After any favorite change, drop the cached favorites lists so the
     // next getStarred/getAlbumList2 read fresh data. The cache key is the
     // full path plus query, so a prefix match covers all pages of a list.
-    // Album and artist reads walk the v2 userCollection endpoints; the
-    // track reads use the v1 /users/{id}/favorites/tracks endpoint (v1
-    // track objects carry replayGain), so three prefixes must be cleared.
+    // The list reads use the v1 /users/{id}/favorites/* endpoints; the v2
+    // userCollection prefixes are cleared too for the kept v2 readers.
     // startScan's "rescan the library": favorites changed from another
     // Tidal client become visible without waiting out the 6h cache.
     pub fn refresh_library(&self) {
@@ -54,13 +53,13 @@ impl TidalClient {
                 .meta_cache
                 .invalidate_entries_if(move |k, _| k.starts_with(prefix));
         }
-        // The v1 favorite-tracks key embeds the user id. The mutation just
-        // ran with a valid token, so the stored id is available.
+        // The v1 favorites keys embed the user id. The mutation just ran
+        // with a valid token, so the stored id is available.
         if let Some(uid) = self.user_id_from_tokens() {
-            let v1_tracks = format!("/users/{uid}/favorites/tracks");
+            let v1 = format!("/users/{uid}/favorites/");
             let _ = self
                 .meta_cache
-                .invalidate_entries_if(move |k, _| k.starts_with(&v1_tracks));
+                .invalidate_entries_if(move |k, _| k.starts_with(&v1));
         }
     }
 
@@ -156,4 +155,48 @@ impl TidalClient {
             ))
         }
     }
+}
+// The whole favorites list of one kind from the v1 endpoint: 1000-item
+// pages fetched in parallel, in one request for most libraries. The v2
+// userCollection walk is fixed at 20 per page, so a 500-album library
+// cost 25 sequential round trips there. Both v1 lists carry the same
+// { item, created } wrapper the mappers read.
+async fn favorites_v1_all(
+    client: &'static TidalClient,
+    list: &str,
+) -> Result<Vec<serde_json::Value>, super::Error> {
+    let user_id = client.user_id().await?;
+    let path = format!("/users/{user_id}/favorites/{list}");
+    super::v1_pages_parallel(
+        client,
+        &path,
+        &client.meta_cache,
+        &[("order", "DATE"), ("orderDirection", "DESC")],
+        1000,
+        8,
+    )
+    .await
+}
+
+// One offset/limit slice of a favorites list, plus the full count, in
+// the shape the v2 walk produced: { items, totalNumberOfItems }. Boxed:
+// the parallel walk would otherwise deepen every caller's state
+// machine past the trait solver's recursion limit.
+pub(crate) fn favorites_v1_slice(
+    client: &'static TidalClient,
+    list: &str,
+    offset: u32,
+    limit: u32,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, super::Error>> + Send>> {
+    let list = list.to_string();
+    Box::pin(async move {
+    let all = favorites_v1_all(client, &list).await?;
+    let total = all.len();
+    let items: Vec<serde_json::Value> = all
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .collect();
+    Ok(serde_json::json!({ "items": items, "totalNumberOfItems": total }))
+    })
 }

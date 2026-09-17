@@ -92,8 +92,20 @@ impl TidalClient {
         })
     }
 
-    // Favorited albums, newest first. Backs getAlbumList2 (type=starred).
-    pub async fn favorite_albums(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
+    // Favorited albums, newest first. Backs getAlbumList2 (type=starred)
+    // and getStarred. v1, one 1000-item page for most libraries; see
+    // favorites_v1_slice.
+    pub async fn favorite_albums(
+        client: &'static TidalClient,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Value, super::Error> {
+        super::favorites::favorites_v1_slice(client, "albums", offset, limit).await
+    }
+
+    // The v2 walk, kept for the genre include the v1 list lacks.
+    #[allow(dead_code)]
+    pub async fn favorite_albums_v2(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         self.favorite_pages(
             "Albums",
             "items,items.artists,items.coverArt,items.genres",

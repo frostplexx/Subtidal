@@ -181,13 +181,16 @@ impl TidalClient {
     ) -> Result<Value, super::Error> {
         let user_id = client.user_id().await?.to_string();
         let path = format!("/users/{user_id}/favorites/tracks");
+        // A 1000-item page answers in the same ~0.5 s as a 100-item one,
+        // so most libraries land in one request; the parallel walk only
+        // kicks in above that.
         let items = super::v1_pages_parallel(
             client,
             &path,
             &client.meta_cache,
             &[("order", "DATE"), ("orderDirection", "DESC")],
-            100,
-            6,
+            1000,
+            8,
         )
         .await?;
         Ok(serde_json::json!({ "items": items }))
