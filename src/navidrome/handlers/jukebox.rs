@@ -37,7 +37,7 @@ pub(crate) fn shuffle<T>(playlist: &mut [T]) {
 pub async fn jukebox_control(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let action = q.action.as_deref().unwrap_or("");
     let (status, ids, with_playlist) = {
-        let mut jukebox = JUKEBOX.lock().unwrap();
+        let mut jukebox = JUKEBOX.lock().unwrap_or_else(|e| e.into_inner());
         match action {
             "set" => {
                 jukebox.playlist = q

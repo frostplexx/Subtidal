@@ -138,62 +138,78 @@ fn similar_songs_core(q: QueryParams) -> super::BoxedTryFuture<Vec<Child>, (u32,
     };
 
     if songs.len() < count {
-        let known: HashSet<u64> = songs
-            .iter()
-            .filter_map(|s| ids::parse_track_id(&s.id))
-            .collect();
-        let similar = match client.artist_similar(artist_id, 3).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::error!("tidal similar artists fetch failed: {e}");
-                return Err((0, "Similar songs unavailable"));
-            }
-        };
-        let mut artists: Vec<u64> = vec![artist_id];
-        artists.extend(
-            similar["items"]
-                .as_array()
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|a| a["id"].as_u64())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
-        );
-        // Per-artist slice targets the remaining slots, capped upward so
-        // a short feed still requests one track per artist.
-        let per = ((count - songs.len()) / artists.len().max(1)).max(1) as u32;
-        for (i, a) in artists.iter().enumerate() {
-            match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, *a, per).await {
-                Ok(v) => songs.extend(
-                    v["items"]
-                        .as_array()
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(song_from_track)
-                                .filter(|s| {
-                                    ids::parse_track_id(&s.id).is_none_or(|t| !known.contains(&t))
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default(),
-                ),
-                Err(e) => {
-                    if i == 0 {
-                        tracing::error!("tidal top tracks fetch failed: {e}");
-                        return Err((0, "Similar songs unavailable"));
-                    }
-                    tracing::warn!("tidal top tracks failed for artist {a}: {e}");
-                }
-            }
-        }
+        pad_with_top_tracks(client, artist_id, count, &mut songs).await?;
     }
     songs.shuffle(&mut rand::rng());
     songs.truncate(count);
     Ok(songs)
     })
+}
+
+// Pads `songs` toward `count` using the old heuristic: top tracks of the
+// seed artist and its three closest similar artists, deduped against
+// what `songs` already holds. Used when Tidal's similar-tracks feed came
+// back short or empty. The seed artist's own top-tracks fetch failing is
+// fatal (nothing left to pad with); a failure for one of the *other*
+// similar artists just skips that artist.
+async fn pad_with_top_tracks(
+    client: &'static crate::tidal::client::TidalClient,
+    artist_id: u64,
+    count: usize,
+    songs: &mut Vec<Child>,
+) -> Result<(), (u32, &'static str)> {
+    let known: HashSet<u64> = songs
+        .iter()
+        .filter_map(|s| ids::parse_track_id(&s.id))
+        .collect();
+    let similar = match client.artist_similar(artist_id, 3).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("tidal similar artists fetch failed: {e}");
+            return Err((0, "Similar songs unavailable"));
+        }
+    };
+    let mut artists: Vec<u64> = vec![artist_id];
+    artists.extend(
+        similar["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|a| a["id"].as_u64())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
+    // Per-artist slice targets the remaining slots, capped upward so
+    // a short feed still requests one track per artist.
+    let per = ((count - songs.len()) / artists.len().max(1)).max(1) as u32;
+    for (i, a) in artists.iter().enumerate() {
+        match crate::tidal::client::TidalClient::artist_top_tracks_parallel(client, *a, per).await {
+            Ok(v) => songs.extend(
+                v["items"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(song_from_track)
+                            .filter(|s| {
+                                ids::parse_track_id(&s.id).is_none_or(|t| !known.contains(&t))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
+            ),
+            Err(e) => {
+                if i == 0 {
+                    tracing::error!("tidal top tracks fetch failed: {e}");
+                    return Err((0, "Similar songs unavailable"));
+                }
+                tracing::warn!("tidal top tracks failed for artist {a}: {e}");
+            }
+        }
+    }
+    Ok(())
 }
 
 // Tidal's similarTracks relationship for the artist's most popular

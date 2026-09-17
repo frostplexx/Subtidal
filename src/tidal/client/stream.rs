@@ -116,7 +116,7 @@ impl StreamLimiter {
             // An active throttle pause holds every start; the guard
             // must end before the sleep below, so scope it.
             let wait = {
-                let state = self.state.lock().unwrap();
+                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 match state.cooldown_until {
                     Some(until) => until.saturating_duration_since(Instant::now()),
                     None => Duration::ZERO,
@@ -127,7 +127,7 @@ impl StreamLimiter {
             }
             // The window is full; wait until the oldest start ages out.
             let wait = {
-                let mut recent = self.recent.lock().unwrap();
+                let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
                 let now = Instant::now();
                 if window_allows(&mut recent, now) {
                     return Ok(permit);
@@ -150,7 +150,7 @@ impl StreamLimiter {
     // in-flight leftover must neither extend nor clear the pause. An
     // expired pause is a clean slate for the next cycle.
     fn note(&self, outcome: FetchOutcome) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.cooldown_until.is_some_and(|until| Instant::now() < until) {
             return;
         }

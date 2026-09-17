@@ -181,7 +181,7 @@ impl AuthRateLimiter {
     // window is denied regardless of its credentials. An expired
     // lockout resets the failure count.
     fn check(&self, ip: Option<IpAddr>) -> bool {
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         match states.get_mut(&ip) {
             Some(s) if Instant::now() < s.locked_until => false,
             Some(s) => {
@@ -193,7 +193,7 @@ impl AuthRateLimiter {
     }
 
     fn record_failure(&self, ip: Option<IpAddr>) {
-        let mut states = self.states.lock().unwrap();
+        let mut states = self.states.lock().unwrap_or_else(|e| e.into_inner());
         if states.len() >= MAX_TRACKED_IPS {
             let now = Instant::now();
             states.retain(|_, s| now < s.locked_until);
@@ -207,7 +207,7 @@ impl AuthRateLimiter {
     }
 
     fn record_success(&self, ip: Option<IpAddr>) {
-        self.states.lock().unwrap().remove(&ip);
+        self.states.lock().unwrap_or_else(|e| e.into_inner()).remove(&ip);
     }
 }
 

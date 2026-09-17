@@ -97,20 +97,20 @@ pub fn init(settings: &Settings) {
             LISTENBRAINZ_API_BASE,
         )));
     }
-    *registry().lock().unwrap() = Arc::new(reporters);
+    *registry().lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(reporters);
 }
 
 // True when at least one scrobble backend is configured. Drives
 // getUser's scrobblingEnabled flag.
 pub fn enabled() -> bool {
-    !registry().lock().unwrap().is_empty()
+    !registry().lock().unwrap_or_else(|e| e.into_inner()).is_empty()
 }
 
 // Report a completed track to every configured backend. Errors log at
 // warn; the client request never fails because of a reporter.
 pub async fn report_song(song: &ScrobbleSong, timestamp_ms: i64) {
     // Arc clone releases the registry lock before the network calls.
-    let reporters = registry().lock().unwrap().clone();
+    let reporters = registry().lock().unwrap_or_else(|e| e.into_inner()).clone();
     for reporter in reporters.iter() {
         if let Err(e) = reporter.report(song, timestamp_ms).await {
             tracing::warn!(
@@ -150,7 +150,7 @@ fn last_np() -> &'static Mutex<Option<LastNowPlaying>> {
 // unavailable the report is skipped and logged, never an error.
 pub(crate) async fn report_now_playing(track_id: u64) {
     {
-        let mut last = last_np().lock().unwrap();
+        let mut last = last_np().lock().unwrap_or_else(|e| e.into_inner());
         let now = crate::navidrome::now_playing::now_ms();
         if !np_due(track_id, now, &last) {
             return;
@@ -181,7 +181,7 @@ pub(crate) async fn report_now_playing(track_id: u64) {
 // Fan out one now-playing notification to every configured reporter.
 // A failing reporter only logs; it never fails the caller.
 pub(crate) async fn report_now_playing_song(song: &ScrobbleSong) {
-    let reporters = registry().lock().unwrap().clone();
+    let reporters = registry().lock().unwrap_or_else(|e| e.into_inner()).clone();
     for reporter in reporters.iter() {
         if let Err(e) = reporter.now_playing(song).await {
             tracing::warn!(

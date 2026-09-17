@@ -42,7 +42,7 @@ pub fn report(track_id: u64, username: String) {
 }
 
 pub fn report_at(track_id: u64, username: String, now: i64) {
-    *state().lock().unwrap() = Some(NowPlaying {
+    *state().lock().unwrap_or_else(|e| e.into_inner()) = Some(NowPlaying {
         track_id,
         username,
         state: "playing",
@@ -75,10 +75,10 @@ pub fn report_playback_at(
     now: i64,
 ) {
     if play_state == "stopped" {
-        *state().lock().unwrap() = None;
+        *state().lock().unwrap_or_else(|e| e.into_inner()) = None;
         return;
     }
-    let mut slot = state().lock().unwrap();
+    let mut slot = state().lock().unwrap_or_else(|e| e.into_inner());
     let restart = play_state == "starting"
         || slot.as_ref().is_none_or(|n| n.track_id != track_id);
     let started_ms = if restart {
@@ -103,7 +103,7 @@ pub fn current() -> Option<NowPlaying> {
 }
 
 pub fn current_at(now: i64) -> Option<NowPlaying> {
-    let slot = state().lock().unwrap();
+    let slot = state().lock().unwrap_or_else(|e| e.into_inner());
     match slot.as_ref() {
         Some(n) if now - n.last_report_ms <= STALE_MS => Some(n.clone()),
         _ => None,

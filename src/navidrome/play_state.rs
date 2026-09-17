@@ -64,7 +64,7 @@ fn bookmark_map() -> &'static Mutex<BTreeMap<u64, Bookmark>> {
 // Save the queue. An empty id list clears it, per the OpenSubsonic rule
 // for savePlayQueue.
 pub fn save_queue(state: PlayQueue) {
-    *queue_slot().lock().unwrap() = if state.track_ids.is_empty() {
+    *queue_slot().lock().unwrap_or_else(|e| e.into_inner()) = if state.track_ids.is_empty() {
         None
     } else {
         Some(state)
@@ -73,22 +73,22 @@ pub fn save_queue(state: PlayQueue) {
 
 // The saved queue, if any.
 pub fn queue() -> Option<PlayQueue> {
-    queue_slot().lock().unwrap().clone()
+    queue_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 // Replace the resolved queue. A cleared store resolves to None.
 pub fn save_resolved(state: Option<ResolvedQueue>) {
-    *resolved_slot().lock().unwrap() = state;
+    *resolved_slot().lock().unwrap_or_else(|e| e.into_inner()) = state;
 }
 
 // The resolved queue, if any.
 pub fn resolved() -> Option<ResolvedQueue> {
-    resolved_slot().lock().unwrap().clone()
+    resolved_slot().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 // Upsert a bookmark; an update keeps the original created time.
 pub fn upsert_bookmark(track_id: u64, position_ms: u64, comment: String, username: String, now: i64) {
-    let mut map = bookmark_map().lock().unwrap();
+    let mut map = bookmark_map().lock().unwrap_or_else(|e| e.into_inner());
     let created_ms = map.get(&track_id).map(|b| b.created_ms).unwrap_or(now);
     map.insert(
         track_id,
@@ -105,12 +105,21 @@ pub fn upsert_bookmark(track_id: u64, position_ms: u64, comment: String, usernam
 
 // Remove a bookmark. Returns false when none existed.
 pub fn delete_bookmark(track_id: u64) -> bool {
-    bookmark_map().lock().unwrap().remove(&track_id).is_some()
+    bookmark_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&track_id)
+        .is_some()
 }
 
 // All bookmarks, oldest first.
 pub fn bookmarks() -> Vec<Bookmark> {
-    let mut all: Vec<Bookmark> = bookmark_map().lock().unwrap().values().cloned().collect();
+    let mut all: Vec<Bookmark> = bookmark_map()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
     all.sort_by_key(|b| b.created_ms);
     all
 }
@@ -119,9 +128,9 @@ pub fn bookmarks() -> Vec<Bookmark> {
 // process, so each test starts from a clean slate.
 #[cfg(test)]
 pub fn reset() {
-    *queue_slot().lock().unwrap() = None;
-    *resolved_slot().lock().unwrap() = None;
-    bookmark_map().lock().unwrap().clear();
+    *queue_slot().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    *resolved_slot().lock().unwrap_or_else(|e| e.into_inner()) = None;
+    bookmark_map().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 // Epoch ms -> "YYYY-MM-DDTHH:MM:SSZ" (UTC). Subsonic timestamps are

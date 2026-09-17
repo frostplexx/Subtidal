@@ -522,7 +522,7 @@ async fn assemble(
         return Ok(bytes);
     }
     let gate = {
-        let mut map = ASSEMBLING.lock().unwrap();
+        let mut map = ASSEMBLING.lock().unwrap_or_else(|e| e.into_inner());
         Arc::clone(
             map.entry((track_id, tier))
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
@@ -539,7 +539,10 @@ async fn assemble(
     let result = crate::tidal::client().fetch_segments(init, segments).await;
     // Drop the gate entry whatever happened, so a failure does not
     // wedge the track behind a stale mutex until restart.
-    ASSEMBLING.lock().unwrap().remove(&(track_id, tier));
+    ASSEMBLING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(track_id, tier));
 
     let bytes = Arc::new(result?);
     store_audio(track_id, tier, &bytes);
@@ -692,7 +695,10 @@ async fn chunked_reply(
         .map(move |chunk| match chunk {
             Ok(bytes) => {
                 if cacheable {
-                    acc_body.lock().unwrap().extend_from_slice(&bytes);
+                    acc_body
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .extend_from_slice(&bytes);
                 }
                 Ok(bytes)
             }
@@ -707,7 +713,9 @@ async fn chunked_reply(
         // makes it safe to treat the accumulator as complete.
         .chain(futures_util::stream::once(async move {
             if cacheable {
-                let bytes = Arc::new(std::mem::take(&mut *acc_done.lock().unwrap()));
+                let bytes = Arc::new(std::mem::take(
+                    &mut *acc_done.lock().unwrap_or_else(|e| e.into_inner()),
+                ));
                 tracing::debug!(
                     "stream {track_id} body complete: {} bytes in {:?}",
                     bytes.len(),
