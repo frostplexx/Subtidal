@@ -4,6 +4,7 @@
 //   ar<id>    -> that artist's albums
 //   al<id>    -> that album's tracks
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{DateTime, Utc};
 
@@ -75,13 +76,28 @@ async fn index_core(q: &QueryParams) -> Result<(Vec<IndexGroup>, i64), &'static 
     Ok((index_groups(artists), last_modified))
 }
 
-// getIndexes: the classic artist index. ifModifiedSince is accepted and
-// ignored; the list always reflects the current favorites.
+// When an artist was last starred or unstarred through this server, in
+// epoch ms. The favorite times only move forward on additions, so a
+// removal would otherwise leave lastModified untouched and a client
+// polling with ifModifiedSince would keep the unstarred artist.
+static INDEX_TOUCHED: AtomicI64 = AtomicI64::new(0);
+
+pub(crate) fn touch_index() {
+    INDEX_TOUCHED.store(now_ms(), Ordering::Relaxed);
+}
+
+// getIndexes: the classic artist index. With ifModifiedSince at or after
+// the index's lastModified, the index groups are left out, per the
+// Subsonic contract; the stamp itself is still reported.
 pub async fn get_indexes(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
-    let (index, last_modified) = match index_core(&q).await {
+    let (mut index, last_modified) = match index_core(&q).await {
         Ok(v) => v,
         Err(msg) => return Ok(fail(0, msg)),
     };
+    let last_modified = last_modified.max(INDEX_TOUCHED.load(Ordering::Relaxed));
+    if q.if_modified_since.is_some_and(|since| since >= last_modified) {
+        index.clear();
+    }
     Ok(ok(IndexesResponse {
         indexes: Indexes {
             ignored_articles: IGNORED_ARTICLES,

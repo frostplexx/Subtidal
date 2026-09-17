@@ -191,6 +191,9 @@ async fn apply_toggles(
             tracing::error!("tidal favorite toggle failed: {e}");
             return Err(());
         }
+        if kind == FavoriteKind::Artist {
+            super::browse::touch_index();
+        }
     }
     Ok(())
 }
