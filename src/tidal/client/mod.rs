@@ -93,6 +93,22 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 impl Error {
+    // Rebuild an error handed back through a coalesced cache fetch: moka
+    // shares one Arc<Error> between every waiter. Every variant but the
+    // two non-Clone wrappers rebuilds exactly; those keep their message.
+    fn shared(e: std::sync::Arc<Error>) -> Error {
+        match &*e {
+            Error::Http(inner) => Error::HttpDecode(0, format!("http error: {inner}")),
+            Error::HttpDecode(s, b) => Error::HttpDecode(*s, b.clone()),
+            Error::Tidal(s, b) => Error::Tidal(*s, b.clone()),
+            Error::Json(inner) => Error::HttpDecode(0, format!("json error: {inner}")),
+            Error::Auth(m) => Error::Auth(m.clone()),
+            Error::Malformed(m) => Error::Malformed(m.clone()),
+            Error::RateLimited => Error::RateLimited,
+            Error::NotLoggedIn => Error::NotLoggedIn,
+        }
+    }
+
     // True when Tidal refuses the track itself: subStatus 4005 ("Asset
     // is not ready for playback"). The asset is not playable for this
     // account; no retry can change that, and it is not throttle evidence.
@@ -215,25 +231,8 @@ impl TidalClient {
             full.push_str(if full.contains('?') { "&" } else { "?" });
             full.push_str(&format!("countryCode={cc}"));
         }
-        if let Some(v) = cache.get(&full).await {
-            return Ok(v);
-        }
-        // The official client sends x-tidal-client-version on every API
-        // call. The v2 API rejects requests without it (400 subStatus
-        // 1002); v1 tolerates it and the stream fetches expect it.
-        let req = self
-            .http
-            .get(format!("{base}{full}"))
-            .bearer_auth(token)
-            .header("x-tidal-client-version", CLIENT_VERSION);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body: Value = resp.json().await?;
-        if !status.is_success() {
-            return Err(Error::Tidal(status.as_u16(), body.to_string()));
-        }
-        cache.insert(full, body.clone()).await;
-        Ok(body)
+        let url = format!("{base}{full}");
+        fetch_coalesced(cache, full, &self.http, url, token).await
     }
 
     // Authenticated GET with url-encoded query params. get_json appends
@@ -305,24 +304,9 @@ impl TidalClient {
         full_path: &str,
         cache: &Cache<String, Value>,
     ) -> Result<Value, Error> {
-        if let Some(v) = cache.get(full_path).await {
-            return Ok(v);
-        }
         let token = self.access_token().await?;
-        let resp = self
-            .http
-            .get(format!("{OPENAPI_URL}{full_path}"))
-            .bearer_auth(token)
-            .header("x-tidal-client-version", CLIENT_VERSION)
-            .send()
-            .await?;
-        let status = resp.status();
-        let body: Value = resp.json().await?;
-        if !status.is_success() {
-            return Err(Error::Tidal(status.as_u16(), body.to_string()));
-        }
-        cache.insert(full_path.to_string(), body.clone()).await;
-        Ok(body)
+        let url = format!("{OPENAPI_URL}{full_path}");
+        fetch_coalesced(cache, full_path.to_string(), &self.http, url, token).await
     }
 
     // Mutating JSON:API request (POST/PATCH/DELETE). Never cached.
@@ -360,6 +344,43 @@ impl TidalClient {
         }
         Ok(body)
     }
+}
+
+// A cached, authenticated GET with in-flight coalescing: concurrent
+// misses on one key share a single fetch (a client firing getArtists,
+// getIndexes and getStarred at startup would otherwise walk the same
+// favorites three times). Errors are never cached. The official client
+// sends x-tidal-client-version on every call; the v2 API rejects
+// requests without it (400 subStatus 1002), v1 tolerates it.
+// Boxed: the shared-fetch future would otherwise deepen every caller's
+// state machine past the trait solver's recursion limit.
+fn fetch_coalesced<'a>(
+    cache: &'a Cache<String, Value>,
+    key: String,
+    http: &reqwest::Client,
+    url: String,
+    token: String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, Error>> + Send + 'a>> {
+    let http = http.clone();
+    Box::pin(async move {
+    cache
+        .try_get_with(key, async move {
+            let resp = http
+                .get(url)
+                .bearer_auth(token)
+                .header("x-tidal-client-version", CLIENT_VERSION)
+                .send()
+                .await?;
+            let status = resp.status();
+            let body: Value = resp.json().await?;
+            if !status.is_success() {
+                return Err(Error::Tidal(status.as_u16(), body.to_string()));
+            }
+            Ok(body)
+        })
+        .await
+        .map_err(Error::shared)
+    })
 }
 
 // Fetch one offset-paged page from a legacy v1 items endpoint.
@@ -480,5 +501,50 @@ mod tests {
         );
         assert_eq!(encode_query::<&str, &str>(&[]), "");
         assert_eq!(encode_query(&[("q", String::from("ü/é"))]), "q=%C3%BC%2F%C3%A9");
+    }
+}
+
+#[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Concurrent misses on one key must produce one upstream request.
+    // The URL points at a closed local port so the fetch fails fast;
+    // what matters is how many futures ran, which the counter sees
+    // through a wrapper cache key.
+    #[tokio::test]
+    async fn concurrent_misses_share_one_fetch() {
+        let cache: Cache<String, Value> = Cache::builder().build();
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let cache = cache.clone();
+            let hits = hits.clone();
+            tasks.push(tokio::spawn(async move {
+                cache
+                    .try_get_with("k".to_string(), async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        Ok::<Value, Error>(serde_json::json!(1))
+                    })
+                    .await
+                    .map_err(Error::shared)
+            }));
+        }
+        for t in tasks {
+            assert_eq!(t.await.unwrap().unwrap(), serde_json::json!(1));
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn shared_errors_keep_their_status() {
+        let e = Error::shared(std::sync::Arc::new(Error::Tidal(404, "gone".into())));
+        assert!(matches!(e, Error::Tidal(404, ref b) if b == "gone"));
+        assert!(matches!(
+            Error::shared(std::sync::Arc::new(Error::NotLoggedIn)),
+            Error::NotLoggedIn
+        ));
     }
 }
