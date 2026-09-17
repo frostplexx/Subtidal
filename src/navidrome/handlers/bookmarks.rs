@@ -1,6 +1,6 @@
-// Bookmarks: positions inside tracks, stored in memory (play_state).
+// Bookmarks: positions inside tracks, stored in play_state (persisted).
 // getBookmarks lists them with fresh song detail; createBookmark upserts,
-// deleteBookmark removes. Song detail is fetched one track at a time;
+// deleteBookmark removes. Song detail is fetched per track in parallel;
 // Tidal offers no batch track endpoint.
 use crate::navidrome::ids;
 use crate::navidrome::models::{Bookmark, Bookmarks, BookmarksResponse, PingResponse};

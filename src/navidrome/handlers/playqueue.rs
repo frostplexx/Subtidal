@@ -1,7 +1,7 @@
 // Play queue: savePlayQueue saves the queue, getPlayQueue returns it
-// with fresh song detail. The store is in memory (play_state), so a
-// restart clears it. Song ids are fetched one at a time; Tidal offers no
-// batch track endpoint. The ByIndex pair (OpenSubsonic indexBasedQueue)
+// with fresh song detail. The store (play_state) persists across
+// restarts. Song detail is fetched per id with bounded concurrency;
+// Tidal offers no batch track endpoint. The ByIndex pair (OpenSubsonic indexBasedQueue)
 // shares the store and differs only in the wire shape: the current song
 // is a queue index (currentIndex) instead of a song id. The saved index
 // round-trips verbatim; dead tracks are dropped on serve, and the index
