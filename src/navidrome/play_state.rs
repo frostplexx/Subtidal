@@ -9,7 +9,7 @@ use crate::state;
 use chrono::{DateTime, SecondsFormat};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 // The saved play queue from savePlayQueue.
@@ -75,6 +75,10 @@ struct Persisted {
 }
 
 static PERSIST: AtomicBool = AtomicBool::new(false);
+// Snapshot generation: background writes may complete out of order,
+// so each one skips itself when a newer snapshot already landed.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+static WRITTEN: Mutex<u64> = Mutex::new(0);
 
 fn queue_slot() -> &'static Mutex<Option<PlayQueue>> {
     static SLOT: OnceLock<Mutex<Option<PlayQueue>>> = OnceLock::new();
@@ -116,6 +120,8 @@ pub fn init() {
 
 // Mirror the current state to the file. Callers invoke this after
 // releasing their store lock; the snapshot takes each lock briefly.
+// The write itself moves off the async runtime; the state file has
+// its own lock, so overlapping writes serialize there.
 fn persist() {
     if !PERSIST.load(Ordering::Relaxed) {
         return;
@@ -130,8 +136,22 @@ fn persist() {
             .cloned()
             .collect(),
     };
-    if let Err(e) = state::store_section(state::PLAYBACK, &snapshot) {
-        tracing::warn!("playback state not saved: {e}");
+    let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+    let write = move || {
+        let mut written = WRITTEN.lock().unwrap_or_else(|e| e.into_inner());
+        if *written >= generation {
+            return;
+        }
+        match state::store_section(state::PLAYBACK, &snapshot) {
+            Ok(()) => *written = generation,
+            Err(e) => tracing::warn!("playback state not saved: {e}"),
+        }
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn_blocking(write);
+        }
+        Err(_) => write(),
     }
 }
 
