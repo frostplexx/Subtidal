@@ -99,15 +99,15 @@ fn log_request(
     }
 }
 
-// Query params that must never appear in logs. `t` is the auth token and `p`
-// the password; both are credential material. Return the query prefixed with
+// Query params that must never appear in logs: the auth token, the
+// password, and the API key are all credential material. Return the query prefixed with
 // "?" or an empty string when there is nothing to log.
 fn redact_query(query: &str) -> String {
     let redacted = query
         .split('&')
         .map(|pair| {
             let (key, _) = pair.split_once('=').unwrap_or((pair, ""));
-            if matches!(key, "t" | "p" | "token" | "password") {
+            if matches!(key, "t" | "p" | "apiKey" | "token" | "password") {
                 format!("{key}=***")
             } else {
                 pair.to_owned()
@@ -140,6 +140,7 @@ mod tests {
             redact_query("u=alice&t=abc123&v=1.16.1&p=enc:x"),
             "?u=alice&t=***&v=1.16.1&p=***"
         );
+        assert_eq!(redact_query("apiKey=secret&f=json"), "?apiKey=***&f=json");
     }
 
     #[test]
