@@ -127,8 +127,23 @@ pub async fn get_cover_art(q: QueryParams) -> Result<warp::reply::Response, warp
                     return Ok(fail(0, "Cover art unavailable").into_response());
                 }
             },
-            // Tracks carry no own cover.
-            _ => (None, false),
+            // A track id resolves through its album: some clients pass
+            // the song id rather than the coverArt id they were given.
+            IdKind::Track => match crate::tidal::client().track(raw_id).await {
+                Ok(t) => {
+                    let json = t.to_json();
+                    let cover = json["album"]["cover"].as_str();
+                    if let Some(c) = cover {
+                        cover_cache::remember(id, c);
+                    }
+                    (cover.map(String::from), false)
+                }
+                Err(e) => {
+                    tracing::warn!("track fetch failed: {e}");
+                    return Ok(fail(0, "Cover art unavailable").into_response());
+                }
+            },
+            IdKind::Playlist => (None, false),
         }
     };
     let Some(uuid) = uuid else {
