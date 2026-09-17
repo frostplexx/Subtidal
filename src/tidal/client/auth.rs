@@ -345,9 +345,23 @@ impl super::TidalClient {
             *guard = Some(tokens);
             return Ok(access_token);
         }
-        let updated = self.refresh_and_store(&tokens).await?;
+        // A refused refresh means the stored session is dead. Flip the
+        // live flag so the API answers with the /setup pointer and the
+        // wizard reopens, instead of every call failing opaquely until
+        // a restart.
+        let updated = match self.refresh_and_store(&tokens).await {
+            Ok(t) => t,
+            Err(Error::Tidal(400 | 401, body)) => {
+                tracing::warn!("tidal refused the refresh token; session closed: {body}");
+                *guard = None;
+                crate::tidal::mark_logged_out();
+                return Err(Error::NotLoggedIn);
+            }
+            Err(e) => return Err(e),
+        };
+        let access_token = updated.access_token.clone();
         *guard = Some(updated);
-        Ok(guard.as_ref().unwrap().access_token.clone())
+        Ok(access_token)
     }
 
     // Exchange a stored refresh token for fresh tokens and persist them.

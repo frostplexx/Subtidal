@@ -36,6 +36,12 @@ pub fn mark_logged_in() {
     SESSION.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+// Tidal refused the refresh token: the session is gone until /setup
+// completes a new login.
+pub fn mark_logged_out() {
+    SESSION.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn logged_in() -> bool {
     SESSION.load(std::sync::atomic::Ordering::Relaxed)
 }

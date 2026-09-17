@@ -115,6 +115,9 @@ async fn gated(
         Some(step) => step,
         None => return Ok(finish_or_gone()),
     };
+    // A step reopened after completion (a revoked Tidal session): the
+    // next finish must show its page again rather than 410.
+    completion_shown().store(false, Ordering::SeqCst);
     if !basic_ok(authorization.as_deref()) {
         return Ok(unauthorized());
     }
