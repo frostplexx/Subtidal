@@ -145,10 +145,16 @@ impl TidalClient {
         // larger rate budget; the UA below is what the official iOS app
         // sends on every stream request (captured in a HAR of an in-app
         // download).
+        // Bounded so a hung Tidal or CDN request cannot pin a client
+        // request (or a stream-limiter permit) forever. The total covers
+        // one segment or one API page; nothing here streams a whole track
+        // through a single request.
         let http = reqwest::Client::builder()
             .user_agent(
                 "AppleCoreMedia/1.0.0.24A5408d (iPhone; U; CPU OS 27_0 like Mac OS X; en_us)",
             )
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
             .build()
             .expect("failed to build reqwest client");
         let (client_id, client_secret) = match &settings.tidal_client_id {
