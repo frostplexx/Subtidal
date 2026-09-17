@@ -34,7 +34,8 @@ COPY --from=builder /build/target/release/subtidal /usr/local/bin/subtidal
 USER subtidal
 ENV SUBTIDAL_TOKEN_FILE=/data/tokens.json
 EXPOSE 8000
-# /rest/ping is the public Subsonic ping endpoint.
+# /rest/ping is the public Subsonic ping endpoint. APP_PORT moves the
+# listener, so the probe follows it (the Compose file does the same).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8000/rest/ping > /dev/null || exit 1
+  CMD curl -fsS "http://127.0.0.1:${APP_PORT:-8000}/rest/ping" > /dev/null || exit 1
 ENTRYPOINT ["subtidal"]
