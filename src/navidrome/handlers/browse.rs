@@ -5,6 +5,8 @@
 //   al<id>    -> that album's tracks
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
+
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::models::{
     Artists, ArtistsResponse, Directory, DirectoryChild, DirectoryResponse, IndexArtist,
@@ -162,55 +164,15 @@ fn last_modified(artists: &[IndexArtist]) -> i64 {
 }
 
 // Tidal favorite times look like "2023-01-15T10:00:00.000Z". Anything
-// else yields None. Only the Z suffix is handled; Tidal always sends it.
+// else yields None.
 fn iso8601_ms(s: &str) -> Option<i64> {
-    let (date, time) = s.split_once('T')?;
-    let time = time.strip_suffix('Z').unwrap_or(time);
-    let (hms, _) = time.split_once('.').unwrap_or((time, ""));
-    let (y, m, d) = date_parts(date)?;
-    let (h, mi, sec) = hms_parts(hms)?;
-    let days = days_from_civil(y, m, d);
-    Some((days * 86_400 + h as i64 * 3_600 + mi as i64 * 60 + sec as i64) * 1_000)
-}
-
-fn date_parts(s: &str) -> Option<(i64, u32, u32)> {
-    let mut it = s.split('-');
-    let y = it.next()?.parse().ok()?;
-    let m = it.next()?.parse().ok()?;
-    let d = it.next()?.parse().ok()?;
-    if it.next().is_some() {
-        return None;
-    }
-    Some((y, m, d))
-}
-
-fn hms_parts(s: &str) -> Option<(u32, u32, u32)> {
-    let mut it = s.split(':');
-    let h = it.next()?.parse().ok()?;
-    let mi = it.next()?.parse().ok()?;
-    let sec = it.next()?.parse().ok()?;
-    if it.next().is_some() {
-        return None;
-    }
-    Some((h, mi, sec))
-}
-
-// Days since the epoch for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|dt| dt.timestamp_millis())
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    Utc::now().timestamp_millis()
 }
 
 // getMusicDirectory: one level of the library tree. The id comes from
