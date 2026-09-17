@@ -2,6 +2,7 @@
 // terminal flows. The routes live in routes::public(), so they carry
 // their own HTTP Basic check.
 use base64::Engine;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use warp::http::{StatusCode, header};
@@ -12,7 +13,7 @@ use crate::navidrome::scrobble;
 use crate::settings::LastFmConfig;
 use crate::tidal;
 
-use super::auth::md5_hex;
+use super::auth::{ct_eq, md5_hex, rate_limited_login};
 use super::log::named;
 
 // The steps, in the order the wizard walks them.
@@ -83,17 +84,21 @@ pub fn setup_routes()
     let get = warp::path("setup")
         .and(warp::path::end())
         .and(warp::get())
+        .and(warp::addr::remote())
         .and(warp::header::optional::<String>("authorization"))
-        .and_then(|auth: Option<String>| async move { gated(auth, None).await });
+        .and_then(|remote: Option<SocketAddr>, auth: Option<String>| async move {
+            gated(remote, auth, None).await
+        });
     let post = warp::path("setup")
         .and(warp::path::end())
         .and(warp::post())
+        .and(warp::addr::remote())
         .and(warp::header::optional::<String>("authorization"))
         .and(warp::body::content_length_limit(64 * 1024))
         .and(warp::body::form::<Vec<(String, String)>>())
         .and_then(
-            |auth: Option<String>, form: Vec<(String, String)>| async move {
-                gated(auth, Some(form)).await
+            |remote: Option<SocketAddr>, auth: Option<String>, form: Vec<(String, String)>| async move {
+                gated(remote, auth, Some(form)).await
             },
         );
     get.or(post)
@@ -103,8 +108,10 @@ pub fn setup_routes()
 }
 
 // Close the wizard once every step is done, then require Basic
-// credentials before touching either service.
+// credentials before touching either service. Failed credentials count
+// against the same per-IP login lockout as /rest.
 async fn gated(
+    remote: Option<SocketAddr>,
     authorization: Option<String>,
     form: Option<Vec<(String, String)>>,
 ) -> Result<warp::reply::Response, warp::Rejection> {
@@ -118,7 +125,7 @@ async fn gated(
     // A step reopened after completion (a revoked Tidal session): the
     // next finish must show its page again rather than 410.
     completion_shown().store(false, Ordering::SeqCst);
-    if !basic_ok(authorization.as_deref()) {
+    if !rate_limited_login(remote.map(|a| a.ip()), || basic_ok(authorization.as_deref())) {
         return Ok(unauthorized());
     }
     Ok(match form {
@@ -360,7 +367,7 @@ fn basic_matches(header_value: Option<&str>, username: &str, password: &str) -> 
     let Some((user, pass)) = decoded.split_once(':') else {
         return false;
     };
-    user == username && (pass == password || pass.to_ascii_lowercase() == md5_hex(password))
+    ct_eq(user, username) && (ct_eq(pass, password) || ct_eq(&pass.to_ascii_lowercase(), &md5_hex(password)))
 }
 
 // First access after setup shows a short confirmation; later access is

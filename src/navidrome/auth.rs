@@ -24,7 +24,7 @@ pub(crate) fn md5_hex(data: impl AsRef<[u8]>) -> String {
 // Constant-time string equality. Equal-length strings are compared
 // without early exit, so response timing does not reveal how many
 // leading bytes match.
-fn ct_eq(a: &str, b: &str) -> bool {
+pub(crate) fn ct_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -230,6 +230,26 @@ static RATE_LIMITER: OnceLock<AuthRateLimiter> = OnceLock::new();
 
 fn rate_limit_enabled() -> bool {
     SETTINGS.get().map(|s| s.rate_limit).unwrap_or(false)
+}
+
+// The login rate limit as one check-then-record step, for callers
+// outside the /rest filter (the /setup wizard). Returns false when the
+// IP is locked out; `ok` is the credential result to record.
+pub(crate) fn rate_limited_login(ip: Option<IpAddr>, ok: impl FnOnce() -> bool) -> bool {
+    if !rate_limit_enabled() {
+        return ok();
+    }
+    let limiter = RATE_LIMITER.get_or_init(AuthRateLimiter::new);
+    if !limiter.check(ip) {
+        return false;
+    }
+    if ok() {
+        limiter.record_success(ip);
+        true
+    } else {
+        limiter.record_failure(ip);
+        false
+    }
 }
 
 // Auth middleware: merge the URL query and the form-encoded body into
