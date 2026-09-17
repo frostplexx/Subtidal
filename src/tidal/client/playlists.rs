@@ -87,6 +87,14 @@ impl TidalClient {
         offset: u32,
         limit: u32,
     ) -> Result<Value, super::Error> {
+        // The v1 endpoint answers any mix in one request with native
+        // offset paging and a total; the v2 walk below has to probe up
+        // to five collections (most 404) to even find the mix.
+        match self.mix_items_v1(mix_id, offset, limit).await {
+            Ok(v) if v["items"].is_array() => return Ok(v),
+            Ok(_) => tracing::debug!(mix_id, "v1 mix items shape unexpected; trying v2"),
+            Err(e) => tracing::debug!(mix_id, "v1 mix items failed ({e}); trying v2"),
+        }
         let mut last_error: Option<super::Error> = None;
         for collection in MIX_COLLECTIONS {
             match self

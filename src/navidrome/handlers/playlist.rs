@@ -24,7 +24,10 @@ fn show_mixes() -> bool {
 // entries, never the whole list.
 pub async fn get_playlists() -> Result<warp::reply::Json, warp::Rejection> {
     let client = crate::tidal::client();
-    let mut playlist: Vec<Playlist> = match client.user_playlists(0, 500).await {
+    let (playlists, mixes) = tokio::join!(client.user_playlists(0, 500), async {
+        if show_mixes() { Some(client.my_mixes().await) } else { None }
+    });
+    let mut playlist: Vec<Playlist> = match playlists {
         Ok(v) => v["items"]
             .as_array()
             .map(|items| items.iter().filter_map(playlist_from_tidal).collect())
@@ -34,8 +37,8 @@ pub async fn get_playlists() -> Result<warp::reply::Json, warp::Rejection> {
             return Ok(fail(0, "Playlists unavailable"));
         }
     };
-    if show_mixes() {
-        match client.my_mixes().await {
+    if let Some(mixes) = mixes {
+        match mixes {
             Ok(v) => {
                 let mut mixes: Vec<Playlist> = mixes_from_page(&v)
                     .into_iter()
