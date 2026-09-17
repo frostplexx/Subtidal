@@ -1,10 +1,15 @@
 // Album endpoints. v2 OpenAPI (JSON:API) shapes; v1 bodies stay as
 // dead-code backups under `_v1` names.
+use std::future::Future;
+use std::pin::Pin;
+
 use serde_json::Value;
 
 use super::{jsonapi, TidalClient};
 
 const ALBUM_INCLUDE: &str = "artists,coverArt,genres";
+
+type BoxedResult<T> = Pin<Box<dyn Future<Output = Result<T, super::Error>> + Send>>;
 
 impl TidalClient {
     pub async fn album(&self, id: u64) -> Result<Value, super::Error> {
@@ -60,6 +65,33 @@ impl TidalClient {
         Ok(serde_json::json!({ "album": album, "items": items }))
     }
 
+    // Album detail plus its tracks in track order: the v1 pair first
+    // (replayGain/peak on every track), the single v2 document when
+    // either v1 call fails. Backs getAlbum and the album directory.
+    // Boxed: the nested parallel page walk otherwise pushes the callers'
+    // async state machines over the trait solver's recursion limit.
+    pub fn album_detail_and_tracks(
+        client: &'static TidalClient,
+        album_id: u64,
+    ) -> BoxedResult<(Value, Vec<Value>)> {
+        Box::pin(async move {
+            match client.album_v1(album_id).await {
+                Ok(detail) => match Self::album_items_parallel(client, album_id).await {
+                    Ok(t) => {
+                        return Ok((detail, t["items"].as_array().cloned().unwrap_or_default()));
+                    }
+                    Err(e) => tracing::debug!("v1 album items failed, falling back to v2: {e}"),
+                },
+                Err(e) => tracing::debug!("v1 album detail failed, falling back to v2: {e}"),
+            }
+            let v = client.album_with_items(album_id).await?;
+            Ok((
+                v["album"].clone(),
+                v["items"].as_array().cloned().unwrap_or_default(),
+            ))
+        })
+    }
+
     // Favorited albums, newest first. Backs getAlbumList2 (type=starred).
     pub async fn favorite_albums(&self, offset: u32, limit: u32) -> Result<Value, super::Error> {
         self.favorite_pages(
@@ -76,6 +108,7 @@ impl TidalClient {
         self.get_json(&format!("/albums/{id}"), &self.meta_cache).await
     }
 
+    #[allow(dead_code)]
     pub async fn album_tracks_v1(&self, album_id: u64) -> Result<Value, super::Error> {
         self.get_json_q(
             &format!("/albums/{album_id}/tracks"),

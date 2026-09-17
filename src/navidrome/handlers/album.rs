@@ -21,38 +21,14 @@ pub async fn get_album(q: QueryParams) -> Result<warp::reply::Json, warp::Reject
         return Ok(fail(70, "Album not found"));
     };
     let client = crate::tidal::client();
-    let detail_v1 = match client.album_v1(album_id).await {
-        Ok(v) => Some(v),
-        Err(e) => {
-            tracing::debug!("v1 album detail failed, falling back to v2: {e}");
-            None
-        }
-    };
-    let tracks_v1 = match &detail_v1 {
-        Some(_) => {
-            match crate::tidal::client::TidalClient::album_items_parallel(client, album_id).await {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::debug!("v1 album items failed, falling back to v2: {e}");
-                    None
-                }
-            }
-        }
-        None => None,
-    };
-    let (detail, songs) = match (detail_v1, tracks_v1) {
-        (Some(d), Some(t)) => (d, t["items"].as_array().cloned().unwrap_or_default()),
-        _ => match client.album_with_items(album_id).await {
-            Ok(v) => (
-                v["album"].clone(),
-                v["items"].as_array().cloned().unwrap_or_default(),
-            ),
+    let (detail, songs) =
+        match crate::tidal::client::TidalClient::album_detail_and_tracks(client, album_id).await {
+            Ok(v) => v,
             Err(e) => {
                 tracing::error!("tidal album fetch failed: {e}");
                 return Ok(fail(0, "Album unavailable"));
             }
-        },
-    };
+        };
     let album = match album_from_tidal(&detail) {
         Some(a) => a,
         None => return Ok(fail(70, "Album not found")),
