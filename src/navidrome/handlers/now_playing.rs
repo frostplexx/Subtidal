@@ -63,10 +63,7 @@ pub async fn get_now_playing(_q: QueryParams) -> Result<warp::reply::Json, warp:
     }))
 }
 
-// reportPlayback: apply a playback timeline event to the now-playing
-// state. stopped clears it; starting, playing, and paused update it. A
-// stopped report with scrobbling enabled is the completion signal; the
-// PlayReporter backend (TODO) hooks here.
+// reportPlayback: apply a playback timeline event to the now-playing state. 
 pub async fn report_playback(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(id) = q.media_id.as_deref() else {
         return Ok(fail(10, "Required parameter missing"));
@@ -98,6 +95,10 @@ pub async fn report_playback(q: QueryParams) -> Result<warp::reply::Json, warp::
     );
     if state == "stopped" && !ignore {
         tracing::info!("scrobble (completed) id={id}");
+        tokio::spawn(crate::navidrome::scrobble::report_completed(
+            track_id,
+            now_playing::now_ms(),
+        ));
     }
     // starting and playing begin a playback session: tell the backends
     // in the background. paused and stopped do not; the dedup guard in

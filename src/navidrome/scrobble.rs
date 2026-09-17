@@ -178,6 +178,29 @@ pub(crate) async fn report_now_playing(track_id: u64) {
     report_now_playing_song(&song).await;
 }
 
+// Report a completed track (reportPlayback's stopped state, scrobble
+// not ignored) to every backend. Best-effort like report_now_playing:
+// track metadata comes from the Tidal client, and unavailable metadata
+// skips the report rather than failing the caller.
+pub(crate) async fn report_completed(track_id: u64, time_ms: i64) {
+    let Some(client) = crate::tidal::client_opt() else {
+        tracing::warn!("scrobble id={track_id}: tidal client unavailable; skipped");
+        return;
+    };
+    let detail = match client.track(track_id).await {
+        Ok(v) => v.to_json(),
+        Err(e) => {
+            tracing::warn!("scrobble id={track_id}: track fetch failed: {e}");
+            return;
+        }
+    };
+    let Some(song) = scrobble_song_from_track(&detail) else {
+        tracing::warn!("scrobble id={track_id}: track metadata incomplete; skipped");
+        return;
+    };
+    report_song(&song, time_ms).await;
+}
+
 // Fan out one now-playing notification to every configured reporter.
 // A failing reporter only logs; it never fails the caller.
 pub(crate) async fn report_now_playing_song(song: &ScrobbleSong) {
