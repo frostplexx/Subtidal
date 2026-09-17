@@ -21,14 +21,15 @@ pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
         return Ok(fail(70, "Artist not found"));
     };
     let client = crate::tidal::client();
-    let detail = match client.artist(artist_id).await {
+    let (detail, albums) = tokio::join!(client.artist(artist_id), client.artist_albums(artist_id));
+    let detail = match detail {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist fetch failed: {e}");
             return Ok(fail(0, "Artist unavailable"));
         }
     };
-    let albums = match client.artist_albums(artist_id).await {
+    let albums = match albums {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist albums fetch failed: {e}");

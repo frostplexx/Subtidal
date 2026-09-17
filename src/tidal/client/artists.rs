@@ -5,6 +5,8 @@
 // stamping live on at the bottom.
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use serde_json::Value;
 
@@ -31,19 +33,28 @@ impl TidalClient {
     // (twelve round trips for Lady Gaga). The v1 index is partial:
     // region-variant releases drop out of the list, but their direct
     // album pages still resolve through the getAlbum v2 fallback.
-    pub async fn artist_albums(&self, artist_id: u64) -> Result<Value, super::Error> {
-        let mut albums = self
-            .get_json_q(
-                &format!("/artists/{artist_id}/albums"),
+    // Boxed: the three-way join would otherwise deepen every caller's
+    // state machine past the trait solver's recursion limit.
+    pub fn artist_albums(
+        &self,
+        artist_id: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, super::Error>> + Send + '_>> {
+        Box::pin(async move {
+        // The three sections are independent, so they go out together.
+        let albums_path = format!("/artists/{artist_id}/albums");
+        let (albums, ep_singles, compilations) = tokio::join!(
+            self.get_json_q(
+                &albums_path,
                 &[("limit", "1000"), ("offset", "0")],
                 &self.meta_cache,
-            )
-            .await?;
+            ),
+            self.release_items(artist_id, "EPSANDSINGLES"),
+            self.release_items(artist_id, "COMPILATIONS"),
+        );
+        let mut albums = albums?;
         if let Some(items) = albums["items"].as_array_mut() {
             dedup_albums(items);
         }
-        let ep_singles = self.release_items(artist_id, "EPSANDSINGLES").await;
-        let compilations = self.release_items(artist_id, "COMPILATIONS").await;
         if let Some(all) = albums["items"].as_array_mut() {
             if let Some(mut extra) = ep_singles {
                 merge_album_sections(all, &mut extra);
@@ -53,6 +64,7 @@ impl TidalClient {
             }
         }
         Ok(albums)
+        })
     }
 
     // An artist's most popular tracks. Backs getTopSongs/top tracks in
