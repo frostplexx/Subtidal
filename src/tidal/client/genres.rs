@@ -66,6 +66,46 @@ pub async fn genre_list(client: &'static TidalClient) -> Result<Vec<Value>, supe
     Ok(out)
 }
 
+// The v1 browse key for a genre name, or None when Tidal has no browse
+// page for it (a v2-only label). Backs the catalogue genre lists.
+pub async fn genre_key(client: &'static TidalClient, name: &str) -> Option<String> {
+    let paths_doc = match client.get_json("/genres", &client.meta_cache).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("tidal genre paths fetch failed: {e}");
+            return None;
+        }
+    };
+    let paths = genre_paths(&paths_doc);
+    let extras = extra_count_keys();
+    let key = count_key(name, &paths, &extras);
+    valid_count_keys(&paths, &extras).contains(&key).then_some(key)
+}
+
+// One page of the catalogue's albums for a genre browse key, as v1
+// album objects. Backs getAlbumList2 (type=byGenre).
+pub async fn genre_albums(
+    client: &'static TidalClient,
+    key: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<Value>, super::Error> {
+    let page = super::v1_page(client, &format!("/genres/{key}/albums"), &client.meta_cache, &[], offset, limit).await?;
+    Ok(page["items"].as_array().cloned().unwrap_or_default())
+}
+
+// One page of the catalogue's tracks for a genre browse key, as v1
+// track objects. Backs getSongsByGenre.
+pub async fn genre_tracks(
+    client: &'static TidalClient,
+    key: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<Value>, super::Error> {
+    let page = super::v1_page(client, &format!("/genres/{key}/tracks"), &client.meta_cache, &[], offset, limit).await?;
+    Ok(page["items"].as_array().cloned().unwrap_or_default())
+}
+
 // Map a v1 /genres document to a name->path table. Returns an empty
 // map when the document is malformed, so counts fall back to names.
 fn genre_paths(doc: &Value) -> HashMap<String, String> {

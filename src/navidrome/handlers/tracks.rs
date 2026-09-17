@@ -83,27 +83,40 @@ fn pick_random(
     songs
 }
 
-// getSongsByGenre: favorite tracks filtered by genre, paginated by
-// offset/count. The genre string is the label the track JSON carries.
+// getSongsByGenre: the catalogue's tracks for a Tidal browse genre (the
+// names getGenres lists), paginated by offset/count. A genre Tidal has
+// no browse page for falls back to the favorite tracks carrying that
+// label, so a client-side genre still resolves to something.
 pub async fn get_songs_by_genre(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(genre) = q.genre.as_deref() else {
         return Ok(fail(10, "Required parameter missing"));
     };
-    let count = q.count.unwrap_or(10).min(500) as usize;
-    let offset = q.offset.unwrap_or(0) as usize;
-    let result = match crate::tidal::client::TidalClient::favorite_tracks_parallel(crate::tidal::client()).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("tidal favorites fetch failed: {e}");
-            return Ok(fail(0, "Favorites unavailable"));
+    let count = q.count.unwrap_or(10).min(500);
+    let offset = q.offset.unwrap_or(0);
+    let client = crate::tidal::client();
+    let song: Vec<Child> = if let Some(key) = crate::tidal::client::genre_key(client, genre).await {
+        match crate::tidal::client::genre_tracks(client, &key, offset, count).await {
+            Ok(items) => items.iter().filter_map(song_from_track).collect(),
+            Err(e) => {
+                tracing::error!("tidal genre tracks fetch failed: {e}");
+                return Ok(fail(0, "Genre unavailable"));
+            }
         }
+    } else {
+        let result = match crate::tidal::client::TidalClient::favorite_tracks_parallel(client).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!("tidal favorites fetch failed: {e}");
+                return Ok(fail(0, "Favorites unavailable"));
+            }
+        };
+        favorite_track_songs(&result)
+            .into_iter()
+            .filter(|s| s.genre.as_deref().is_some_and(|g| g.eq_ignore_ascii_case(genre)))
+            .skip(offset as usize)
+            .take(count as usize)
+            .collect()
     };
-    let song: Vec<Child> = favorite_track_songs(&result)
-        .into_iter()
-        .filter(|s| s.genre.as_deref() == Some(genre))
-        .skip(offset)
-        .take(count)
-        .collect();
     Ok(ok(SongsByGenreResponse {
         songs_by_genre: SongsByGenre { song },
     }))

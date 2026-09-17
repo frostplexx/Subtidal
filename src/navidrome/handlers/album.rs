@@ -142,13 +142,27 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, &'static str>
                 .filter_map(album_from_tidal)
                 .collect()
         }
+        // The catalogue's albums for a Tidal browse genre; a label Tidal
+        // has no browse page for falls back to the favorites carrying it.
         Some("byGenre") => {
             let Some(genre) = q.genre.as_deref() else {
                 return Err("Required parameter missing: genre");
             };
-            let mut album = all_favorite_albums().await?;
-            album.retain(|a| has_genre(a, genre));
-            page(album, offset, size)
+            let client = crate::tidal::client();
+            match crate::tidal::client::genre_key(client, genre).await {
+                Some(key) => match crate::tidal::client::genre_albums(client, &key, offset, size).await {
+                    Ok(items) => items.iter().filter_map(album_from_tidal).collect(),
+                    Err(e) => {
+                        tracing::error!("tidal genre albums fetch failed: {e}");
+                        return Err("Album list unavailable");
+                    }
+                },
+                None => {
+                    let mut album = all_favorite_albums().await?;
+                    album.retain(|a| has_genre(a, genre));
+                    page(album, offset, size)
+                }
+            }
         }
         Some("byYear") => {
             let (Some(from), Some(to)) = (q.from_year, q.to_year) else {

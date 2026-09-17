@@ -33,7 +33,7 @@ pub(crate) use playlists::ItemAddr;
 mod tracks;
 mod users;
 
-pub use genres::genre_list;
+pub use genres::{genre_albums, genre_key, genre_list, genre_tracks};
 
 pub(crate) use feed::albums_from_page;
 pub use favorites::FavoriteKind;
