@@ -60,6 +60,11 @@ pub enum Error {
     Malformed(String),
     RateLimited,
     NotLoggedIn,
+    // Tidal answered 4005 ("Asset is not ready for playback") at every
+    // quality tier. One tier not ready is a track still being processed;
+    // all of them is a track the rights holder has pulled from the
+    // catalogue (its /tracks/{id} record 404s too).
+    TrackRemoved,
 }
 
 impl std::fmt::Display for Error {
@@ -90,6 +95,7 @@ impl std::fmt::Display for Error {
             Error::Auth(msg) => write!(f, "auth error: {msg}"),
             Error::Malformed(msg) => write!(f, "malformed asset: {msg}"),
             Error::RateLimited => write!(f, "stream limit exceeded"),
+            Error::TrackRemoved => write!(f, "not playable at any quality tier (removed from tidal)"),
             Error::NotLoggedIn => {
                 write!(
                     f,
@@ -116,6 +122,7 @@ impl Error {
             Error::Malformed(m) => Error::Malformed(m.clone()),
             Error::RateLimited => Error::RateLimited,
             Error::NotLoggedIn => Error::NotLoggedIn,
+            Error::TrackRemoved => Error::TrackRemoved,
         }
     }
 
@@ -136,6 +143,7 @@ impl Error {
         match self {
             Error::NotLoggedIn => "Subtidal is not logged into Tidal; open /setup".into(),
             Error::RateLimited => "too many streams at once; try again in a moment".into(),
+            Error::TrackRemoved => "no longer available on Tidal (removed by the rights holder)".into(),
             Error::Http(e) if e.is_timeout() => "Tidal did not answer in time".into(),
             Error::Http(e) if e.is_connect() => "could not reach Tidal".into(),
             Error::Http(_) => "the Tidal request failed".into(),

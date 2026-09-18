@@ -45,3 +45,4 @@ pub fn mark_logged_out() {
 pub fn logged_in() -> bool {
     SESSION.load(std::sync::atomic::Ordering::Relaxed)
 }
+pub mod removed;

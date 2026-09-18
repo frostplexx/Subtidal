@@ -235,7 +235,7 @@ pub async fn download(
                     );
                     current = lower;
                 }
-                None => return Ok(stream_error(track_id, e)),
+                None => return Ok(stream_error(track_id, Error::TrackRemoved)),
             },
             Err(e) => return Ok(stream_error(track_id, e)),
         }
@@ -273,7 +273,8 @@ async fn resolve(track_id: u64, tier: Quality) -> Result<StreamInfo, Error> {
                     );
                     current = lower;
                 }
-                None => return Err(e),
+                // Every tier refused: the track is gone, not still processing.
+                None => return Err(Error::TrackRemoved),
             },
             Err(e) => return Err(e),
         }
@@ -854,9 +855,15 @@ fn stream_error(track_id: u64, e: Error) -> warp::reply::Response {
         tracing::warn!("tidal stream limit hit for track {track_id}");
         return fail_with(0, "Stream unavailable", &e).into_response();
     }
-    if e.is_unavailable_asset() {
+    if matches!(e, Error::TrackRemoved) {
         tracing::warn!("track {track_id} not playable on tidal: {e}");
-        return fail_with(70, "Song not found", &e).into_response();
+        crate::tidal::removed::mark(track_id);
+        // A real 404, not a 200 wrapping an error body: players do not
+        // parse a stream response, they feed it to the decoder. A 404 is
+        // what makes them skip the track and show the message.
+        let mut resp = fail_with(70, "Song not found", &e).into_response();
+        *resp.status_mut() = warp::http::StatusCode::NOT_FOUND;
+        return resp;
     }
     match e.sub_status() {
         Some(4010) => tracing::warn!("track {track_id}: monthly stream quota exceeded"),
@@ -1093,5 +1100,16 @@ mod tests {
         assert_eq!(e.sub_status(), Some(4033));
         assert_eq!(Error::Tidal(500, "<html>".into()).sub_status(), None);
         assert_eq!(Error::RateLimited.sub_status(), None);
+    }
+
+    #[test]
+    fn removed_track_answers_404_with_a_reason() {
+        let resp = stream_error(1, Error::TrackRemoved);
+        assert_eq!(resp.status(), warp::http::StatusCode::NOT_FOUND);
+        assert!(Error::TrackRemoved.user_reason().contains("no longer available on Tidal"));
+        // A single not-ready tier is not a removed track; it keeps the
+        // generic path (and a 200 body), not a 404.
+        let e = Error::Tidal(401, r#"{"status":401,"subStatus":4005}"#.into());
+        assert_eq!(stream_error(1, e).status(), warp::http::StatusCode::OK);
     }
 }

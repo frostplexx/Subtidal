@@ -14,6 +14,10 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
     let labels = content_labels();
     let mut title = v["title"].as_str()?.to_string();
     mark_ai(&mut title, v, labels.ai);
+    let unavailable = unavailable(v, id);
+    if unavailable {
+        title.push_str(" (unavailable on Tidal)");
+    }
     let album = v["album"].as_object()?;
     let album_id = album["id"].as_u64()?;
     let album_name = album["title"].as_str().unwrap_or("").to_string();
@@ -49,7 +53,14 @@ pub fn song_from_track(v: &Value) -> Option<Child> {
 
     let tier = Quality::from_track(v);
     let (content_type, suffix) = format_from_track(v);
-    let duration = v["duration"].as_u64().unwrap_or(0) as u32;
+    // A pulled track keeps its listing slot but reads as empty: the
+    // title says why, and a zero duration/size stops clients from
+    // budgeting a download or seeking into a stream that 404s.
+    let duration = if unavailable {
+        0
+    } else {
+        v["duration"].as_u64().unwrap_or(0) as u32
+    };
     // Tidal reports no byte size; clients that show one (download
     // dialogs, cache budgets) get the tier's nominal bitrate times the
     // duration. Zero when the tier is unknown, as before.
@@ -115,6 +126,15 @@ fn format_from_track(v: &Value) -> (&'static str, &'static str) {
     }
 }
 
+// Pulled from the catalogue: Tidal flags it on the listing item once
+// its cache refreshes; until then the stream path remembers the tracks
+// it found dead (tidal::removed).
+fn unavailable(v: &Value, id: u64) -> bool {
+    v["allowStreaming"].as_bool() == Some(false)
+        || v["streamReady"].as_bool() == Some(false)
+        || crate::tidal::removed::contains(id)
+}
+
 fn mark_ai(title: &mut String, v: &Value, enabled: bool) {
     if enabled && v["ai"].as_bool() == Some(true) {
         title.push_str(" • AI");
@@ -126,6 +146,28 @@ fn mark_ai(title: &mut String, v: &Value, enabled: bool) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn song_marks_pulled_tracks_unavailable() {
+        let mut track = json!({
+            "id": 777,
+            "title": "Gone",
+            "duration": 220,
+            "allowStreaming": false,
+            "artists": [{"id": 9, "name": "A"}],
+            "album": {"id": 1, "title": "Album"}
+        });
+        let song = song_from_track(&track).unwrap();
+        assert_eq!(song.title, "Gone (unavailable on Tidal)");
+        assert_eq!(song.duration, 0);
+        assert_eq!(song.size, 0);
+        // The listing flag says fine, but the stream path found it dead.
+        track["allowStreaming"] = json!(true);
+        track["id"] = json!(778);
+        assert_eq!(song_from_track(&track).unwrap().title, "Gone");
+        crate::tidal::removed::mark(778);
+        assert_eq!(song_from_track(&track).unwrap().title, "Gone (unavailable on Tidal)");
+    }
 
     #[test]
     fn song_maps_fields() {
