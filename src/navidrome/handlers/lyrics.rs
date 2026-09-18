@@ -180,7 +180,9 @@ fn radiant_to_structured(
         });
         let mut cue = Vec::with_capacity(l.syllabus.len());
         let mut cursor = 0usize;
-        for s in l.syllabus {
+        // Radiant emits the odd empty syllable (a pause); it covers no
+        // bytes, and would push every later offset in the line by one.
+        for s in l.syllabus.into_iter().filter(|s| !s.text.is_empty()) {
             let byte_start = cursor;
             // Inclusive UTF-8 byte end: start + byte_len - 1.
             let byte_end = cursor + s.text.len().saturating_sub(1);
@@ -452,6 +454,23 @@ mod radiant_tests {
                 licence: None,
             },
         }
+    }
+
+    #[test]
+    fn empty_syllable_does_not_shift_byte_offsets() {
+        let mut r = sample();
+        r.data[0].text = "a - b".into();
+        r.data[0].syllabus = vec![
+            RadiantSyllable { text: "a ".into(), time: 0, duration: 1, is_background: false },
+            RadiantSyllable { text: "- ".into(), time: 1, duration: 1, is_background: false },
+            RadiantSyllable { text: "".into(), time: 1, duration: 1, is_background: false },
+            RadiantSyllable { text: "b".into(), time: 2, duration: 1, is_background: false },
+        ];
+        let sc = radiant_to_structured(r, "artist", "title");
+        let cues = &sc.cue_line.unwrap()[0].cue;
+        assert_eq!(cues.len(), 3);
+        assert_eq!((cues[2].byte_start, cues[2].byte_end), (4, 4));
+        assert_eq!(&"a - b"[4..=4], "b");
     }
 
     #[test]
