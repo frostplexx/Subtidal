@@ -39,6 +39,9 @@ fn two_xor(enc: &[u8], key: &[u8]) -> String {
 static RADIANT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
         .timeout(RADIANT_TIMEOUT)
+        // Radiant drops idle keep-alives quickly; reusing one past that
+        // fails the send. Expire pooled connections first.
+        .pool_idle_timeout(Duration::from_secs(15))
         .build()
         .unwrap_or_default()
 });
@@ -116,13 +119,23 @@ async fn fetch_radiant_lyrics_uncached(track_id: u64) -> Result<StructuredLyrics
     let url = format!("{HOST}?{}", encode_query(&params));
     tracing::debug!("radiant lyrics lookup for track {track_id}: {url}");
 
-    let resp = radiant_client()
-        .get(url)
-        .header("P-Access-Token-Id", two_xor(&ENC_ID, &KEY_ID))
-        .header("P-Access-Token", two_xor(&ENC_TOKEN, &KEY_TOKEN))
-        .send()
-        .await
-        .map_err(Error::Http)?;
+    let send = || {
+        radiant_client()
+            .get(&url)
+            .header("P-Access-Token-Id", two_xor(&ENC_ID, &KEY_ID))
+            .header("P-Access-Token", two_xor(&ENC_TOKEN, &KEY_TOKEN))
+            .send()
+    };
+    // One retry on a transport failure (a stale pooled connection is
+    // the usual cause); a timeout or a response is final.
+    let resp = match send().await {
+        Ok(r) => r,
+        Err(e) if e.is_request() && !e.is_timeout() => {
+            tracing::debug!("radiant lyrics send failed for track {track_id} ({e}); retrying once");
+            send().await.map_err(Error::Http)?
+        }
+        Err(e) => return Err(Error::Http(e)),
+    };
     let status = resp.status();
     let body = resp.text().await.map_err(Error::Http)?;
     tracing::debug!("radiant lyrics response for track {track_id}: {status} ({} bytes)", body.len());
