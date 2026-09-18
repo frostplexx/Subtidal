@@ -115,11 +115,12 @@ async fn album_list_core(q: &QueryParams) -> Result<Vec<AlbumId3>, String> {
                 }
             }
         }
+        // Paged rather than truncated: clients that scroll until an empty
+        // page (Feishin) would otherwise fetch forever.
         Some("random") => {
             let mut album = all_favorite_albums().await?;
             crate::navidrome::handlers::jukebox::shuffle(&mut album);
-            album.truncate(size as usize);
-            album
+            page(album, offset, size)
         }
         Some("recent") => {
             history_albums(page(play_state::recent_albums(), offset, size)).await
