@@ -299,17 +299,21 @@ pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, 
     } else {
         fetch_tidal_lyrics(track_id).await
     };
-    let lyrics = match result {
-        Ok(v) => v,
+    // No lyrics anywhere is a normal outcome: an empty list, not an
+    // error, as the songLyrics extension specifies.
+    let structured_lyrics = match result {
+        Ok(v) => vec![v],
+        Err(Error::Tidal(404, _)) => {
+            tracing::debug!("no lyrics for track {track_id}");
+            Vec::new()
+        }
         Err(e) => {
             tracing::error!("lyrics fetch failed: {e}");
             return Ok(fail_with(0, "Lyrics unavailable", &e));
         }
     };
     Ok(ok(LyricsListResponse {
-        lyrics_list: LyricsList {
-            structured_lyrics: vec![lyrics],
-        },
+        lyrics_list: LyricsList { structured_lyrics },
     }))
 }
 
