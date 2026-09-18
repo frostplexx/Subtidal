@@ -150,6 +150,25 @@ fn radiant_to_structured(
     display_artist: &str,
     display_title: &str,
 ) -> StructuredLyrics {
+    // type "None" is plain text: every timing is 0. Serve it unsynced
+    // with no cues, or clients would stack every line at 0:00.
+    if radiant.kind == "None" {
+        return StructuredLyrics {
+            display_artist: display_artist.to_string(),
+            display_title: display_title.to_string(),
+            lang: String::new(),
+            offset: 0,
+            synced: false,
+            kind: Some("main"),
+            line: radiant
+                .data
+                .into_iter()
+                .map(|l| LyricLine { start: None, value: l.text })
+                .collect(),
+            cue_line: None,
+            agents: None,
+        };
+    }
     let mut line = Vec::with_capacity(radiant.data.len());
     let mut cue_line = Vec::with_capacity(radiant.data.len());
     for (idx, l) in radiant.data.into_iter().enumerate() {
@@ -211,7 +230,13 @@ pub async fn get_lyrics_by_song_id(q: QueryParams) -> Result<warp::reply::Json, 
         .unwrap_or(false);
     let result = if word_synced {
         match fetch_radiant_lyrics(track_id).await {
-            Ok(v) => Ok(v),
+            Ok(v) if v.synced => Ok(v),
+            // Plain text from radiant: Tidal's own LRC is better when
+            // it exists; otherwise the plain text still beats nothing.
+            Ok(plain) => match fetch_tidal_lyrics(track_id).await {
+                Ok(t) if t.synced => Ok(t),
+                _ => Ok(plain),
+            },
             Err(e) => {
                 tracing::warn!("radiant lyrics failed ({e}); falling back to tidal");
                 fetch_tidal_lyrics(track_id).await
@@ -426,6 +451,23 @@ mod radiant_tests {
                 licence: None,
             },
         }
+    }
+
+    #[test]
+    fn plain_text_payload_is_unsynced() {
+        let mut plain = sample();
+        plain.kind = "None".into();
+        for l in &mut plain.data {
+            l.start_time = 0.0;
+            l.end_time = 0.0;
+            l.syllabus.clear();
+        }
+        let sc = radiant_to_structured(plain, "artist", "title");
+        assert!(!sc.synced);
+        assert!(sc.cue_line.is_none());
+        assert_eq!(sc.line.len(), 1);
+        assert_eq!(sc.line[0].start, None);
+        assert_eq!(sc.line[0].value, "눈을 뜬 순간");
     }
 
     #[test]

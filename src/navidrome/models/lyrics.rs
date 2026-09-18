@@ -4,8 +4,8 @@
 // ranker.
 use serde::Deserialize;
 
-// The radiant /lyrics response. `type` is always "Word" for a lyrics
-// payload; other types may appear on other endpoints. Each data entry is
+// The radiant /lyrics response. `type` is "Word" for word-synced
+// lyrics and "None" for plain text (every timing 0). Each data entry is
 // one parent line; its syllabus array holds the per-word timings.
 //
 // Most fields are deserialization-contract data the handlers don't
