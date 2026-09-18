@@ -210,7 +210,8 @@ fn radiant_to_structured(
         synced: true,
         kind: Some("main"),
         line,
-        cue_line: Some(cue_line),
+        // "Line" payloads carry no syllables: plain synced lines, no v2 cues.
+        cue_line: cue_line.iter().any(|c| !c.cue.is_empty()).then_some(cue_line),
         agents: None,
     }
 }

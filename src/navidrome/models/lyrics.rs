@@ -5,7 +5,8 @@
 use serde::Deserialize;
 
 // The radiant /lyrics response. `type` is "Word" for word-synced
-// lyrics and "None" for plain text (every timing 0). Each data entry is
+// lyrics, "Line" for line-synced ones (no syllabus, no element) and
+// "None" for plain text (every timing 0). Each data entry is
 // one parent line; its syllabus array holds the per-word timings.
 //
 // Most fields are deserialization-contract data the handlers don't
@@ -34,7 +35,8 @@ pub struct RadiantLine {
     #[serde(default)]
     pub syllabus: Vec<RadiantSyllable>,
     /// Free-form object; may hold per-line extras. Raw so extra fields
-    /// never break deserialization.
+    /// never break deserialization; absent on "Line" payloads.
+    #[serde(default)]
     pub element: serde_json::Value,
     #[serde(default)]
     pub translation: Option<String>,
@@ -56,6 +58,7 @@ pub struct RadiantSyllable {
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 pub struct RadiantMetadata {
+    #[serde(default)]
     pub source: String,
     #[serde(default)]
     pub song_writers: Vec<String>,
@@ -127,6 +130,16 @@ mod tests {
         }"##;
         let r: RadiantLyrics = serde_json::from_str(v).unwrap();
         assert!(r.data[0].syllabus.is_empty());
+    }
+
+    #[test]
+    fn radiant_lyrics_accepts_line_payload_without_element() {
+        let json = r#"{"type":"Line","data":[{"startTime":27.14,"text":"The victorious reign!","endTime":40.84,"duration":13.7}],"metadata":{"title":"The Victorious Reign","artist":"Hate Eternal","album":"I Monarch","duration":217,"source":"LRCLIB"}}"#;
+        let parsed: RadiantLyrics = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.kind, "Line");
+        assert_eq!(parsed.data.len(), 1);
+        assert!(parsed.data[0].syllabus.is_empty());
+        assert!(parsed.data[0].element.is_null());
     }
 
     #[test]
