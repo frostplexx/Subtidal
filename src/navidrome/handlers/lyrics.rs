@@ -38,14 +38,24 @@ fn two_xor(enc: &[u8], key: &[u8]) -> String {
 
 static RADIANT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
-        .timeout(RADIANT_TIMEOUT)
+        .timeout(RADIANT_HTTP_TIMEOUT)
         // Radiant drops idle keep-alives quickly; reusing one past that
         // fails the send. Expire pooled connections first.
         .pool_idle_timeout(Duration::from_secs(15))
         .build()
         .unwrap_or_default()
 });
-const RADIANT_TIMEOUT: Duration = Duration::from_secs(5);
+// Radiant's first lookup for a track can take 20s+ (it searches
+// upstream before caching). The client waits RADIANT_WAIT and falls back
+// to Tidal; the lookup itself keeps running up to RADIANT_HTTP_TIMEOUT
+// in the background so the next request for the track hits the cache.
+const RADIANT_WAIT: Duration = Duration::from_secs(60);
+const RADIANT_HTTP_TIMEOUT: Duration = Duration::from_secs(90);
+
+// Tracks with a radiant lookup in flight; a second request for the same
+// track waits on the same lookup instead of starting another.
+static RADIANT_IN_FLIGHT: LazyLock<std::sync::Mutex<std::collections::HashSet<u64>>> =
+    LazyLock::new(Default::default);
 
 fn radiant_client() -> &'static reqwest::Client {
     &RADIANT
@@ -67,16 +77,44 @@ async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> 
         tracing::debug!("radiant lyrics cache hit for track {track_id}: found={}", hit.is_some());
         return hit.ok_or_else(|| Error::Tidal(404, "no radiant lyrics for track (cached)".into()));
     }
-    match fetch_radiant_lyrics_uncached(track_id).await {
-        Ok(lyrics) => {
-            RADIANT_CACHE.insert(track_id, Some(lyrics.clone()));
-            Ok(lyrics)
+    // Start the lookup unless one is already running for this track.
+    // It fills the cache when it finishes, whether or not anyone still
+    // waits for it.
+    let started = RADIANT_IN_FLIGHT.lock().map(|mut s| s.insert(track_id)).unwrap_or(false);
+    if started {
+        tokio::spawn(async move {
+            match fetch_radiant_lyrics_uncached(track_id).await {
+                Ok(lyrics) => RADIANT_CACHE.insert(track_id, Some(lyrics)),
+                Err(Error::Tidal(404, msg)) => {
+                    tracing::debug!("radiant lyrics: {msg}");
+                    RADIANT_CACHE.insert(track_id, None);
+                }
+                Err(e) => tracing::warn!("radiant lyrics lookup for track {track_id} failed: {e}"),
+            }
+            if let Ok(mut s) = RADIANT_IN_FLIGHT.lock() {
+                s.remove(&track_id);
+            }
+        });
+    }
+    // Wait for the cache to fill, up to RADIANT_WAIT.
+    let deadline = tokio::time::Instant::now() + RADIANT_WAIT;
+    loop {
+        if let Some(hit) = RADIANT_CACHE.get(&track_id) {
+            return hit.ok_or_else(|| Error::Tidal(404, "no radiant lyrics for track".into()));
         }
-        Err(Error::Tidal(404, msg)) => {
-            RADIANT_CACHE.insert(track_id, None);
-            Err(Error::Tidal(404, msg))
+        let in_flight = RADIANT_IN_FLIGHT.lock().map(|s| s.contains(&track_id)).unwrap_or(false);
+        if !in_flight {
+            // The lookup finished without a cacheable answer (transport
+            // error, bad payload); the caller falls back to Tidal.
+            return Err(Error::Tidal(502, "radiant lyrics lookup failed".into()));
         }
-        Err(e) => Err(e),
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::Tidal(504, format!(
+                "radiant lyrics lookup still running after {}s; will serve from cache next time",
+                RADIANT_WAIT.as_secs()
+            )));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
