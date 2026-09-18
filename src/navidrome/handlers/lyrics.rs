@@ -61,6 +61,7 @@ static RADIANT_CACHE: LazyLock<moka::sync::Cache<u64, Option<StructuredLyrics>>>
 
 async fn fetch_radiant_lyrics(track_id: u64) -> Result<StructuredLyrics, Error> {
     if let Some(hit) = RADIANT_CACHE.get(&track_id) {
+        tracing::debug!("radiant lyrics cache hit for track {track_id}: found={}", hit.is_some());
         return hit.ok_or_else(|| Error::Tidal(404, "no radiant lyrics for track (cached)".into()));
     }
     match fetch_radiant_lyrics_uncached(track_id).await {
@@ -113,6 +114,7 @@ async fn fetch_radiant_lyrics_uncached(track_id: u64) -> Result<StructuredLyrics
     }
 
     let url = format!("{HOST}?{}", encode_query(&params));
+    tracing::debug!("radiant lyrics lookup for track {track_id}: {url}");
 
     let resp = radiant_client()
         .get(url)
@@ -123,6 +125,8 @@ async fn fetch_radiant_lyrics_uncached(track_id: u64) -> Result<StructuredLyrics
         .map_err(Error::Http)?;
     let status = resp.status();
     let body = resp.text().await.map_err(Error::Http)?;
+    tracing::debug!("radiant lyrics response for track {track_id}: {status} ({} bytes)", body.len());
+    tracing::trace!("radiant lyrics body for track {track_id}: {body}");
 
     if !status.is_success() {
         return Err(Error::Tidal(

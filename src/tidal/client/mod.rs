@@ -65,7 +65,17 @@ pub enum Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::Http(e) => write!(f, "http error: {e}"),
+            // reqwest's Display stops at "error sending request"; the
+            // cause chain (reset, refused, tls, dns) is what a log needs.
+            Error::Http(e) => {
+                write!(f, "http error: {e}")?;
+                let mut source = std::error::Error::source(e);
+                while let Some(s) = source {
+                    write!(f, ": {s}")?;
+                    source = s.source();
+                }
+                Ok(())
+            }
             Error::HttpDecode(status, body) => {
                 if body.trim().is_empty() {
                     write!(f, "tidal answered {status} with an empty body")
