@@ -3,6 +3,7 @@
 // One module per entity; shared helpers stay here, visible to submodules.
 
 pub mod album;
+pub(crate) mod album_count_cache;
 pub mod artist;
 pub(crate) mod cover_cache;
 pub mod playlist;

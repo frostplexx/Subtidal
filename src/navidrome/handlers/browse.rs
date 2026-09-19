@@ -10,50 +10,50 @@ use chrono::{DateTime, Utc};
 
 use crate::navidrome::ids::{self, IdKind};
 use crate::navidrome::models::{
-    Artists, ArtistsResponse, Directory, DirectoryChild, DirectoryResponse, IndexArtist,
-    IndexGroup, Indexes, IndexesResponse,
+    ArtistId3, Artists, ArtistsResponse, Directory, DirectoryChild, DirectoryResponse, IndexGroup,
+    Indexes, IndexesResponse,
 };
+use crate::navidrome::sorting::{sort_key, IGNORED_ARTICLES};
 use crate::navidrome::params::QueryParams;
 use crate::tidal::client::FAVORITES_CAP;
 use super::{fail, fail_with, ok};
 use crate::tidal::client::Error;
-use crate::tidal::mapping::{album_from_tidal, song_from_track, year_from};
-
-// Leading articles the index strips before bucketing (Navidrome's default
-// list). Serve the same string in ignoredArticles so clients know the rule.
-const IGNORED_ARTICLES: &str = "The El La Los Las Le Les";
+use crate::tidal::client::TidalClient;
+use crate::tidal::mapping::{album_from_tidal, artist_from_tidal, song_from_track, year_from};
 
 // The whole favorited-artist list, sorted by index key. Each favorites
 // entry wraps the artist in { item, created }; created is the favorite
-// time, which getIndexes reports as starred.
-async fn favorite_artists() -> Result<Vec<IndexArtist>, String> {
-    let result = match crate::tidal::client::TidalClient::favorite_artists(crate::tidal::client(), 0, FAVORITES_CAP).await {
+// time, which getIndexes reports as starred. albumCount is only known
+// for artists whose releases have been listed; the rest are counted in
+// the background so the next index request carries them.
+async fn favorite_artists() -> Result<Vec<ArtistId3>, String> {
+    let client = crate::tidal::client();
+    let result = match TidalClient::favorite_artists(client, 0, FAVORITES_CAP).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal favorites fetch failed: {e}");
             return Err(format!("Artist index unavailable: {}", e.user_reason()));
         }
     };
-    let mut artists: Vec<IndexArtist> = result["items"]
+    let mut artists: Vec<ArtistId3> = result["items"]
         .as_array()
         .map(|items| {
             items
                 .iter()
                 .filter_map(|entry| {
-                    let item = &entry["item"];
-                    let id = item["id"].as_u64()?;
-                    let name = item["name"].as_str()?.to_string();
-                    Some(IndexArtist {
-                        id: ids::encode_artist(id),
-                        name,
-                        cover_art: item["picture"].as_str().map(|_| ids::encode_artist(id)),
-                        album_count: item["albumCount"].as_u64().map(|n| n as u32),
-                        starred: entry["created"].as_str().map(String::from),
-                    })
+                    let mut artist = artist_from_tidal(&entry["item"])?;
+                    artist.starred = entry["created"].as_str().map(String::from);
+                    Some(artist)
                 })
                 .collect()
         })
         .unwrap_or_default();
+    let uncounted: Vec<u64> = artists
+        .iter()
+        .filter(|a| a.album_count.is_none())
+        .filter_map(|a| ids::decode(IdKind::Artist, &a.id))
+        .collect();
+    TidalClient::fill_album_counts(client, uncounted);
     artists.sort_by(|a, b| {
         (sort_key(&a.name), a.name.to_lowercase()).cmp(&(sort_key(&b.name), b.name.to_lowercase()))
     });
@@ -132,22 +132,6 @@ pub async fn get_artists(q: QueryParams) -> Result<warp::reply::Json, warp::Reje
     }))
 }
 
-// The index key: the name without a leading article, lowercased.
-// "The Beatles" sorts as "beatles"; a bare article sorts as "".
-fn sort_key(name: &str) -> String {
-    let lower = name.to_lowercase();
-    for article in IGNORED_ARTICLES.split(' ') {
-        let a = article.to_lowercase();
-        if lower == a {
-            return String::new();
-        }
-        if let Some(rest) = lower.strip_prefix(&format!("{a} ")) {
-            return rest.to_string();
-        }
-    }
-    lower
-}
-
 // The bucket letter: the first alphabetic character of the index key,
 // uppercase; anything else lands in "#".
 fn index_letter(name: &str) -> String {
@@ -158,8 +142,8 @@ fn index_letter(name: &str) -> String {
 }
 
 // Bucket the sorted artist list into letter groups, in letter order.
-fn index_groups(artists: Vec<IndexArtist>) -> Vec<IndexGroup> {
-    let mut groups: BTreeMap<String, Vec<IndexArtist>> = BTreeMap::new();
+fn index_groups(artists: Vec<ArtistId3>) -> Vec<IndexGroup> {
+    let mut groups: BTreeMap<String, Vec<ArtistId3>> = BTreeMap::new();
     for a in artists {
         groups.entry(index_letter(&a.name)).or_default().push(a);
     }
@@ -171,7 +155,7 @@ fn index_groups(artists: Vec<IndexArtist>) -> Vec<IndexGroup> {
 
 // The newest favorite time in epoch ms; the index's lastModified stamp.
 // Falls back to the current time when no favorite carries a date.
-fn last_modified(artists: &[IndexArtist]) -> i64 {
+fn last_modified(artists: &[ArtistId3]) -> i64 {
     artists
         .iter()
         .filter_map(|a| a.starred.as_deref().and_then(iso8601_ms))
@@ -387,13 +371,17 @@ fn dir_entry(
 mod tests {
     use super::*;
 
-    fn artist(id: u64, name: &str, starred: &str) -> IndexArtist {
-        IndexArtist {
+    fn artist(id: u64, name: &str, starred: &str) -> ArtistId3 {
+        ArtistId3 {
             id: ids::encode_artist(id),
             name: name.to_string(),
             cover_art: None,
+            artist_image_url: None,
             album_count: None,
+            sort_name: name.to_string(),
+            roles: vec![],
             starred: Some(starred.to_string()),
+            starred_at: None,
         }
     }
 

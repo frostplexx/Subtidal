@@ -11,7 +11,10 @@ use crate::tidal::mapping::{
 };
 
 // getArtist: one artist plus their albums. Tidal reports no albumCount on
-// the detail, so the count is the number of albums returned.
+// the detail, so the count is the number of albums returned. The v2
+// detail carries the portrait; the v1 object is fetched alongside for
+// its `artistRoles`, which v2 lacks. The v1 fetch is best-effort: the
+// roles list is just empty without it.
 pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejection> {
     let Some(id) = q.id.0.first() else {
         return Ok(fail(10, "Required parameter missing"));
@@ -21,8 +24,12 @@ pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
         return Ok(fail(70, "Artist not found"));
     };
     let client = crate::tidal::client();
-    let (detail, albums) = tokio::join!(client.artist(artist_id), client.artist_albums(artist_id));
-    let detail = match detail {
+    let (detail, albums, v1) = tokio::join!(
+        client.artist(artist_id),
+        client.artist_albums(artist_id),
+        client.artist_v1(artist_id)
+    );
+    let mut detail = match detail {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("tidal artist fetch failed: {e}");
@@ -36,6 +43,11 @@ pub async fn get_artist(q: QueryParams) -> Result<warp::reply::Json, warp::Rejec
             return Ok(fail_with(0, "Artist unavailable", &e));
         }
     };
+    match v1 {
+        Ok(v) if v["artistRoles"].is_array() => detail["artistRoles"] = v["artistRoles"].clone(),
+        Ok(_) => {}
+        Err(e) => tracing::debug!("tidal v1 artist fetch failed: {e}"),
+    }
     let mut artist = match artist_from_tidal(&detail) {
         Some(a) => a,
         None => return Ok(fail(70, "Artist not found")),

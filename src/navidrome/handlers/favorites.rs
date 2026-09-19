@@ -11,7 +11,7 @@ use crate::tidal::client::FAVORITES_CAP;
 use crate::tidal::client::FavoriteKind;
 use super::{fail, ok};
 use crate::tidal::mapping::{
-    artist_from_tidal, artist_pic_url, favorite_album_from_tidal, favorite_artist_from_tidal,
+    artist_from_tidal, favorite_album_from_tidal, favorite_artist_from_tidal,
     song_from_track,
 };
 
@@ -106,15 +106,7 @@ pub async fn get_starred2() -> Result<warp::reply::Json, warp::Rejection> {
                     let mut artist = artist_from_tidal(&entry["item"])?;
                     artist.starred = entry["created"].as_str().map(String::from);
                     artist.starred_at = entry["created"].as_str().map(String::from);
-                    // artistImageUrl is a legacy field clients fetch
-                    // directly as an HTTP URL, unlike coverArt which
-                    // round-trips through getCoverArt.
-                    let artist_image_url =
-                        entry["item"]["picture"].as_str().map(|p| artist_pic_url(p, 480));
-                    Some(Starred2Artist {
-                        artist_image_url,
-                        artist,
-                    })
+                    Some(Starred2Artist { artist })
                 })
                 .collect()
         })

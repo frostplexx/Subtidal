@@ -2,6 +2,7 @@
 // directory listing (getMusicDirectory).
 use serde::Serialize;
 
+use super::artist::ArtistId3;
 use super::song::{Child, GenreItem};
 
 // getIndexes data: { indexes: Indexes }
@@ -38,25 +39,13 @@ pub struct Artists {
     pub index: Vec<IndexGroup>,
 }
 
-// One letter group of the index: index["A"] = { name: "A", artist: [...] }
+// One letter group of the index: index["A"] = { name: "A", artist: [...] }.
+// getIndexes carries the favorite time in starred; getArtists serves the
+// same shape without it.
 #[derive(Serialize)]
 pub struct IndexGroup {
     pub name: String,
-    pub artist: Vec<IndexArtist>,
-}
-
-// An artist inside the index. getIndexes carries the favorite time in
-// starred; getArtists serves the same shape without it.
-#[derive(Serialize)]
-pub struct IndexArtist {
-    pub id: String,
-    pub name: String,
-    #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
-    pub cover_art: Option<String>,
-    #[serde(rename = "albumCount", skip_serializing_if = "Option::is_none")]
-    pub album_count: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub starred: Option<String>,
+    pub artist: Vec<ArtistId3>,
 }
 
 // Virtual-folder shortcuts (podcasts, audiobooks). This server has none,
@@ -192,12 +181,16 @@ mod tests {
                 ignored_articles: "The El La Los Las Le Les",
                 index: vec![IndexGroup {
                     name: "A".into(),
-                    artist: vec![IndexArtist {
+                    artist: vec![ArtistId3 {
                         id: "ar1".into(),
                         name: "ABBA".into(),
                         cover_art: Some("https://example.com/a.jpg".into()),
+                        artist_image_url: None,
                         album_count: Some(2),
+                        sort_name: "ABBA".into(),
+                        roles: vec![],
                         starred: Some("2023-01-15T10:00:00.000Z".into()),
+                        starred_at: None,
                     }],
                 }],
                 shortcut: vec![],

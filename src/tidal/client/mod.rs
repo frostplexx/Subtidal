@@ -636,6 +636,15 @@ impl TidalClient {
             }
         }
         tracing::info!("caches warmed in {:.1?}", started.elapsed());
+        // The index's albumCount needs each favorited artist's release
+        // list; count them now so the first getArtists already has them.
+        if let Ok(artists) = artists {
+            let ids = artists["items"]
+                .as_array()
+                .map(|items| items.iter().filter_map(|e| e["item"]["id"].as_u64()).collect())
+                .unwrap_or_default();
+            TidalClient::fill_album_counts(client, ids);
+        }
     }
 }
 

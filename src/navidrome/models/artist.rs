@@ -40,14 +40,26 @@ impl From<&ArtistId3> for Artist {
     }
 }
 
+// ArtistID3. albumCount is left out until the artist's releases have
+// been listed (Tidal carries no count on the artist itself; see
+// album_count_cache). sortName and roles are OpenSubsonic additions and
+// always present: the spec wants a supported field sent with a default
+// value, so roles is empty where Tidal's v2 shapes carry none.
 #[derive(Serialize)]
 pub struct ArtistId3 {
     pub id: String,
     pub name: String,
     #[serde(rename = "coverArt", skip_serializing_if = "Option::is_none")]
     pub cover_art: Option<String>,
+    // The portrait as a direct HTTP URL; legacy clients fetch this
+    // without going through getCoverArt.
+    #[serde(rename = "artistImageUrl", skip_serializing_if = "Option::is_none")]
+    pub artist_image_url: Option<String>,
     #[serde(rename = "albumCount", skip_serializing_if = "Option::is_none")]
     pub album_count: Option<u32>,
+    #[serde(rename = "sortName")]
+    pub sort_name: String,
+    pub roles: Vec<String>,
     // Favorite time (OpenSubsonic 1.16.5 renamed the deprecated `starred`
     // to `starredAt`); present only on artists from favorites lists.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,7 +155,10 @@ mod tests {
                     id: "ar1".into(),
                     name: "X".into(),
                     cover_art: Some("https://example.com/a.jpg".into()),
+                    artist_image_url: None,
                     album_count: Some(2),
+                    sort_name: "X".into(),
+                    roles: vec!["artist".into()],
                     starred: None,
                     starred_at: None,
                 },
@@ -173,6 +188,9 @@ mod tests {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["artist"]["id"], "ar1");
         assert_eq!(json["artist"]["albumCount"], 2);
+        assert_eq!(json["artist"]["sortName"], "X");
+        assert_eq!(json["artist"]["roles"][0], "artist");
+        assert!(json["artist"].get("artistImageUrl").is_none());
         assert_eq!(json["artist"]["album"][0]["id"], "al1");
     }
 }

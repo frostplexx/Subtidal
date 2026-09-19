@@ -7,10 +7,13 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use futures_util::{stream, StreamExt};
 use serde_json::Value;
 
 use super::{jsonapi, TidalClient};
+use crate::tidal::mapping::album_count_cache;
 
 const ARTIST_INCLUDE: &str = "profileArt";
 
@@ -62,9 +65,54 @@ impl TidalClient {
             if let Some(mut extra) = compilations {
                 merge_compilations(all, &mut extra);
             }
+            // Tidal carries no count on the artist itself; the list size
+            // is the albumCount every other artist shape serves.
+            album_count_cache::remember(artist_id, all.len() as u32);
         }
         Ok(albums)
         })
+    }
+
+    // Fill the album-count cache for the artists that lack one, in the
+    // background. The artist index and the favorites lists call this so
+    // albumCount appears on their next request: counting means listing
+    // each artist's releases (three v1 requests), too slow to do inline
+    // for a whole library. One fill runs at a time, a few artists at
+    // once; the release lists land in meta_cache, so the getArtist a
+    // client sends next is served from cache too.
+    pub fn fill_album_counts(client: &'static TidalClient, artist_ids: Vec<u64>) {
+        static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+        const CONCURRENCY: usize = 4;
+        let missing: Vec<u64> = artist_ids
+            .into_iter()
+            .filter(|id| album_count_cache::lookup(*id).is_none())
+            .collect();
+        if missing.is_empty() || IN_FLIGHT.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let total = missing.len();
+            let failed = stream::iter(missing)
+                .map(|id| async move {
+                    match client.artist_albums(id).await {
+                        Ok(_) => 0usize,
+                        Err(e) => {
+                            tracing::debug!("album count for artist {id} failed: {e}");
+                            1
+                        }
+                    }
+                })
+                .buffer_unordered(CONCURRENCY)
+                .fold(0usize, |acc, n| async move { acc + n })
+                .await;
+            tracing::info!(
+                "album counts filled for {} artists ({failed} failed) in {:.1?}",
+                total - failed,
+                started.elapsed()
+            );
+            IN_FLIGHT.store(false, Ordering::SeqCst);
+        });
     }
 
     // An artist's most popular tracks. Backs getTopSongs/top tracks in
@@ -144,11 +192,14 @@ impl TidalClient {
             .await
     }
 
-    // --- v1 backups (dead code) ------------------------------------
-    #[allow(dead_code)]
+    // The v1 artist object. Not a backup: it is the only artist shape
+    // that carries `artistRoles` (the ArtistID3 roles), which the v2
+    // resource lacks, so getArtist fetches it next to the v2 detail.
     pub async fn artist_v1(&self, id: u64) -> Result<Value, super::Error> {
         self.get_json(&format!("/artists/{id}"), &self.meta_cache).await
     }
+
+    // --- v1 backups (dead code) ------------------------------------
 
     async fn release_items(&self, artist_id: u64, filter: &str) -> Option<Vec<Value>> {
         let resp = match self

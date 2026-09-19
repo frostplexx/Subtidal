@@ -22,7 +22,7 @@ pub use artist::{
     GetArtistResponse,
 };
 pub use browse::{
-    Artists, ArtistsResponse, Directory, DirectoryChild, DirectoryResponse, IndexArtist,
+    Artists, ArtistsResponse, Directory, DirectoryChild, DirectoryResponse,
     IndexGroup, Indexes, IndexesResponse,
 };
 pub use favorites::{

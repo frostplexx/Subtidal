@@ -42,8 +42,8 @@ pub struct StarredAlbum {
     pub is_dir: bool,
 }
 
-// getStarred2 data: ID3 shapes. Artists carry albumCount and
-// artistImageUrl (same full URL as coverArt).
+// getStarred2 data: ID3 shapes. Artists are plain ArtistId3 (albumCount
+// and artistImageUrl included) plus the favorite time.
 #[derive(Serialize)]
 pub struct Starred2Response {
     pub starred2: Starred2,
@@ -56,14 +56,12 @@ pub struct Starred2 {
     pub song: Vec<Child>,
 }
 
-// `starred`/`starredAt` come from the flattened ArtistId3; a duplicate
-// field here would serialize the key twice.
+// `starred`/`starredAt`/`artistImageUrl` come from the flattened ArtistId3;
+// a duplicate field here would serialize the key twice.
 #[derive(Serialize)]
 pub struct Starred2Artist {
     #[serde(flatten)]
     pub artist: ArtistId3,
-    #[serde(rename = "artistImageUrl", skip_serializing_if = "Option::is_none")]
-    pub artist_image_url: Option<String>,
 }
 
 // `starred`/`starredAt` come from the flattened AlbumId3, already set by
@@ -125,12 +123,14 @@ mod tests {
         let starred2 = Starred2Response {
             starred2: Starred2 {
                 artist: vec![Starred2Artist {
-                    artist_image_url: Some("https://example.com/a.jpg".into()),
                     artist: ArtistId3 {
                         id: "ar1".into(),
                         name: "X".into(),
                         cover_art: Some("https://example.com/a.jpg".into()),
+                        artist_image_url: Some("https://example.com/a.jpg".into()),
                         album_count: Some(1),
+                        sort_name: "X".into(),
+                        roles: vec![],
                         starred: None,
                         starred_at: None,
                     },
@@ -156,12 +156,14 @@ mod tests {
     #[test]
     fn flattened_entities_serialize_starred_exactly_once() {
         let artist = Starred2Artist {
-            artist_image_url: None,
             artist: ArtistId3 {
                 id: "ar1".into(),
                 name: "X".into(),
                 cover_art: None,
+                artist_image_url: Some("https://example.com/a.jpg".into()),
                 album_count: None,
+                sort_name: "X".into(),
+                roles: vec![],
                 starred: Some("2026-05-31T11:07:08Z".into()),
                 starred_at: Some("2026-05-31T11:07:08Z".into()),
             },
@@ -169,5 +171,6 @@ mod tests {
         let raw = serde_json::to_string(&artist).unwrap();
         assert_eq!(raw.matches("\"starred\"").count(), 1);
         assert_eq!(raw.matches("\"starredAt\"").count(), 1);
+        assert_eq!(raw.matches("\"artistImageUrl\"").count(), 1);
     }
 }
