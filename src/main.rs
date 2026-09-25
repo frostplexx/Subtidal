@@ -1,4 +1,5 @@
 mod flac;
+mod maintenance;
 mod navidrome;
 mod settings;
 mod state;
@@ -156,6 +157,11 @@ async fn main() {
         }))
         .init();
     navidrome::play_state::init();
+    // Expired cache entries are only reclaimed while maintenance runs, and
+    // moka piggybacks that on cache operations — which an idle server never
+    // performs. Without this tick, a session's audio and manifest bytes stay
+    // resident until the process restarts. See maintenance.rs.
+    maintenance::spawn();
 
     if logged_in {
         tokio::spawn(TidalClient::warm_caches(tidal::client()));

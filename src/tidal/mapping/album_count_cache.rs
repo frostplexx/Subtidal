@@ -24,3 +24,9 @@ pub(crate) fn remember(artist_id: u64, count: u32) {
 pub(crate) fn lookup(artist_id: u64) -> Option<u32> {
     ALBUM_COUNTS.get(&artist_id)
 }
+
+// See crate::maintenance: moka applies expiry during pending-task
+// maintenance, which an idle server never triggers on its own.
+pub(crate) fn run_pending_cache_tasks() {
+    ALBUM_COUNTS.run_pending_tasks();
+}

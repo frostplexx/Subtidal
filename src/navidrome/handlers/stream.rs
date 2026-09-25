@@ -23,12 +23,36 @@ use warp::Reply;
 // consumes one of the 5-per-10s manifest slots, so a user skipping through a queue queues up
 // multi-second waits behind requests for tracks they already fetched.
 const MANIFEST_TTL: Duration = Duration::from_secs(120);
+// Bounded by bytes, not entries. A segmented FLAC manifest carries one
+// signed CDN URL per segment — hundreds of them, several hundred bytes
+// each — so one StreamInfo runs to ~100-200 KiB, while a lossy one is a
+// single URL. An entry count cannot express that spread: at 10_000
+// entries this cache alone could pin over a gigabyte of segment URLs.
+const MAX_MANIFEST_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 static MANIFEST_CACHE: LazyLock<Cache<(u64, Quality), StreamInfo>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_live(MANIFEST_TTL)
-        .max_capacity(10_000)
+        .max_capacity(MAX_MANIFEST_CACHE_BYTES)
+        .weigher(|_, info: &StreamInfo| manifest_weight(info))
         .build()
 });
+
+// Heap held by one cached manifest. Only the URL strings really matter;
+// the fixed part of the struct is counted so a lossy entry never weighs 0.
+fn manifest_weight(info: &StreamInfo) -> u32 {
+    let asset = match &info.asset {
+        Asset::File(url) => url.len(),
+        Asset::Segmented { init, segments } => {
+            init.len()
+                + segments
+                    .iter()
+                    .map(|s| s.len() + std::mem::size_of::<String>())
+                    .sum::<usize>()
+        }
+    };
+    let total = std::mem::size_of::<StreamInfo>() + info.codec.len() + asset;
+    total.min(u32::MAX as usize) as u32
+}
 
 fn cached_manifest(track_id: u64, tier: Quality) -> Option<StreamInfo> {
     MANIFEST_CACHE.get(&(track_id, tier))
@@ -58,11 +82,19 @@ fn store_audio(track_id: u64, tier: Quality, bytes: &Arc<Vec<u8>>) {
 }
 
 // Per-track segment size tables, keyed like the audio cache. Cheap to
-// hold (a few hundred integers) and worth keeping for the whole session:
-// the sizes are a property of the asset, not of the signed URLs, so they
-// stay valid even after the manifest is refetched.
-static SIZE_CACHE: TrackCache<Arc<Vec<u64>>> =
-    LazyLock::new(|| Cache::builder().max_capacity(10_000).build());
+// hold (a few hundred integers) and worth keeping across a listening
+// session: the sizes are a property of the asset, not of the signed URLs,
+// so they stay valid even after the manifest is refetched. Idle-expiry
+// rather than a TTL keeps a table alive while its track is being served
+// but lets it go once nothing asks for it again — without one, entries
+// lived for the whole process.
+const SIZE_TTI: Duration = Duration::from_secs(6 * 3600);
+static SIZE_CACHE: TrackCache<Arc<Vec<u64>>> = LazyLock::new(|| {
+    Cache::builder()
+        .time_to_idle(SIZE_TTI)
+        .max_capacity(10_000)
+        .build()
+});
 
 const SEGMENT_TTL: Duration = Duration::from_secs(300);
 const MAX_SEGMENT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
@@ -73,6 +105,18 @@ static SEGMENT_CACHE: LazyLock<Cache<String, bytes::Bytes>> = LazyLock::new(|| {
         .weigher(|_, part: &bytes::Bytes| part.len() as u32)
         .build()
 });
+
+// Drop whatever has expired or been evicted. moka 0.12 has no background
+// thread: expiry and eviction are applied during pending-task maintenance,
+// which normally piggybacks on cache reads and writes. An idle server does
+// neither, so without this the bytes from the last listening session stay
+// resident indefinitely. Called by the janitor in crate::maintenance.
+pub(crate) fn run_pending_cache_tasks() {
+    MANIFEST_CACHE.run_pending_tasks();
+    AUDIO_CACHE.run_pending_tasks();
+    SIZE_CACHE.run_pending_tasks();
+    SEGMENT_CACHE.run_pending_tasks();
+}
 
 // Fetch one part, serving it from the segment cache when warm.
 async fn fetch_part(url: &str) -> Result<bytes::Bytes, Error> {
@@ -888,6 +932,45 @@ mod tests {
             format: format.map(String::from),
             ..Default::default()
         }
+    }
+
+    fn info(asset: Asset) -> StreamInfo {
+        StreamInfo {
+            quality: Quality::Lossless,
+            codec: "flac".into(),
+            sample_rate: None,
+            bit_depth: None,
+            asset,
+            encrypted: false,
+        }
+    }
+
+    // The manifest cache is bounded in bytes, so its weigher has to see the
+    // difference between a one-URL lossy asset and a few-hundred-URL FLAC
+    // one. Weighing by entry count was what let this cache grow unbounded.
+    #[test]
+    fn a_segmented_manifest_weighs_far_more_than_a_whole_file_one() {
+        let url = "https://sp-ad-cf.audio.tidal.com/mediatracks/abc/0.mp4?token=".to_string()
+            + &"s".repeat(400);
+        let file = manifest_weight(&info(Asset::File(url.clone())));
+        let segmented = manifest_weight(&info(Asset::Segmented {
+            init: url.clone(),
+            segments: vec![url.clone(); 300],
+        }));
+        assert!(file as usize >= url.len());
+        // 300 segments of the same URL: at least 300x the URL bytes.
+        assert!(
+            segmented as usize > 300 * url.len(),
+            "segmented weight {segmented} did not account for every segment"
+        );
+        assert!(segmented > file * 100);
+    }
+
+    // A lossy entry must still consume budget, or an unbounded number of
+    // them could be admitted.
+    #[test]
+    fn every_manifest_weighs_something() {
+        assert!(manifest_weight(&info(Asset::File(String::new()))) > 0);
     }
 
     #[test]

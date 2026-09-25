@@ -440,6 +440,12 @@ fn timestamp_ms(tag: &str) -> Option<u32> {
     Some(minutes * 60_000 + (seconds * 1000.0) as u32)
 }
 
+// See crate::maintenance: moka applies expiry during pending-task
+// maintenance, which an idle server never triggers on its own.
+pub(crate) fn run_pending_cache_tasks() {
+    RADIANT_CACHE.run_pending_tasks();
+}
+
 #[cfg(test)]
 mod radiant_tests {
     use super::*;

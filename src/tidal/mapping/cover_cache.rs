@@ -22,3 +22,9 @@ pub(crate) fn remember(id: &str, raw_cover: &str) {
 pub(crate) fn lookup(id: &str) -> Option<String> {
     COVER_CACHE.get(id)
 }
+
+// See crate::maintenance: moka applies expiry during pending-task
+// maintenance, which an idle server never triggers on its own.
+pub(crate) fn run_pending_cache_tasks() {
+    COVER_CACHE.run_pending_tasks();
+}

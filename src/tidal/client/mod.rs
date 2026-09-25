@@ -646,6 +646,17 @@ impl TidalClient {
             TidalClient::fill_album_counts(client, ids);
         }
     }
+
+    // See crate::maintenance: moka applies expiry during pending-task
+    // maintenance, which an idle server never triggers on its own. The
+    // meta and playlist caches hold whole Tidal JSON pages, so their
+    // expired entries are the bulk of what goes unreclaimed.
+    pub async fn run_pending_cache_tasks(&self) {
+        self.meta_cache.run_pending_tasks().await;
+        self.search_cache.run_pending_tasks().await;
+        self.mix_cache.run_pending_tasks().await;
+        self.playlist_cache.run_pending_tasks().await;
+    }
 }
 
 #[cfg(test)]
