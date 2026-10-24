@@ -18,7 +18,7 @@ use crate::tidal::mapping::search_items;
 // XOR-obfuscated radiant API credentials. The ciphertext and the key
 // both ship in the binary; this only stops casual string scanning, same
 // trick as the embedded Tidal credentials. Decoded with two_xor() below.
-const ENC_ID: [u8; 8] = [0x9f, 0x99, 0x9d, 0x9f, 0xd3, 0x9d, 0x95, 0x97];
+const ENC_ID: [u8; 8] = [0xd1, 0x99, 0xc8, 0xc0, 0xc5, 0x9d, 0xdd, 0x97];
 const KEY_ID: [u8; 8] = [0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae];
 const ENC_TOKEN: [u8; 26] = [
     0x5a, 0x47, 0x56, 0x55, 0x2d, 0x38, 0x2a, 0x35, 0x3d, 0x22, 0x34, 0x2c, 0x3a, 0x24, 0x23, 0x20,
@@ -29,7 +29,7 @@ const KEY_TOKEN: [u8; 26] = [
     0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52, 0x53, 0x54, 0x55,
 ];
 const PLATFORM: &str = "subtidal"; // always send this
-const HOST: &str = "https://api.atomix.one/rl-api";
+const HOST: &str = "https://api.radiant-lyrics.org/rl-api";
 
 // Recover the plaintext credential bytes by XOR of cipher and key.
 fn two_xor(enc: &[u8], key: &[u8]) -> String {
