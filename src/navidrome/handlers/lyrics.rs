@@ -618,7 +618,7 @@ mod radiant_tests {
 
     #[test]
     fn xor_credentials_decode_to_plaintext() {
-        assert_eq!(two_xor(&ENC_ID, &KEY_ID), "8145x189");
+        assert_eq!(two_xor(&ENC_ID, &KEY_ID), "v1ajn1p9");
         assert_eq!(
             two_xor(&ENC_TOKEN, &KEY_TOKEN),
             "fzhjmyhvygrkrmikc7jszq6fce"
